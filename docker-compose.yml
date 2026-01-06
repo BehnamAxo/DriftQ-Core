@@ -1,0 +1,17 @@
+services:
+  driftqd:
+    image: driftq-core:local
+    ports:
+      - "8080:8080"
+    command: ["-addr", ":8080", "-wal", "/data/driftq.wal"]
+    volumes:
+      - driftq-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/driftqd", "-addr", ":0", "-wal", "/data/driftq.wal", "-log-level", "error"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  driftq-data:
