@@ -17,7 +17,85 @@ It’s intentionally minimal: the goal is a clean foundation for higher-level fe
 
 This is the easiest way to run DriftQ-Core without installing Go.
 
-### Build the image locally
+### Option A: Pull the published image from GHCR (recommended)
+
+Pin a version so runs are reproducible (recommended).
+
+**mac/linux**
+```bash
+export DRIFTQ_VERSION="1.0.0"
+docker pull ghcr.io/driftq-org/driftq-core:$DRIFTQ_VERSION
+docker run --rm -p 8080:8080 -v driftq-data:/data ghcr.io/driftq-org/driftq-core:$DRIFTQ_VERSION
+```
+
+**windows powershell**
+```powershell
+$env:DRIFTQ_VERSION="1.0.0"
+docker pull ghcr.io/driftq-org/driftq-core:$env:DRIFTQ_VERSION
+docker run --rm -p 8080:8080 -v driftq-data:/data ghcr.io/driftq-org/driftq-core:$env:DRIFTQ_VERSION
+```
+
+Useful tags:
+
+- `ghcr.io/driftq-org/driftq-core:1.0.0` (recommended: reproducible)
+- `ghcr.io/driftq-org/driftq-core:latest` (tracks `main` — convenient, but can break unexpectedly)
+- `ghcr.io/driftq-org/driftq-core:sha-<...>` (exact build)
+
+Stop it: `Ctrl+C` (or `docker stop <container>` if you ran detached).
+
+⚠️ If you want to **wipe data / reset WAL**, remove the volume:
+
+```bash
+docker volume rm driftq-data
+```
+
+### Option B: Run with Docker Compose (WAL persists)
+
+If you cloned this repo, you can run:
+
+**mac/linux**
+```bash
+export DRIFTQ_VERSION="1.0.0"
+docker compose up
+```
+
+**windows powershell**
+```powershell
+$env:DRIFTQ_VERSION="1.0.0"
+docker compose up
+```
+
+- DriftQ listens on `http://localhost:8080`
+- WAL is stored in a named Docker volume mounted at `/data` inside the container.
+
+Stop it:
+
+```bash
+docker compose down
+```
+
+⚠️ If you want to **wipe data / reset WAL**, remove the volume:
+
+```bash
+docker compose down -v
+```
+
+If your `docker-compose.yml` still references a local image/build, here is the minimal GHCR-based version (defaults to `1.0.0` if `DRIFTQ_VERSION` is not set):
+
+```yaml
+services:
+  driftqd:
+    image: ghcr.io/driftq-org/driftq-core:${DRIFTQ_VERSION:-1.0.0}
+    ports:
+      - "8080:8080"
+    volumes:
+      - driftq-data:/data
+
+volumes:
+  driftq-data:
+```
+
+### Option C: Build the image locally (dev)
 
 **mac/linux**
 ```bash
@@ -35,23 +113,10 @@ docker build -t driftq-core:local `
   .
 ```
 
-### Run with Docker Compose (WAL persists)
+Run it:
 
 ```bash
-docker compose up
-```
-
-- DriftQ listens on `http://localhost:8080`
-- WAL is stored in a named Docker volume mounted at `/data` inside the container.
-
-Stop it:
-```bash
-docker compose down
-```
-
-⚠️ If you want to **wipe data / reset WAL**, remove the volume:
-```bash
-docker compose down -v
+docker run --rm -p 8080:8080 -v driftq-data:/data driftq-core:local
 ```
 
 ## Run locally (Go)
