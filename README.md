@@ -63,7 +63,7 @@ go run ./cmd/driftqd -log-format=text -log-level=info -reset-wal
 By default DriftQ listens on `:8080`. You can change it:
 
 ```bash
-go run ./cmd/driftqd -addr :9090 -log-format=text -log-level=info
+go run ./cmd/driftqd -addr :8080 -log-format=text -log-level=info
 ```
 
 ## Quickstart (HTTP)
