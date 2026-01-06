@@ -13,7 +13,48 @@ It’s intentionally minimal: the goal is a clean foundation for higher-level fe
 - Retry + **DLQ** (`dlq.<topic>`)
 - Prometheus `/metrics` (basic observability)
 
-## Run locally
+## Run with Docker (recommended)
+
+This is the easiest way to run DriftQ-Core without installing Go.
+
+### Build the image locally
+
+**mac/linux**
+```bash
+docker build -t driftq-core:local \
+  --build-arg VERSION=dev \
+  --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+  .
+```
+
+**windows powershell**
+```powershell
+docker build -t driftq-core:local `
+  --build-arg VERSION=dev `
+  --build-arg COMMIT=$(git rev-parse --short HEAD) `
+  .
+```
+
+### Run with Docker Compose (WAL persists)
+
+```bash
+docker compose up
+```
+
+- DriftQ listens on `http://localhost:8080`
+- WAL is stored in a named Docker volume mounted at `/data` inside the container.
+
+Stop it:
+```bash
+docker compose down
+```
+
+⚠️ If you want to **wipe data / reset WAL**, remove the volume:
+```bash
+docker compose down -v
+```
+
+## Run locally (Go)
 
 ```bash
 go run ./cmd/driftqd -log-format=text -log-level=info -reset-wal
@@ -22,7 +63,7 @@ go run ./cmd/driftqd -log-format=text -log-level=info -reset-wal
 By default DriftQ listens on `:8080`. You can change it:
 
 ```bash
-go run ./cmd/driftqd -addr :8080 -log-format=text -log-level=info
+go run ./cmd/driftqd -addr :9090 -log-format=text -log-level=info
 ```
 
 ## Quickstart (HTTP)
