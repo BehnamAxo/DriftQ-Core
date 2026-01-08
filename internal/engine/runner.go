@@ -24,11 +24,15 @@ type NodeDef struct {
 }
 
 type Runner struct {
-	store Store
+	store   Store
+	metrics *EngineMetrics
 }
 
 func NewRunner(store Store) *Runner {
-	return &Runner{store: store}
+	return &Runner{
+		store:   store,
+		metrics: NewEngineMetrics(),
+	}
 }
 
 func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, initialInput json.RawMessage) error {
@@ -56,6 +60,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	if err := r.store.UpdateRun(run); err != nil {
 		return err
 	}
+
 	_, _ = r.store.AppendEvent(RunEvent{
 		RunID:      runID,
 		Type:       EventRunStarted,
@@ -72,6 +77,12 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			end := time.Now().UTC()
 			run.Status = RunStatusCanceled
 			run.EndedAt = &end
+
+			// metrics: canceled run duration
+			if run.StartedAt != nil {
+				dur := end.Sub(*run.StartedAt)
+				r.metrics.ObserveRun(run.Status, dur)
+			}
 
 			_ = r.store.UpdateRun(run)
 			_, _ = r.store.AppendEvent(RunEvent{
@@ -112,8 +123,12 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 
 		output, err := node.Run(ctx, cloneRaw(input))
 		nodeEnd := time.Now().UTC()
+		nodeDur := nodeEnd.Sub(nodeStart)
 
 		if err != nil {
+			// metrics: node failed duration
+			r.metrics.ObserveNode(node.NodeID, false, nodeDur)
+
 			ne.Status = NodeStatusFailed
 			ne.EndedAt = &nodeEnd
 			ne.Error = err.Error()
@@ -129,8 +144,16 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 				Payload:    p,
 			})
 
+			// mark run failed
 			run.Status = RunStatusFailed
 			run.EndedAt = &nodeEnd
+
+			// metrics: failed run duration
+			if run.StartedAt != nil {
+				dur := nodeEnd.Sub(*run.StartedAt)
+				r.metrics.ObserveRun(run.Status, dur)
+			}
+
 			_ = r.store.UpdateRun(run)
 			p2, _ := json.Marshal(map[string]any{"status": "failed", "failed_node": node.NodeID})
 			_, _ = r.store.AppendEvent(RunEvent{
@@ -142,6 +165,9 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 
 			return ErrNodeFailed
 		}
+
+		// metrics: node succeeded duration
+		r.metrics.ObserveNode(node.NodeID, true, nodeDur)
 
 		ne.Status = NodeStatusSucceeded
 		ne.EndedAt = &nodeEnd
@@ -167,6 +193,12 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	end := time.Now().UTC()
 	run.Status = RunStatusSucceeded
 	run.EndedAt = &end
+
+	// metrics: succeeded run duration
+	if run.StartedAt != nil {
+		dur := end.Sub(*run.StartedAt)
+		r.metrics.ObserveRun(run.Status, dur)
+	}
 
 	if err := r.store.UpdateRun(run); err != nil {
 		return err
