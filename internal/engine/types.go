@@ -16,8 +16,8 @@ type Run struct {
 	WorkflowID string    `json:"workflow_id"`
 	Status     RunStatus `json:"status"`
 
-	StartedAt **time.Time `json:"started_at,omitempty"`
-	EndedAt   *time.Time  `json:"ended_at,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
 type RunEvent struct {
