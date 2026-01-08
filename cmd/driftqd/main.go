@@ -267,6 +267,7 @@ func main() {
 	// Note: this is v2 runner in-memory for now and will become real persistence later
 	runStore := engine.NewMemoryStore()
 	runner := engine.NewRunner(runStore)
+	runner.SetLogger(logger)
 
 	rootMux := http.NewServeMux()
 	v1Mux := http.NewServeMux()
