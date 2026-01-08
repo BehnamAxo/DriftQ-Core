@@ -214,3 +214,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 
 	return nil
 }
+
+func (r *Runner) MetricsSnapshot() MetricsSnapshot {
+	return r.metrics.Snapshot()
+}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/driftq-org/DriftQ-Core/internal/broker"
+	"github.com/driftq-org/DriftQ-Core/internal/engine"
 	v1 "github.com/driftq-org/DriftQ-Core/internal/httpapi/v1"
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 	"github.com/prometheus/client_golang/prometheus"
@@ -263,8 +264,13 @@ func main() {
 
 	s := &server{broker: b}
 
+	// Note: this is v2 runner in-memory for now and will become real persistence later
+	runStore := engine.NewMemoryStore()
+	runner := engine.NewRunner(runStore)
+
 	rootMux := http.NewServeMux()
 	v1Mux := http.NewServeMux()
+	engine.AttachDebugRoutes(rootMux, runner)
 
 	// v1 routes
 	v1Mux.HandleFunc("/healthz", s.requireMethod(http.MethodGet)(s.handleHealthz))
