@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,12 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			w.Header().Set("Allow", http.MethodPost)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+
+		// Pull trace_id from the incoming request (set by middleware) and if it's missing, generate one so logs still correlate
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = NewTraceID()
 		}
 
 		// Node A: x = x + 1
@@ -65,17 +72,20 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		runID := "demo-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 		initial := json.RawMessage(`{"x":1}`)
 
-		err := runner.RunWorkflow(r.Context(), runID, wf, initial)
+		// IMPORTANT: run with engine trace context so runner logs use the same trace_id
+		ctx := WithTraceID(r.Context(), traceID)
+
+		err := runner.RunWorkflow(ctx, runID, wf, initial)
 		if err != nil {
 			http.Error(w, "run failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Return a small response so you can inspect via other endpoints later (future).
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":     true,
-			"run_id": runID,
+			"ok":       true,
+			"run_id":   runID,
+			"trace_id": traceID,
 		})
 	})
 }

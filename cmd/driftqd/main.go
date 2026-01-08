@@ -97,16 +97,45 @@ func remoteIP(addr string) string {
 	return addr
 }
 
+type traceIDKey struct{}
+
+func withTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDKey{}, traceID)
+}
+
+func traceIDFrom(ctx context.Context) string {
+	if v := ctx.Value(traceIDKey{}); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func newTraceID() string {
+	return newRequestID()
+}
+
 func withRequestLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
+		// request id (existing)
 		reqID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
 		if reqID == "" {
 			reqID = newRequestID()
 		}
-		// echo back so clients can correlate
 		w.Header().Set("X-Request-Id", reqID)
+
+		// trace id (new)
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = newTraceID()
+		}
+		w.Header().Set("X-Trace-Id", traceID)
+
+		// inject into context so downstream handlers can use it
+		r = r.WithContext(withTraceID(r.Context(), traceID))
 
 		rec := &statusRecorder{ResponseWriter: w}
 
@@ -119,6 +148,7 @@ func withRequestLogging(next http.Handler) http.Handler {
 			}
 
 			logFn("http",
+				"trace_id", traceID,
 				"req_id", reqID,
 				"method", r.Method,
 				"path", r.URL.Path,
