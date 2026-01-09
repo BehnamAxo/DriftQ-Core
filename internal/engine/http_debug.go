@@ -88,4 +88,71 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"trace_id": traceID,
 		})
 	})
+
+	// Body is:
+	// {
+	//   "run_id": "optional",
+	//   "spec": { ...workflow spec json... },
+	//   "input": { ...any json... }
+	// }
+	mux.HandleFunc("/debug/run-spec", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = NewTraceID()
+		}
+
+		var body struct {
+			RunID string          `json:"run_id"`
+			Spec  json.RawMessage `json:"spec"`
+			Input json.RawMessage `json:"input"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if len(body.Spec) == 0 {
+			http.Error(w, "spec is required", http.StatusBadRequest)
+			return
+		}
+
+		if len(body.Input) == 0 {
+			body.Input = json.RawMessage(`{}`)
+		}
+
+		runID := strings.TrimSpace(body.RunID)
+		if runID == "" {
+			runID = "spec-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+		}
+
+		reg := NewHandlerRegistry()
+		reg.Register("noop", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			return cloneRaw(input), nil
+		})
+		reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			time.Sleep(50 * time.Millisecond)
+			return cloneRaw(input), nil
+		})
+
+		ctx := WithTraceID(r.Context(), traceID)
+
+		if err := runner.RunSpecJSON(ctx, runID, body.Spec, reg, body.Input); err != nil {
+			http.Error(w, "run failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":       true,
+			"run_id":   runID,
+			"trace_id": traceID,
+		})
+	})
 }
