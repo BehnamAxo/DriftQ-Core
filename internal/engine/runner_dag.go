@@ -264,7 +264,10 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			Attempt:    attempt,
 		})
 
-		out, err := node.Run(ctx, cloneRaw(nodeInput))
+		stepCtx := WithAttempt(ctx, attempt)
+		out, err := node.Run(stepCtx, cloneRaw(nodeInput))
+
+		// out, err := node.Run(ctx, cloneRaw(nodeInput))
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
 

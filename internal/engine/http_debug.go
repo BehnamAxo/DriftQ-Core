@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		_ = enc.Encode(snap)
 	})
 
-	// NEW: run a demo 2-node workflow to generate metrics quickly
+	// run a demo 2-node workflow to generate metrics quickly
 	mux.HandleFunc("/debug/run-demo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -139,6 +140,14 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			time.Sleep(50 * time.Millisecond)
 			return cloneRaw(input), nil
+		})
+
+		reg.Register("fail_once", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			if AttemptFrom(ctx) <= 1 {
+				return nil, errors.New("boom")
+			}
+
+			return json.RawMessage(`{"ok":true}`), nil
 		})
 
 		ctx := WithTraceID(r.Context(), traceID)
