@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -133,22 +132,11 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			runID = "spec-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 		}
 
-		reg := NewHandlerRegistry()
-		reg.Register("noop", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			return cloneRaw(input), nil
-		})
-		reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			time.Sleep(50 * time.Millisecond)
-			return cloneRaw(input), nil
-		})
-
-		reg.Register("fail_once", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			if AttemptFrom(ctx) <= 1 {
-				return nil, errors.New("boom")
-			}
-
-			return json.RawMessage(`{"ok":true}`), nil
-		})
+		reg := runner.HandlerRegistry()
+		if reg == nil {
+			http.Error(w, "no handler registry configured on runner", http.StatusInternalServerError)
+			return
+		}
 
 		ctx := WithTraceID(r.Context(), traceID)
 

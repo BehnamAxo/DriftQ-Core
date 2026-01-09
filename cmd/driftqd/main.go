@@ -103,14 +103,14 @@ func withTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDKey{}, traceID)
 }
 
-func traceIDFrom(ctx context.Context) string {
-	if v := ctx.Value(traceIDKey{}); v != nil {
-		if s, ok := v.(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
-}
+// func traceIDFrom(ctx context.Context) string {
+// 	if v := ctx.Value(traceIDKey{}); v != nil {
+// 		if s, ok := v.(string); ok && s != "" {
+// 			return s
+// 		}
+// 	}
+// 	return ""
+// }
 
 func newTraceID() string {
 	return newRequestID()
@@ -298,6 +298,27 @@ func main() {
 	runStore := engine.NewMemoryStore()
 	runner := engine.NewRunner(runStore)
 	runner.SetLogger(logger)
+
+	// global registry used by /debug/run-spec (and replay) :)
+	reg := engine.NewHandlerRegistry()
+
+	reg.Register("noop", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		return input, nil
+	})
+	reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		time.Sleep(50 * time.Millisecond)
+		return input, nil
+	})
+
+	// IMPORTANT: stateless fail-on-attempt-1, succeed on attempt>=2 (works across restarts)
+	reg.Register("fail_once", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		if engine.AttemptFrom(ctx) <= 1 {
+			return nil, errors.New("boom")
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+
+	runner.SetHandlerRegistry(reg)
 
 	rootMux := http.NewServeMux()
 	v1Mux := http.NewServeMux()

@@ -30,8 +30,9 @@ type Runner struct {
 	metrics *EngineMetrics
 	logger  *slog.Logger
 
-	mu     sync.RWMutex
-	graphs map[string]WorkflowGraph // workflow_id -> graph
+	mu       sync.RWMutex
+	graphs   map[string]WorkflowGraph // workflow_id -> graph
+	registry *HandlerRegistry
 }
 
 func NewRunner(store Store) *Runner {
@@ -351,4 +352,12 @@ func (r *Runner) SetLogger(l *slog.Logger) {
 	if l != nil {
 		r.logger = l
 	}
+}
+
+func (r *Runner) SetHandlerRegistry(reg *HandlerRegistry) {
+	r.registry = reg
+}
+
+func (r *Runner) HandlerRegistry() *HandlerRegistry {
+	return r.registry
 }
