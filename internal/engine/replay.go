@@ -15,58 +15,34 @@ const (
 )
 
 // some updates for this section logic, replay now is backwards-compatible:
-//   - If the workflow graph is still in memory, it works like before.
+//   - If the workflow graph is still in memory, it works like before
 //   - But if the process restarted and the graph cache is empty, we must use ReplayWithRegistry
-//     so we can rebuild the executable graph from the stored run.Spec.
+//     so we can rebuild the executable graph from the stored run.Spec
 func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) error {
-	return r.ReplayWithRegistry(ctx, runID, mode, nil)
-}
-
-// ReplayWithRegistry is now restart-safe meaning if the workflow graph is not in memory, it rebuilds it from run.Spec using the provided registry woot woot
-func (r *Runner) ReplayWithRegistry(ctx context.Context, runID string, mode ReplayMode, reg *HandlerRegistry) error {
 	run, ok := r.store.GetRun(runID)
 	if !ok {
 		return ErrRunNotFound
 	}
 
-	// Fast path: graph already remembered in-memory
-	exec, ok := r.getGraph(run.WorkflowID)
-
-	// Restart-safe path: rebuild executable graph from stored spec.
+	// We need an executable graph (NodeDef.Run funcs). For now we fetch it from the in-memory graph cache
+	// If this fails after a process restart, we will need to recompile from run.Spec using a registry
+	g, ok := r.getGraph(run.WorkflowID)
 	if !ok {
 		if len(run.Spec) == 0 {
-			return fmt.Errorf("replay: workflow graph not found in memory and run has no stored spec (workflow_id=%q run_id=%q)", run.WorkflowID, runID)
+			return fmt.Errorf("replay: workflow graph not found for workflow_id=%q (run_id=%q) and run has no stored spec", run.WorkflowID, runID)
 		}
-
-		if reg == nil {
-			return errors.New("replay: handler registry is required to rebuild executable graph from stored spec (use ReplayWithRegistry)")
-		}
-
-		g, spec, err := ParseWorkflowSpecJSON(run.Spec)
-		if err != nil {
-			return err
-		}
-
-		exec, err = CompileSpecToExecutable(spec, g, reg)
-		if err != nil {
-			return err
-		}
-
-		// Keep ID stable and cache it for this process lifetime
-		if exec.ID == "" {
-			exec.ID = run.WorkflowID
-		}
-		r.rememberGraph(run.WorkflowID, exec)
+		return fmt.Errorf("replay: workflow graph not found for workflow_id=%q (run_id=%q); compiled graph cache missing (restart?)", run.WorkflowID, runID)
 	}
 
+	// Prefer stored initial input (new runs). Fall back to reconstructing from the root node input
 	initial := cloneRaw(run.InitialInput)
 	if len(initial) == 0 {
-		initial = r.initialInputFromRun(runID, exec)
+		initial = r.initialInputFromRun(runID, g)
 	}
 
 	switch mode {
 	case ReplayTimeTravel:
-		return r.runDAG(ctx, runID, exec, initial, cloneRaw(run.Spec))
+		return r.runDAG(ctx, runID, g, initial, cloneRaw(run.Spec))
 
 	case ReplayLive:
 		return errors.New("replay live not implemented yet")
@@ -120,5 +96,6 @@ func (r *Runner) initialInputFromRun(runID string, g WorkflowGraph) json.RawMess
 	if best == nil {
 		return json.RawMessage(`{}`)
 	}
+
 	return best
 }
