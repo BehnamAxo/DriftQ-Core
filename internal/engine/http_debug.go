@@ -25,7 +25,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		_ = enc.Encode(snap)
 	})
 
-	// NEW: run a demo 2-node workflow to generate metrics quickly
+	// run a demo 2-node workflow to generate metrics quickly
 	mux.HandleFunc("/debug/run-demo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -132,14 +132,11 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			runID = "spec-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 		}
 
-		reg := NewHandlerRegistry()
-		reg.Register("noop", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			return cloneRaw(input), nil
-		})
-		reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			time.Sleep(50 * time.Millisecond)
-			return cloneRaw(input), nil
-		})
+		reg := runner.HandlerRegistry()
+		if reg == nil {
+			http.Error(w, "no handler registry configured on runner", http.StatusInternalServerError)
+			return
+		}
 
 		ctx := WithTraceID(r.Context(), traceID)
 

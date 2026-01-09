@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -124,5 +125,89 @@ func TestRunner_RunDAG_FanOutFanIn(t *testing.T) {
 
 	if got != "ABCD" {
 		t.Fatalf("expected node start order ABCD, got %s", got)
+	}
+}
+
+func TestRunner_TimeTravelReplay_DoesNotReexecuteSucceeded(t *testing.T) {
+	store := NewMemoryStore()
+	r := NewRunner(store)
+
+	// Track whether A gets called again (it must NOT on time-travel replay)
+	var callsA int
+
+	nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		callsA++
+		return json.RawMessage(`{"a":"ok"}`), nil
+	}
+
+	// B fails first time, succeeds on replay
+	first := true
+	nodeB := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		if first {
+			first = false
+			return nil, errors.New("boom")
+		}
+		return json.RawMessage(`{"b":"ok"}`), nil
+	}
+
+	g := WorkflowGraph{
+		ID: "wf_tt",
+		Nodes: []NodeDef{
+			{NodeID: "A", Run: nodeA},
+			{NodeID: "B", Run: nodeB},
+		},
+		Edges: []NodeEdge{
+			{From: "A", To: "B"},
+		},
+	}
+
+	runID := "tt_replay_1"
+
+	// First run should fail on B
+	err := r.RunDAG(context.Background(), runID, g, json.RawMessage(`{"x":1}`))
+	if !errors.Is(err, ErrNodeFailed) {
+		t.Fatalf("expected ErrNodeFailed, got %v", err)
+	}
+
+	if callsA != 1 {
+		t.Fatalf("expected A called once, got %d", callsA)
+	}
+
+	// Time-travel replay: should NOT re-execute A
+	if err := r.Replay(context.Background(), runID, ReplayTimeTravel); err != nil {
+		t.Fatalf("replay failed: %v", err)
+	}
+
+	if callsA != 1 {
+		t.Fatalf("A was re-executed during time-travel replay; callsA=%d", callsA)
+	}
+
+	// Verify attempts: A=1, B=2
+	var aAttempts, bAttempts int
+	for _, ne := range store.ListNodeExecutions(runID) {
+		switch ne.NodeID {
+		case "A":
+			aAttempts++
+		case "B":
+			bAttempts++
+		}
+	}
+
+	if aAttempts != 1 {
+		t.Fatalf("expected A attempts=1, got %d", aAttempts)
+	}
+
+	if bAttempts != 2 {
+		t.Fatalf("expected B attempts=2, got %d", bAttempts)
+	}
+
+	// Verify run ended succeeded
+	run, ok := store.GetRun(runID)
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+
+	if run.Status != RunStatusSucceeded {
+		t.Fatalf("expected run status succeeded, got %s", run.Status)
 	}
 }

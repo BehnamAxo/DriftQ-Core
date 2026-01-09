@@ -10,10 +10,11 @@ import (
 
 var ErrGraphInvalid = errors.New("invalid workflow graph")
 
-// This function executes a WorkflowGraph
-// - Roots (no deps) receive initialInput
-// - Non-roots receive an aggregated JSON object: {"<depNodeID>": <depOutput>, ...}
 func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) error {
+	return r.runDAG(ctx, runID, g, initialInput, nil)
+}
+
+func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
@@ -26,11 +27,81 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 	nodeByID := map[string]NodeDef{}
 	nodeIndex := map[string]int{}
-
 	for i, n := range g.Nodes {
 		nodeByID[n.NodeID] = n
 		nodeIndex[n.NodeID] = i
 	}
+
+	wfID := g.ID
+	if wfID == "" {
+		wfID = "graph_" + runID
+	}
+
+	var run Run
+	existingRun, ok := r.store.GetRun(runID)
+	done := map[string]NodeExecution{}
+	outputs := map[string]json.RawMessage{}
+	maxAttempt := map[string]int{}
+
+	if ok {
+		run = existingRun
+
+		// prefer stored workflow id if present
+		if run.WorkflowID != "" {
+			wfID = run.WorkflowID
+		} else {
+			run.WorkflowID = wfID
+		}
+
+		if run.Status == RunStatusSucceeded {
+			r.logger.Info("run already succeeded; skipping",
+				"trace_id", traceID,
+				"run_id", runID,
+			)
+			return nil
+		}
+
+		r.logger.Info("resuming existing run", "trace_id", traceID, "run_id", runID)
+
+		prevNodes := r.store.ListNodeExecutions(runID)
+		for _, ne := range prevNodes {
+			// track max attempt per node (even for failed/running records)
+			if ne.Attempt > maxAttempt[ne.NodeID] {
+				maxAttempt[ne.NodeID] = ne.Attempt
+			}
+
+			if ne.Status == NodeStatusSucceeded {
+				done[ne.NodeID] = ne
+				// IMPORTANT: reuse stored output so downstream inputs are correct
+				if len(ne.Output) > 0 {
+					outputs[ne.NodeID] = cloneRaw(ne.Output)
+				}
+			}
+		}
+	} else {
+		// fresh run
+		run = Run{
+			RunID:        runID,
+			WorkflowID:   wfID,
+			Status:       RunStatusQueued,
+			Spec:         cloneRaw(spec),
+			InitialInput: cloneRaw(initialInput),
+		}
+
+		if err := r.store.CreateRun(run); err != nil {
+			r.logger.Error("run create failed", "trace_id", traceID, "run_id", runID, "err", err)
+			return err
+		}
+
+		r.logger.Info("run created", "trace_id", traceID, "run_id", runID)
+
+		_, _ = r.store.AppendEvent(RunEvent{
+			RunID: runID,
+			Type:  EventRunCreated,
+		})
+	}
+
+	r.rememberGraph(wfID, g)
 
 	parents := map[string][]string{}
 	children := map[string][]string{}
@@ -43,61 +114,53 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 	for _, e := range g.Edges {
 		children[e.From] = append(children[e.From], e.To)
 		parents[e.To] = append(parents[e.To], e.From)
-		inDegree[e.To]++
+
+		// Only count this dependency if the parent is NOT already done
+		if _, parentDone := done[e.From]; !parentDone {
+			inDegree[e.To]++
+		}
 	}
 
-	// 1) Create run (queued)
-	wfID := g.ID
-	if wfID == "" {
-		wfID = "graph_" + runID
+	// Start / resume run
+	now := time.Now().UTC()
+
+	startedJustNow := false
+	if run.StartedAt == nil {
+		run.StartedAt = &now
+		startedJustNow = true
 	}
 
-	run := Run{
-		RunID:      runID,
-		WorkflowID: wfID,
-		Status:     RunStatusQueued,
+	// If we are resuming a failed run, clear EndedAt
+	if run.Status != RunStatusRunning {
+		run.EndedAt = nil
 	}
-
-	if err := r.store.CreateRun(run); err != nil {
-		r.logger.Error("run create failed", "trace_id", traceID, "run_id", runID, "err", err)
-		return err
-	}
-
-	r.logger.Info("run created", "trace_id", traceID, "run_id", runID)
-
-	_, _ = r.store.AppendEvent(RunEvent{
-		RunID: runID,
-		Type:  EventRunCreated,
-	})
-
-	// 2) Start run
-	start := time.Now().UTC()
 	run.Status = RunStatusRunning
-	run.StartedAt = &start
+
 	if err := r.store.UpdateRun(run); err != nil {
 		r.logger.Error("run start update failed", "trace_id", traceID, "run_id", runID, "err", err)
 		return err
 	}
 
+	if startedJustNow {
+		_, _ = r.store.AppendEvent(RunEvent{
+			RunID: runID,
+			Type:  EventRunStarted,
+		})
+	}
+
 	r.logger.Info("run started", "trace_id", traceID, "run_id", runID)
 
-	_, _ = r.store.AppendEvent(RunEvent{
-		RunID: runID,
-		Type:  EventRunStarted,
-	})
-
-	// Ready queue = nodes with indegree 0 (roots)
+	// Ready queue = nodes with indegree 0 AND not already succeeded
 	var ready []string
 	for id, deg := range inDegree {
 		if deg == 0 {
-			ready = append(ready, id)
+			if _, isDone := done[id]; !isDone {
+				ready = append(ready, id)
+			}
 		}
 	}
-	// Sort by node definition order
-	sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 
-	// Keep outputs in memory for scheduling/aggregation
-	outputs := map[string]json.RawMessage{}
+	sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 
 	for len(ready) > 0 {
 		select {
@@ -165,7 +228,13 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			nodeInput = json.RawMessage(b)
 		}
 
+		// increment attempt on replay
 		attempt := 1
+		if prev := maxAttempt[node.NodeID]; prev > 0 {
+			attempt = prev + 1
+		}
+
+		maxAttempt[node.NodeID] = attempt
 		nodeStart := time.Now().UTC()
 
 		r.logger.Info("node started",
@@ -198,7 +267,10 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			Attempt:    attempt,
 		})
 
-		out, err := node.Run(ctx, cloneRaw(nodeInput))
+		stepCtx := WithAttempt(ctx, attempt)
+		out, err := node.Run(stepCtx, cloneRaw(nodeInput))
+
+		// out, err := node.Run(ctx, cloneRaw(nodeInput))
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
 
@@ -292,12 +364,17 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 		// unlock children
 		for _, child := range children[nodeID] {
+			// if child already done from a previous run, ignore
+			if _, isDone := done[child]; isDone {
+				continue
+			}
+
 			inDegree[child]--
 			if inDegree[child] == 0 {
 				ready = append(ready, child)
 			}
 		}
-		// deterministic: re-sort ready queue by node order
+
 		sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 	}
 
@@ -327,11 +404,11 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		}(),
 	)
 
-	p, _ := json.Marshal(map[string]any{"status": "succeeded"})
+	p3, _ := json.Marshal(map[string]any{"status": "succeeded"})
 	_, _ = r.store.AppendEvent(RunEvent{
 		RunID:   runID,
 		Type:    EventRunFinished,
-		Payload: p,
+		Payload: p3,
 	})
 
 	return nil

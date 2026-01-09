@@ -16,5 +16,5 @@ func (r *Runner) RunSpecJSON(ctx context.Context, runID string, specJSON []byte,
 		return err
 	}
 
-	return r.RunDAG(ctx, runID, exec, initialInput)
+	return r.runDAG(ctx, runID, exec, initialInput, json.RawMessage(specJSON))
 }
