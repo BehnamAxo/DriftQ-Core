@@ -10,10 +10,11 @@ import (
 
 var ErrGraphInvalid = errors.New("invalid workflow graph")
 
-// This function executes a WorkflowGraph
-// - Roots (no deps) receive initialInput
-// - Non-roots receive an aggregated JSON object: {"<depNodeID>": <depOutput>, ...}
 func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) error {
+	return r.runDAG(ctx, runID, g, initialInput, nil)
+}
+
+func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
@@ -80,9 +81,11 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 	} else {
 		// fresh run
 		run = Run{
-			RunID:      runID,
-			WorkflowID: wfID,
-			Status:     RunStatusQueued,
+			RunID:        runID,
+			WorkflowID:   wfID,
+			Status:       RunStatusQueued,
+			Spec:         cloneRaw(spec),
+			InitialInput: cloneRaw(initialInput),
 		}
 
 		if err := r.store.CreateRun(run); err != nil {

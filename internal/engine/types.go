@@ -18,6 +18,9 @@ type Run struct {
 
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
+
+	Spec         json.RawMessage `json:"spec,omitempty"`
+	InitialInput json.RawMessage `json:"initial_input,omitempty"`
 }
 
 type RunEvent struct {
