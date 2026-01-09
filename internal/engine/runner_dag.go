@@ -98,6 +98,8 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		})
 	}
 
+	r.rememberGraph(wfID, g)
+
 	parents := map[string][]string{}
 	children := map[string][]string{}
 	inDegree := map[string]int{}
@@ -224,9 +226,9 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		}
 
 		// increment attempt on replay
-		attempt := maxAttempt[node.NodeID] + 1
-		if attempt <= 0 {
-			attempt = 1
+		attempt := 1
+		if prev := maxAttempt[node.NodeID]; prev > 0 {
+			attempt = prev + 1
 		}
 
 		maxAttempt[node.NodeID] = attempt

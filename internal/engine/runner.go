@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,9 @@ type Runner struct {
 	store   Store
 	metrics *EngineMetrics
 	logger  *slog.Logger
+
+	mu     sync.RWMutex
+	graphs map[string]WorkflowGraph // workflow_id -> graph
 }
 
 func NewRunner(store Store) *Runner {
@@ -35,6 +39,7 @@ func NewRunner(store Store) *Runner {
 		store:   store,
 		metrics: NewEngineMetrics(),
 		logger:  slog.Default(),
+		graphs:  make(map[string]WorkflowGraph),
 	}
 }
 
