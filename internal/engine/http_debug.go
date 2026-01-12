@@ -152,4 +152,43 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"trace_id": traceID,
 		})
 	})
+
+	// Body: { "run_id": "..." , "reason": "optional reason" }
+	mux.HandleFunc("/debug/run-cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var body struct {
+			RunID  string `json:"run_id"`
+			Reason string `json:"reason"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = NewTraceID()
+		}
+
+		ctx := WithTraceID(r.Context(), traceID)
+
+		if err := runner.CancelRun(ctx, body.RunID, body.Reason); err != nil {
+			http.Error(w, "cancel failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":       true,
+			"run_id":   body.RunID,
+			"trace_id": traceID,
+			"canceled": true,
+		})
+	})
 }
