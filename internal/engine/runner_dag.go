@@ -9,6 +9,7 @@ import (
 )
 
 var ErrGraphInvalid = errors.New("invalid workflow graph")
+var ErrRunCanceled = errors.New("run canceled")
 
 func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) error {
 	return r.runDAG(ctx, runID, g, initialInput, nil)
@@ -59,6 +60,14 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 				"run_id", runID,
 			)
 			return nil
+		}
+
+		if run.Status == RunStatusCanceled {
+			r.logger.Info("run already canceled; skipping",
+				"trace_id", traceID,
+				"run_id", runID,
+			)
+			return ErrRunCanceled
 		}
 
 		r.logger.Info("resuming existing run", "trace_id", traceID, "run_id", runID)
@@ -196,6 +205,15 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		default:
 		}
 
+		// If the run got canceled (via API/store), stop scheduling more work
+		if cur, ok := r.store.GetRun(runID); ok && cur.Status == RunStatusCanceled {
+			r.logger.Info("run canceled; stopping scheduling",
+				"trace_id", traceID,
+				"run_id", runID,
+			)
+			return ErrRunCanceled
+		}
+
 		// pop next ready node
 		nodeID := ready[0]
 		ready = ready[1:]
@@ -270,7 +288,6 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		stepCtx := WithAttempt(ctx, attempt)
 		out, err := node.Run(stepCtx, cloneRaw(nodeInput))
 
-		// out, err := node.Run(ctx, cloneRaw(nodeInput))
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
 
