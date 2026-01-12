@@ -10,6 +10,7 @@ import (
 type RunStatus string
 type NodeStatus string
 type RunEventType string
+type TimerStatus string
 
 type Run struct {
 	RunID      string    `json:"run_id"`
@@ -53,6 +54,32 @@ type NodeExecution struct {
 
 	Error string `json:"error,omitempty"`
 }
+
+type Timer struct {
+	RunID      string      `json:"run_id"`
+	WorkflowID string      `json:"workflow_id,omitempty"`
+	NodeID     string      `json:"node_id"` // step_id
+	Attempt    int         `json:"attempt"`
+	Status     TimerStatus `json:"status"`
+
+	FireAt    time.Time  `json:"fire_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	FiredAt   *time.Time `json:"fired_at,omitempty"`
+
+	Reason string `json:"reason,omitempty"`
+}
+
+const (
+	TimerScheduled TimerStatus = "scheduled"
+	TimerFired     TimerStatus = "fired"
+	TimerCanceled  TimerStatus = "canceled"
+)
+
+const (
+	EventTimerScheduled RunEventType = "timer_scheduled"
+	EventTimerFired     RunEventType = "timer_fired"
+	EventTimerCanceled  RunEventType = "timer_canceled"
+)
 
 const (
 	RunStatusQueued    RunStatus = "queued"
