@@ -305,8 +305,9 @@ func main() {
 	reg.Register("noop", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		return input, nil
 	})
-	reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-		time.Sleep(50 * time.Millisecond)
+
+	reg.Register("sleep_500ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		time.Sleep(500 * time.Millisecond)
 		return input, nil
 	})
 

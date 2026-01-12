@@ -26,6 +26,12 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		ctx = WithTraceID(ctx, traceID)
 	}
 
+	// helper: external cancel (via CancelRun) should stop scheduling ASAP
+	isCanceled := func() bool {
+		cur, ok := r.store.GetRun(runID)
+		return ok && cur.Status == RunStatusCanceled
+	}
+
 	nodeByID := map[string]NodeDef{}
 	nodeIndex := map[string]int{}
 	for i, n := range g.Nodes {
@@ -143,8 +149,17 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 	if run.Status != RunStatusRunning {
 		run.EndedAt = nil
 	}
-	run.Status = RunStatusRunning
 
+	// If someone canceled via store before we begin, do not flip to RUNNING.
+	if isCanceled() {
+		r.logger.Info("run already canceled; skipping start",
+			"trace_id", traceID,
+			"run_id", runID,
+		)
+		return ErrRunCanceled
+	}
+
+	run.Status = RunStatusRunning
 	if err := r.store.UpdateRun(run); err != nil {
 		r.logger.Error("run start update failed", "trace_id", traceID, "run_id", runID, "err", err)
 		return err
@@ -172,6 +187,15 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 	sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 
 	for len(ready) > 0 {
+		// stop scheduling new work if externally canceled
+		if isCanceled() {
+			r.logger.Info("run canceled; stopping scheduling",
+				"trace_id", traceID,
+				"run_id", runID,
+			)
+			return ErrRunCanceled
+		}
+
 		select {
 		case <-ctx.Done():
 			end := time.Now().UTC()
@@ -203,15 +227,6 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			})
 			return ctx.Err()
 		default:
-		}
-
-		// If the run got canceled (via API/store), stop scheduling more work
-		if cur, ok := r.store.GetRun(runID); ok && cur.Status == RunStatusCanceled {
-			r.logger.Info("run canceled; stopping scheduling",
-				"trace_id", traceID,
-				"run_id", runID,
-			)
-			return ErrRunCanceled
 		}
 
 		// pop next ready node
@@ -292,6 +307,11 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		nodeDur := nodeEnd.Sub(nodeStart)
 
 		if err != nil {
+			// if canceled while this node was running, do NOT overwrite the run as FAILED
+			if isCanceled() {
+				return ErrRunCanceled
+			}
+
 			r.metrics.ObserveNode(node.NodeID, false, nodeDur)
 
 			r.logger.Error("node failed",
@@ -393,6 +413,11 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		}
 
 		sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
+	}
+
+	// if canceled while last node was running, do NOT overwrite as SUCCEEDED
+	if isCanceled() {
+		return ErrRunCanceled
 	}
 
 	// finish run success

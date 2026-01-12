@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -141,6 +142,18 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		ctx := WithTraceID(r.Context(), traceID)
 
 		if err := runner.RunSpecJSON(ctx, runID, body.Spec, reg, body.Input); err != nil {
+			// If the run was canceled, that's not a "bad request". so we treat it as a successful control outcome
+			if errors.Is(err, ErrRunCanceled) || errors.Is(err, context.Canceled) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":       true,
+					"canceled": true,
+					"run_id":   runID,
+					"trace_id": traceID,
+				})
+				return
+			}
+
 			http.Error(w, "run failed: "+err.Error(), http.StatusBadRequest)
 			return
 		}
