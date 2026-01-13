@@ -467,11 +467,12 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 				p, _ := json.Marshal(map[string]any{"error": res.err.Error()})
 				_, _ = r.store.AppendEvent(RunEvent{
-					RunID:   runID,
-					Type:    EventNodeFailed,
-					NodeID:  node.NodeID,
-					Attempt: res.attempt,
-					Payload: p,
+					RunID:      runID,
+					Type:       EventNodeFailed,
+					WorkflowID: wfID, // <<< added
+					NodeID:     node.NodeID,
+					Attempt:    res.attempt,
+					Payload:    p,
 				})
 
 				run.Status = RunStatusFailed
@@ -523,13 +524,17 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 				return err
 			}
 
-			p, _ := json.Marshal(map[string]any{"output": json.RawMessage(res.output)})
+			payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, res.attempt, cloneRaw(res.output))
+			if err != nil {
+				return err
+			}
 			_, _ = r.store.AppendEvent(RunEvent{
-				RunID:   runID,
-				Type:    EventNodeFinished,
-				NodeID:  node.NodeID,
-				Attempt: res.attempt,
-				Payload: p,
+				RunID:      runID,
+				Type:       EventNodeFinished,
+				WorkflowID: wfID,
+				NodeID:     node.NodeID,
+				Attempt:    res.attempt,
+				Payload:    payload,
 			})
 
 			outputs[res.nodeID] = cloneRaw(res.output)

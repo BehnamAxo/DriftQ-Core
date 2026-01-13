@@ -25,18 +25,11 @@ type ArtifactRef struct {
 }
 
 type ArtifactMeta struct {
-	ArtifactID   string            `json:"artifact_id"`
-	Sha256       string            `json:"sha256"`
-	ContentType  string            `json:"content_type,omitempty"`
-	Size         int64             `json:"size"`
-	CreatedAt    time.Time         `json:"created_at"`
-	RunID        string            `json:"run_id,omitempty"`
-	WorkflowID   string            `json:"workflow_id,omitempty"`
-	NodeID       string            `json:"node_id,omitempty"`
-	Attempt      int               `json:"attempt,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Description  string            `json:"description,omitempty"`
-	OriginalName string            `json:"original_name,omitempty"`
+	ArtifactID  string    `json:"artifact_id"`
+	Sha256      string    `json:"sha256"`
+	ContentType string    `json:"content_type,omitempty"`
+	Size        int64     `json:"size"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type ArtifactStore interface {
