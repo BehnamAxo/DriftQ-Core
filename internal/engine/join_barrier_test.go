@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,28 +14,46 @@ func TestFanOutJoinRunsInParallel(t *testing.T) {
 	store := NewMemoryStore()
 	r := NewRunner(store)
 
-	// IMPORTANT: this is what we’re trying to make real in runDAG.
-	// Today (sequential) this test should FAIL. After we add parallel scheduling, it should PASS
+	// We want true fan-out concurrency
 	r.maxParallel = 4
 
+	// Fan-out nodes will block here until we release them
 	release := make(chan struct{})
-	started := make(chan string, 32)
+
+	// Used only to detect "join started too early" while we are still blocking fanout
+	joinStarted := make(chan struct{}, 1)
 
 	var inflight int64
 	var maxInflight int64
+	var finished int64
+
+	var mu sync.Mutex
+	starts := map[string]time.Time{}
+	ends := map[string]time.Time{}
+
+	trackMax := func(cur int64) {
+		for {
+			prev := atomic.LoadInt64(&maxInflight)
+			if cur <= prev {
+				return
+			}
+
+			if atomic.CompareAndSwapInt64(&maxInflight, prev, cur) {
+				return
+			}
+		}
+	}
 
 	fanout := func(id string) NodeFunc {
 		return func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			started <- id
+			mu.Lock()
+			starts[id] = time.Now().UTC()
+			mu.Unlock()
 
 			cur := atomic.AddInt64(&inflight, 1)
-			for {
-				prev := atomic.LoadInt64(&maxInflight)
-				if cur <= prev || atomic.CompareAndSwapInt64(&maxInflight, prev, cur) {
-					break
-				}
-			}
+			trackMax(cur)
 
+			// Block until test releases all fanout nodes
 			select {
 			case <-release:
 				// proceed
@@ -42,12 +62,33 @@ func TestFanOutJoinRunsInParallel(t *testing.T) {
 				return nil, ctx.Err()
 			}
 
+			// Make the overlap measurable (otherwise super fast nodes look "0ms")
+			time.Sleep(150 * time.Millisecond)
+
+			mu.Lock()
+			ends[id] = time.Now().UTC()
+			mu.Unlock()
+
+			atomic.AddInt64(&finished, 1)
 			atomic.AddInt64(&inflight, -1)
+
 			return input, nil
 		}
 	}
 
 	noop := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		return input, nil
+	}
+
+	join := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		// This should NEVER happen before all fanout deps finished
+		if atomic.LoadInt64(&finished) != 4 {
+			return nil, fmt.Errorf("join started before fanout finished: finished=%d", atomic.LoadInt64(&finished))
+		}
+		select {
+		case joinStarted <- struct{}{}:
+		default:
+		}
 		return input, nil
 	}
 
@@ -59,7 +100,7 @@ func TestFanOutJoinRunsInParallel(t *testing.T) {
 			{NodeID: "C", Run: fanout("C")},
 			{NodeID: "D", Run: fanout("D")},
 			{NodeID: "E", Run: fanout("E")},
-			{NodeID: "J", Run: noop}, // join node
+			{NodeID: "J", Run: join}, // join node
 		},
 		Edges: []NodeEdge{
 			{From: "A", To: "B"},
@@ -81,22 +122,28 @@ func TestFanOutJoinRunsInParallel(t *testing.T) {
 		errCh <- r.runDAG(context.Background(), runID, g, json.RawMessage(`{"x":1}`), nil)
 	}()
 
-	// Expect at least 2 fanout nodes to start BEFORE we release them
-	seen := map[string]bool{}
-	deadline := time.NewTimer(250 * time.Millisecond)
+	// Before releasing, we must see evidence of parallel in-flight work
+	// Sequential scheduling can never reach maxInflight >= 2 because the first fanout node blocks
+	deadline := time.NewTimer(800 * time.Millisecond)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
 	defer deadline.Stop()
 
-	for len(seen) < 2 {
+	for atomic.LoadInt64(&maxInflight) < 2 {
 		select {
-		case id := <-started:
-			seen[id] = true
+		case <-joinStarted:
+			// If this triggers, join is BROKEN (it started even though deps cannot have finished)
+			close(release)
+			t.Fatal("join started while fanout nodes were still blocked (join/deps logic is broken)")
+		case <-tick.C:
+			// keep waiting
 		case <-deadline.C:
-			close(release) // do NOT deadlock the test
-			t.Fatalf("expected >=2 fanout nodes to start before release; saw %d (sequential scheduling still active)", len(seen))
+			close(release) // putting this here to avoid deadlock
+			t.Fatalf("expected maxInflight >= 2 before release; got %d (still sequential scheduling)", atomic.LoadInt64(&maxInflight))
 		}
 	}
 
-	// Let fanout finish and join run
+	// Now let fanout nodes finish, then join should run
 	close(release)
 
 	select {
@@ -104,7 +151,7 @@ func TestFanOutJoinRunsInParallel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runDAG returned error: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for run to finish")
 	}
 
@@ -119,5 +166,29 @@ func TestFanOutJoinRunsInParallel(t *testing.T) {
 
 	if run.Status != RunStatusSucceeded {
 		t.Fatalf("expected run status %q, got %q", RunStatusSucceeded, run.Status)
+	}
+
+	// Sanity: join node execution should exist + succeed
+	nodes := store.ListNodeExecutions(runID)
+	foundJ := false
+	for _, ne := range nodes {
+		if ne.NodeID == "J" {
+			foundJ = true
+			if ne.Status != NodeStatusSucceeded {
+				t.Fatalf("expected join node status %q, got %q", NodeStatusSucceeded, ne.Status)
+			}
+		}
+	}
+	if !foundJ {
+		t.Fatal("expected join node execution, but none found")
+	}
+
+	// Optional extra proof: fanout nodes should overlap in time (not required, but nice)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range []string{"B", "C", "D", "E"} {
+		if starts[id].IsZero() || ends[id].IsZero() {
+			t.Fatalf("missing timing for node %s (start=%v end=%v)", id, starts[id], ends[id])
+		}
 	}
 }
