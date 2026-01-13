@@ -420,6 +420,15 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		return ErrRunCanceled
 	}
 
+	// so if cancel landed right at the end, don't overwrite it with SUCCEEDED
+	if cur, ok := r.store.GetRun(runID); ok && cur.Status == RunStatusCanceled {
+		r.logger.Info("run canceled; not marking succeeded",
+			"trace_id", traceID,
+			"run_id", runID,
+		)
+		return ErrRunCanceled
+	}
+
 	// finish run success
 	end := time.Now().UTC()
 	run.Status = RunStatusSucceeded
