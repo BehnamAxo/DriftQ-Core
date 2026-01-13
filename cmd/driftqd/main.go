@@ -341,6 +341,13 @@ func main() {
 		return json.RawMessage(`{"ok":true}`), nil
 	})
 
+	reg.Register("delay_once_2s", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		if engine.AttemptFrom(ctx) <= 1 {
+			return nil, engine.Delay(2*time.Second, "demo delay once")
+		}
+		return json.RawMessage(`{"ok":true,"after":"delay"}`), nil
+	})
+
 	runner.SetHandlerRegistry(reg)
 
 	rootMux := http.NewServeMux()

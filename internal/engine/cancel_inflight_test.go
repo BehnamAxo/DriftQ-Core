@@ -24,7 +24,7 @@ func TestCancelInterruptsInflightRun(t *testing.T) {
 	var startedOnce sync.Once
 	var doneOnce sync.Once
 
-	// ctx-aware long work: this is what proves "interrupt in-flight" is real.
+	// ctx-aware long work: this is what proves "interrupt in-flight" is real
 	reg.Register("ctx_sleep_long", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		startedOnce.Do(func() { close(startedCh) })
 
@@ -111,6 +111,7 @@ func TestCancelInterruptsInflightRun(t *testing.T) {
 	if st.Run.RunID == "" {
 		t.Fatalf("missing run in state response: %s", stateBody)
 	}
+
 	if st.Run.Status != RunStatusCanceled {
 		t.Fatalf("expected run status %q, got %q; state=%s", RunStatusCanceled, st.Run.Status, stateBody)
 	}

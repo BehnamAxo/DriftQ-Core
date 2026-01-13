@@ -84,6 +84,7 @@ const (
 const (
 	RunStatusQueued    RunStatus = "queued"
 	RunStatusRunning   RunStatus = "running"
+	RunStatusWaiting   RunStatus = "waiting"
 	RunStatusSucceeded RunStatus = "succeeded"
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCanceled  RunStatus = "canceled"
@@ -92,6 +93,7 @@ const (
 const (
 	NodeStatusQueued    NodeStatus = "queued"
 	NodeStatusRunning   NodeStatus = "running"
+	NodeStatusWaiting   NodeStatus = "waiting"
 	NodeStatusSucceeded NodeStatus = "succeeded"
 	NodeStatusFailed    NodeStatus = "failed"
 	NodeStatusCanceled  NodeStatus = "canceled"
@@ -109,7 +111,7 @@ const (
 
 func (s RunStatus) Valid() bool {
 	switch s {
-	case RunStatusQueued, RunStatusRunning, RunStatusSucceeded, RunStatusFailed, RunStatusCanceled:
+	case RunStatusQueued, RunStatusRunning, RunStatusWaiting, RunStatusSucceeded, RunStatusFailed, RunStatusCanceled:
 		return true
 
 	default:
@@ -119,8 +121,9 @@ func (s RunStatus) Valid() bool {
 
 func (s NodeStatus) Valid() bool {
 	switch s {
-	case NodeStatusQueued, NodeStatusRunning, NodeStatusSucceeded, NodeStatusFailed, NodeStatusCanceled:
+	case NodeStatusQueued, NodeStatusRunning, NodeStatusWaiting, NodeStatusSucceeded, NodeStatusFailed, NodeStatusCanceled:
 		return true
+
 	default:
 		return false
 	}

@@ -80,21 +80,19 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 		prevNodes := r.store.ListNodeExecutions(runID)
 		for _, ne := range prevNodes {
-			// track max attempt per node (even for failed/running records)
+			// track max attempt per node (even for failed/running/waiting records)
 			if ne.Attempt > maxAttempt[ne.NodeID] {
 				maxAttempt[ne.NodeID] = ne.Attempt
 			}
 
 			if ne.Status == NodeStatusSucceeded {
 				done[ne.NodeID] = ne
-				// IMPORTANT: reuse stored output so downstream inputs are correct
 				if len(ne.Output) > 0 {
 					outputs[ne.NodeID] = cloneRaw(ne.Output)
 				}
 			}
 		}
 	} else {
-		// fresh run
 		run = Run{
 			RunID:        runID,
 			WorkflowID:   wfID,
@@ -145,7 +143,7 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		startedJustNow = true
 	}
 
-	// If we are resuming a failed run, clear EndedAt
+	// If we are resuming a failed/waiting run, clear EndedAt
 	if run.Status != RunStatusRunning {
 		run.EndedAt = nil
 	}
@@ -174,6 +172,15 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 	r.logger.Info("run started", "trace_id", traceID, "run_id", runID)
 
+	// ---- per-run cancelable context so /run-cancel can interrupt in-flight node.Run ----
+	runCtx, runCancel := context.WithCancel(ctx)
+	r.setRunCancel(runID, runCancel)
+	defer func() {
+		r.clearRunCancel(runID)
+		runCancel()
+	}()
+	// -------------------------------------------------------------------------------
+
 	// Ready queue = nodes with indegree 0 AND not already succeeded
 	var ready []string
 	for id, deg := range inDegree {
@@ -197,7 +204,7 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		}
 
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			end := time.Now().UTC()
 			run.Status = RunStatusCanceled
 			run.EndedAt = &end
@@ -216,7 +223,7 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 					}
 					return end.Sub(*run.StartedAt).Milliseconds()
 				}(),
-				"err", ctx.Err(),
+				"err", runCtx.Err(),
 			)
 
 			_ = r.store.UpdateRun(run)
@@ -225,7 +232,7 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 				Type:    EventRunFinished,
 				Payload: json.RawMessage(`{"status":"canceled"}`),
 			})
-			return ctx.Err()
+			return runCtx.Err()
 		default:
 		}
 
@@ -238,9 +245,7 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			return ErrGraphInvalid
 		}
 
-		// Build node input:
-		// - root: initialInput
-		// - otherwise: {"depID": depOutput, ...} in a stable dep order
+		// Build node input
 		var nodeInput json.RawMessage
 		deps := parents[nodeID]
 		if len(deps) == 0 {
@@ -248,16 +253,13 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		} else {
 			sort.Slice(deps, func(i, j int) bool { return nodeIndex[deps[i]] < nodeIndex[deps[j]] })
 			agg := make(map[string]json.RawMessage, len(deps))
-
 			for _, depID := range deps {
 				agg[depID] = cloneRaw(outputs[depID])
 			}
-
 			b, err := json.Marshal(agg)
 			if err != nil {
 				return err
 			}
-
 			nodeInput = json.RawMessage(b)
 		}
 
@@ -266,8 +268,8 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		if prev := maxAttempt[node.NodeID]; prev > 0 {
 			attempt = prev + 1
 		}
-
 		maxAttempt[node.NodeID] = attempt
+
 		nodeStart := time.Now().UTC()
 
 		r.logger.Info("node started",
@@ -292,6 +294,7 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 				"trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
 			return err
 		}
+
 		_, _ = r.store.AppendEvent(RunEvent{
 			RunID:      runID,
 			Type:       EventNodeStarted,
@@ -300,27 +303,88 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			Attempt:    attempt,
 		})
 
-		// stepCtx := WithAttempt(ctx, attempt)
-		// out, err := node.Run(stepCtx, cloneRaw(nodeInput))
+		// IMPORTANT: base execution context COMES from runCtx so external cancel can interrupt the node
+		stepCtx := WithAttempt(runCtx, attempt)
 
-		stepCtx := WithAttempt(ctx, attempt)
-
-		runCtx := stepCtx
+		execCtx := stepCtx
 		cancelFn := func() {}
 		if node.TimeoutMS > 0 {
-			runCtx, cancelFn = context.WithTimeout(stepCtx, time.Duration(node.TimeoutMS)*time.Millisecond)
+			execCtx, cancelFn = context.WithTimeout(stepCtx, time.Duration(node.TimeoutMS)*time.Millisecond)
 		}
-		defer cancelFn()
 
-		out, err := node.Run(runCtx, cloneRaw(nodeInput))
+		out, err := node.Run(execCtx, cloneRaw(nodeInput))
 
-		// If the context timed out, make sure we treat it as the failure reason.
-		if runCtx.Err() == context.DeadlineExceeded {
+		// Always release timer resources immediately (NOT defer inside loop)
+		cancelFn()
+
+		// If the context timed out, treat it as the failure reason.
+		if execCtx.Err() == context.DeadlineExceeded {
 			err = context.DeadlineExceeded
 		}
 
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
+
+		// ---- Section durable delay -> WAITING + TimerScheduled ----
+		var de *DelayError
+		if err != nil && errors.As(err, &de) {
+			// if canceled while node was running, do not schedule timers / overwrite
+			if isCanceled() {
+				return ErrRunCanceled
+			}
+
+			now := time.Now().UTC()
+			fireAt := now.Add(de.After)
+
+			// mark node waiting
+			ne.Status = NodeStatusWaiting
+			ne.EndedAt = &now
+			ne.Error = ""
+			_ = r.store.UpsertNodeExecution(ne)
+
+			// schedule timer (durable)
+			_ = r.store.UpsertTimer(Timer{
+				RunID:      runID,
+				WorkflowID: wfID,
+				NodeID:     node.NodeID,
+				Attempt:    attempt,
+				Status:     TimerScheduled,
+				FireAt:     fireAt,
+				CreatedAt:  now,
+				Reason:     de.Reason,
+			})
+
+			p, _ := json.Marshal(map[string]any{
+				"fire_at": fireAt.Format(time.RFC3339Nano),
+				"reason":  de.Reason,
+			})
+			_, _ = r.store.AppendEvent(RunEvent{
+				RunID:      runID,
+				Type:       EventTimerScheduled,
+				WorkflowID: wfID,
+				NodeID:     node.NodeID,
+				Attempt:    attempt,
+				Payload:    p,
+			})
+
+			// mark run waiting
+			run.Status = RunStatusWaiting
+			run.EndedAt = nil
+			_ = r.store.UpdateRun(run)
+
+			r.logger.Info("node waiting (timer scheduled)",
+				"trace_id", traceID,
+				"run_id", runID,
+				"step_id", node.NodeID,
+				"attempt", attempt,
+				"fire_at", fireAt.Format(time.RFC3339Nano),
+				"reason", de.Reason,
+			)
+
+			// stop scheduling; resume will happen when timer fires
+			return nil
+		}
+		// --------------------------------------------------------
 
 		if err != nil {
 			// if canceled while this node was running, do NOT overwrite the run as FAILED
@@ -417,11 +481,9 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 		// unlock children
 		for _, child := range children[nodeID] {
-			// if child already done from a previous run, ignore
 			if _, isDone := done[child]; isDone {
 				continue
 			}
-
 			inDegree[child]--
 			if inDegree[child] == 0 {
 				ready = append(ready, child)
@@ -433,15 +495,6 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 	// if canceled while last node was running, do NOT overwrite as SUCCEEDED
 	if isCanceled() {
-		return ErrRunCanceled
-	}
-
-	// so if cancel landed right at the end, don't overwrite it with SUCCEEDED
-	if cur, ok := r.store.GetRun(runID); ok && cur.Status == RunStatusCanceled {
-		r.logger.Info("run canceled; not marking succeeded",
-			"trace_id", traceID,
-			"run_id", runID,
-		)
 		return ErrRunCanceled
 	}
 

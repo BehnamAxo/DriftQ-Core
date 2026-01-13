@@ -179,8 +179,17 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			Reason string `json:"reason"`
 		}
 
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		body.RunID = strings.TrimSpace(body.RunID)
+		body.Reason = strings.TrimSpace(body.Reason)
+		if body.RunID == "" {
+			http.Error(w, "run_id is required", http.StatusBadRequest)
 			return
 		}
 
@@ -192,6 +201,11 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		ctx := WithTraceID(r.Context(), traceID)
 
 		if err := runner.CancelRun(ctx, body.RunID, body.Reason); err != nil {
+			// Treat not-found as 404; everything else as 400 for now.
+			if errors.Is(err, ErrRunNotFound) {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
 			http.Error(w, "cancel failed: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -203,5 +217,36 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"trace_id": traceID,
 			"canceled": true,
 		})
+	})
+
+	mux.HandleFunc("/debug/run-state", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		runID := r.URL.Query().Get("run_id")
+		if runID == "" {
+			http.Error(w, "missing run_id", http.StatusBadRequest)
+			return
+		}
+
+		run, ok := runner.store.GetRun(runID)
+		if !ok {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+
+		resp := map[string]any{
+			"ok":     true,
+			"run":    run,
+			"nodes":  runner.store.ListNodeExecutions(runID),
+			"events": runner.store.ListEvents(runID),
+			"timers": runner.store.ListTimers(runID),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 }
