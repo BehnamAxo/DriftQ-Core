@@ -23,8 +23,17 @@ func (r *Runner) buildNodeFinishedPayload(ctx context.Context, runID, workflowID
 		return json.Marshal(NodeFinishedPayload{Output: cloneRaw(out)})
 	}
 
-	ref, meta, err := r.PutArtifact(ctx, cloneRaw(out), ArtifactMeta{
+	ref, meta, err := r.PutArtifact(ctx, out, ArtifactMeta{
 		ContentType: "application/json",
+
+		RunID:      runID,
+		WorkflowID: workflowID,
+		NodeID:     nodeID,
+		Attempt:    attempt,
+
+		Labels: map[string]string{
+			"kind": "node_output",
+		},
 	})
 
 	if err != nil {
