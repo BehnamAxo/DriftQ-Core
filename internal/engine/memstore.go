@@ -262,6 +262,7 @@ func cloneTimer(t Timer) Timer {
 		x := (*t.FiredAt).UTC()
 		out.FiredAt = &x
 	}
+
 	out.FireAt = out.FireAt.UTC()
 	out.CreatedAt = out.CreatedAt.UTC()
 	return out
@@ -274,6 +275,7 @@ func (s *MemoryStore) UpsertTimer(t Timer) error {
 	if _, ok := s.runs[t.RunID]; !ok {
 		return ErrRunNotFound
 	}
+
 	if s.timers == nil {
 		s.timers = make(map[string]Timer)
 	}
@@ -291,6 +293,7 @@ func (s *MemoryStore) GetTimer(runID, nodeID string, attempt int) (Timer, bool) 
 	if !ok {
 		return Timer{}, false
 	}
+
 	return cloneTimer(t), true
 }
 
@@ -329,6 +332,7 @@ func (s *MemoryStore) ListDueTimers(now time.Time) []Timer {
 		if t.Status != TimerScheduled {
 			continue
 		}
+
 		if !t.FireAt.After(now) { // fire_at <= now
 			out = append(out, cloneTimer(t))
 		}

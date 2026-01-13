@@ -299,6 +299,28 @@ func main() {
 	runner := engine.NewRunner(runStore)
 	runner.SetLogger(logger)
 
+	// fire due timers in the background (durable delay primitive)
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-appCtx.Done():
+				return
+			case t := <-ticker.C:
+				n, err := runner.FireDueTimers(t.UTC())
+				if err != nil {
+					logger.Error("timers: fire due timers failed", "err", err)
+					continue
+				}
+				if n > 0 {
+					logger.Info("timers: fired", "count", n)
+				}
+			}
+		}
+	}()
+
 	// global registry used by /debug/run-spec (and replay) :)
 	reg := engine.NewHandlerRegistry()
 
