@@ -16,6 +16,10 @@ func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, init
 }
 
 func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage) error {
+	return r.runDAGWithCache(ctx, runID, g, initialInput, spec, nil)
+}
+
+func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage, cache map[string]replayCacheEntry) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
@@ -232,6 +236,66 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			// pop next ready node
 			nodeID := ready[0]
 			ready = ready[1:]
+
+			// ---------------- REPLAY CACHE SHORT-CIRCUIT TODO: maybe pull this out of this function later ----------------
+			if cache != nil {
+				if hit, ok := cache[nodeID]; ok {
+					now := time.Now().UTC()
+
+					// Keep events consistent
+					_, _ = r.store.AppendEvent(RunEvent{
+						RunID:      runID,
+						Type:       EventNodeStarted,
+						WorkflowID: wfID,
+						NodeID:     nodeID,
+						Attempt:    hit.Attempt,
+					})
+
+					ne := NodeExecution{
+						RunID:      runID,
+						WorkflowID: wfID,
+						NodeID:     nodeID,
+						Attempt:    hit.Attempt,
+						Status:     NodeStatusSucceeded,
+						StartedAt:  &now,
+						EndedAt:    &now,
+						Output:     cloneRaw(hit.Output),
+					}
+					_ = r.store.UpsertNodeExecution(ne)
+
+					payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, nodeID, hit.Attempt, cloneRaw(hit.Output))
+					if err != nil {
+						return err
+					}
+
+					_, _ = r.store.AppendEvent(RunEvent{
+						RunID:      runID,
+						Type:       EventNodeFinished,
+						WorkflowID: wfID,
+						NodeID:     nodeID,
+						Attempt:    hit.Attempt,
+						Payload:    payload,
+					})
+
+					// store output for downstream deps
+					outputs[nodeID] = cloneRaw(hit.Output)
+
+					// unlock children
+					for _, child := range children[nodeID] {
+						if _, isDone := done[child]; isDone {
+							continue
+						}
+						inDegree[child]--
+						if inDegree[child] == 0 {
+							ready = append(ready, child)
+						}
+					}
+
+					sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
+					continue
+				}
+			}
+			// ------------------------------------------------------------
 
 			node, ok := nodeByID[nodeID]
 			if !ok {

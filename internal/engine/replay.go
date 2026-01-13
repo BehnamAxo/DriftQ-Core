@@ -14,66 +14,89 @@ const (
 	ReplayTimeTravel ReplayMode = "time_travel"
 )
 
-func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) error {
-	run, ok := r.store.GetRun(runID)
+func (r *Runner) Replay(ctx context.Context, srcRunID string, mode ReplayMode) (string, error) {
+	src, ok := r.store.GetRun(srcRunID)
 	if !ok {
-		return ErrRunNotFound
+		return "", ErrRunNotFound
 	}
 
 	// 1) Prefer cached executable graph (fast path)
-	exec, ok := r.getGraph(run.WorkflowID)
+	exec, ok := r.getGraph(src.WorkflowID)
 
 	// 2) If cache miss, fall back to stored spec (replay-after-restart)
 	if !ok {
-		if len(run.Spec) == 0 {
-			return fmt.Errorf(
+		if len(src.Spec) == 0 {
+			return "", fmt.Errorf(
 				"replay: workflow graph not found in memory and no stored spec for workflow_id=%q (run_id=%q)",
-				run.WorkflowID, runID,
+				src.WorkflowID, srcRunID,
 			)
 		}
 		if r.registry == nil {
-			return fmt.Errorf(
+			return "", fmt.Errorf(
 				"replay: no cached graph; runner has no handler registry to compile stored spec (workflow_id=%q run_id=%q)",
-				run.WorkflowID, runID,
+				src.WorkflowID, srcRunID,
 			)
 		}
 
-		g, spec, err := ParseWorkflowSpecJSON(run.Spec)
+		g, spec, err := ParseWorkflowSpecJSON(src.Spec)
 		if err != nil {
-			return fmt.Errorf("replay: parse stored spec failed: %w", err)
+			return "", fmt.Errorf("replay: parse stored spec failed: %w", err)
 		}
 
 		exec2, err := CompileSpecToExecutable(spec, g, r.registry)
 		if err != nil {
-			return fmt.Errorf("replay: compile stored spec failed: %w", err)
+			return "", fmt.Errorf("replay: compile stored spec failed: %w", err)
 		}
 
 		// keep IDs aligned so logs + caches are sane
-		if exec2.ID == "" || exec2.ID != run.WorkflowID {
-			exec2.ID = run.WorkflowID
+		if exec2.ID == "" || exec2.ID != src.WorkflowID {
+			exec2.ID = src.WorkflowID
 		}
 
-		r.rememberGraph(run.WorkflowID, exec2)
+		r.rememberGraph(src.WorkflowID, exec2)
 		exec = exec2
 	}
 
-	// Prefer stored initial input; fallback to the first root node's recorded input
+	// Prefer stored initial input; fallback to root node's recorded input
 	initial := json.RawMessage(nil)
-	if len(run.InitialInput) > 0 {
-		initial = cloneRaw(run.InitialInput)
+	if len(src.InitialInput) > 0 {
+		initial = cloneRaw(src.InitialInput)
 	} else {
-		initial = r.initialInputFromRun(runID, exec)
+		initial = r.initialInputFromRun(srcRunID, exec)
 	}
 
 	switch mode {
 	case ReplayTimeTravel:
-		return r.runDAG(ctx, runID, exec, initial, run.Spec)
+		// New run id for the replay so we don't clobber the original run
+		replayRunID := fmt.Sprintf("%s-replay-%s", srcRunID, NewTraceID())
+
+		// Create the new run
+		newRun := Run{
+			RunID:        replayRunID,
+			WorkflowID:   src.WorkflowID,
+			Status:       RunStatusQueued,
+			Spec:         cloneRaw(src.Spec),
+			InitialInput: cloneRaw(initial),
+		}
+		if err := r.store.CreateRun(newRun); err != nil {
+			return "", err
+		}
+		_, _ = r.store.AppendEvent(RunEvent{RunID: replayRunID, Type: EventRunCreated})
+
+		// Build replay cache from the source run
+		cache := r.buildReplayCacheFromRun(srcRunID)
+
+		// Run new DAG, but reuse cached outputs instead of calling handlers
+		if err := r.runDAGWithCache(ctx, replayRunID, exec, initial, src.Spec, cache); err != nil {
+			return replayRunID, err
+		}
+		return replayRunID, nil
 
 	case ReplayLive:
-		return errors.New("replay live not implemented yet")
+		return "", errors.New("replay live not implemented yet")
 
 	default:
-		return fmt.Errorf("unknown replay mode: %q", mode)
+		return "", fmt.Errorf("unknown replay mode: %q", mode)
 	}
 }
 
@@ -82,7 +105,6 @@ func (r *Runner) initialInputFromRun(runID string, g WorkflowGraph) json.RawMess
 	for _, n := range g.Nodes {
 		incoming[n.NodeID] = 0
 	}
-
 	for _, e := range g.Edges {
 		incoming[e.To]++
 	}
@@ -94,7 +116,6 @@ func (r *Runner) initialInputFromRun(runID string, g WorkflowGraph) json.RawMess
 			break
 		}
 	}
-
 	if rootID == "" {
 		return json.RawMessage(`{}`)
 	}
@@ -107,11 +128,9 @@ func (r *Runner) initialInputFromRun(runID string, g WorkflowGraph) json.RawMess
 		if ne.NodeID != rootID {
 			continue
 		}
-
 		if len(ne.Input) == 0 {
 			continue
 		}
-
 		if ne.Attempt < bestAttempt {
 			bestAttempt = ne.Attempt
 			best = cloneRaw(ne.Input)
@@ -121,6 +140,5 @@ func (r *Runner) initialInputFromRun(runID string, g WorkflowGraph) json.RawMess
 	if best == nil {
 		return json.RawMessage(`{}`)
 	}
-
 	return best
 }
