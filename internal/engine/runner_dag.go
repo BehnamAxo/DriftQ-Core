@@ -300,8 +300,24 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			Attempt:    attempt,
 		})
 
+		// stepCtx := WithAttempt(ctx, attempt)
+		// out, err := node.Run(stepCtx, cloneRaw(nodeInput))
+
 		stepCtx := WithAttempt(ctx, attempt)
-		out, err := node.Run(stepCtx, cloneRaw(nodeInput))
+
+		runCtx := stepCtx
+		cancelFn := func() {}
+		if node.TimeoutMS > 0 {
+			runCtx, cancelFn = context.WithTimeout(stepCtx, time.Duration(node.TimeoutMS)*time.Millisecond)
+		}
+		defer cancelFn()
+
+		out, err := node.Run(runCtx, cloneRaw(nodeInput))
+
+		// If the context timed out, make sure we treat it as the failure reason.
+		if runCtx.Err() == context.DeadlineExceeded {
+			err = context.DeadlineExceeded
+		}
 
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)

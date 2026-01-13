@@ -21,8 +21,9 @@ type Workflow struct {
 }
 
 type NodeDef struct {
-	NodeID string
-	Run    NodeFunc
+	NodeID    string
+	Run       NodeFunc
+	TimeoutMS int
 }
 
 type Runner struct {
@@ -33,14 +34,17 @@ type Runner struct {
 	mu       sync.RWMutex
 	graphs   map[string]WorkflowGraph // workflow_id -> graph
 	registry *HandlerRegistry
+
+	maxParallel int // for join/fan out later
 }
 
 func NewRunner(store Store) *Runner {
 	return &Runner{
-		store:   store,
-		metrics: NewEngineMetrics(),
-		logger:  slog.Default(),
-		graphs:  make(map[string]WorkflowGraph),
+		store:       store,
+		metrics:     NewEngineMetrics(),
+		logger:      slog.Default(),
+		graphs:      make(map[string]WorkflowGraph),
+		maxParallel: 1,
 	}
 }
 
@@ -360,4 +364,18 @@ func (r *Runner) SetHandlerRegistry(reg *HandlerRegistry) {
 
 func (r *Runner) HandlerRegistry() *HandlerRegistry {
 	return r.registry
+}
+
+func (r *Runner) SetMaxParallelism(n int) {
+	if n < 1 {
+		n = 1
+	}
+	r.maxParallel = n
+}
+
+func (r *Runner) MaxParallelism() int {
+	if r.maxParallel < 1 {
+		return 1
+	}
+	return r.maxParallel
 }

@@ -11,9 +11,10 @@ type NodeEdge struct {
 
 // Represents a DAG
 type WorkflowGraph struct {
-	ID    string     `json:"id" yaml:"id"`
-	Nodes []NodeDef  `json:"nodes" yaml:"nodes"`
-	Edges []NodeEdge `json:"edges" yaml:"edges"`
+	ID        string     `json:"id" yaml:"id"`
+	Nodes     []NodeDef  `json:"nodes" yaml:"nodes"`
+	Edges     []NodeEdge `json:"edges" yaml:"edges"`
+	TimeoutMS int        `json:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"`
 }
 
 func (g *WorkflowGraph) Validate() error {
