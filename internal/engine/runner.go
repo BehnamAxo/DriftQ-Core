@@ -13,6 +13,8 @@ var (
 	ErrNodeFailed = errors.New("node failed")
 )
 
+const DefaultArtifactInlineLimit = 8 * 1024 // TODO: need to tweak it later
+
 type NodeFunc func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
 
 type Workflow struct {
@@ -37,16 +39,21 @@ type Runner struct {
 
 	maxParallel int // for join/fan out later
 	cancels     map[string]context.CancelFunc
+
+	// v2.5 artifacts
+	artifacts           ArtifactStore // optional (nil = inline only)
+	artifactInlineLimit int           // bytes, if output > limit => store as artifact + emit ref
 }
 
 func NewRunner(store Store) *Runner {
 	return &Runner{
-		store:       store,
-		metrics:     NewEngineMetrics(),
-		logger:      slog.Default(),
-		graphs:      make(map[string]WorkflowGraph),
-		maxParallel: 1,
-		cancels:     make(map[string]context.CancelFunc),
+		store:               store,
+		metrics:             NewEngineMetrics(),
+		logger:              slog.Default(),
+		graphs:              make(map[string]WorkflowGraph),
+		maxParallel:         1,
+		cancels:             make(map[string]context.CancelFunc),
+		artifactInlineLimit: DefaultArtifactInlineLimit,
 	}
 }
 
@@ -411,4 +418,20 @@ func (r *Runner) cancelRunContext(runID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (r *Runner) SetArtifactStore(s ArtifactStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.artifacts = s
+}
+
+func (r *Runner) SetArtifactInlineLimit(n int) {
+	if n < 0 {
+		n = 0
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.artifactInlineLimit = n
 }
