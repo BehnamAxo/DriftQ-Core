@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -141,6 +142,18 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		ctx := WithTraceID(r.Context(), traceID)
 
 		if err := runner.RunSpecJSON(ctx, runID, body.Spec, reg, body.Input); err != nil {
+			// If the run was canceled, that's not a "bad request". so we treat it as a successful control outcome
+			if errors.Is(err, ErrRunCanceled) || errors.Is(err, context.Canceled) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":       true,
+					"canceled": true,
+					"run_id":   runID,
+					"trace_id": traceID,
+				})
+				return
+			}
+
 			http.Error(w, "run failed: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -151,5 +164,89 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"run_id":   runID,
 			"trace_id": traceID,
 		})
+	})
+
+	// Body: { "run_id": "..." , "reason": "optional reason" }
+	mux.HandleFunc("/debug/run-cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var body struct {
+			RunID  string `json:"run_id"`
+			Reason string `json:"reason"`
+		}
+
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		body.RunID = strings.TrimSpace(body.RunID)
+		body.Reason = strings.TrimSpace(body.Reason)
+		if body.RunID == "" {
+			http.Error(w, "run_id is required", http.StatusBadRequest)
+			return
+		}
+
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = NewTraceID()
+		}
+
+		ctx := WithTraceID(r.Context(), traceID)
+
+		if err := runner.CancelRun(ctx, body.RunID, body.Reason); err != nil {
+			// Treat not-found as 404; everything else as 400 for now.
+			if errors.Is(err, ErrRunNotFound) {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "cancel failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":       true,
+			"run_id":   body.RunID,
+			"trace_id": traceID,
+			"canceled": true,
+		})
+	})
+
+	mux.HandleFunc("/debug/run-state", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		runID := r.URL.Query().Get("run_id")
+		if runID == "" {
+			http.Error(w, "missing run_id", http.StatusBadRequest)
+			return
+		}
+
+		run, ok := runner.store.GetRun(runID)
+		if !ok {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+
+		resp := map[string]any{
+			"ok":     true,
+			"run":    run,
+			"nodes":  runner.store.ListNodeExecutions(runID),
+			"events": runner.store.ListEvents(runID),
+			"timers": runner.store.ListTimers(runID),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 }

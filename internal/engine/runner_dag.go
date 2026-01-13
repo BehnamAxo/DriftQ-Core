@@ -9,6 +9,7 @@ import (
 )
 
 var ErrGraphInvalid = errors.New("invalid workflow graph")
+var ErrRunCanceled = errors.New("run canceled")
 
 func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) error {
 	return r.runDAG(ctx, runID, g, initialInput, nil)
@@ -23,6 +24,12 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 	if traceID == "" {
 		traceID = NewTraceID()
 		ctx = WithTraceID(ctx, traceID)
+	}
+
+	// helper: external cancel (via CancelRun) should stop scheduling ASAP
+	isCanceled := func() bool {
+		cur, ok := r.store.GetRun(runID)
+		return ok && cur.Status == RunStatusCanceled
 	}
 
 	nodeByID := map[string]NodeDef{}
@@ -61,25 +68,31 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 			return nil
 		}
 
+		if run.Status == RunStatusCanceled {
+			r.logger.Info("run already canceled; skipping",
+				"trace_id", traceID,
+				"run_id", runID,
+			)
+			return ErrRunCanceled
+		}
+
 		r.logger.Info("resuming existing run", "trace_id", traceID, "run_id", runID)
 
 		prevNodes := r.store.ListNodeExecutions(runID)
 		for _, ne := range prevNodes {
-			// track max attempt per node (even for failed/running records)
+			// track max attempt per node (even for failed/running/waiting records)
 			if ne.Attempt > maxAttempt[ne.NodeID] {
 				maxAttempt[ne.NodeID] = ne.Attempt
 			}
 
 			if ne.Status == NodeStatusSucceeded {
 				done[ne.NodeID] = ne
-				// IMPORTANT: reuse stored output so downstream inputs are correct
 				if len(ne.Output) > 0 {
 					outputs[ne.NodeID] = cloneRaw(ne.Output)
 				}
 			}
 		}
 	} else {
-		// fresh run
 		run = Run{
 			RunID:        runID,
 			WorkflowID:   wfID,
@@ -130,12 +143,21 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 		startedJustNow = true
 	}
 
-	// If we are resuming a failed run, clear EndedAt
+	// If we are resuming a failed/waiting run, clear EndedAt
 	if run.Status != RunStatusRunning {
 		run.EndedAt = nil
 	}
-	run.Status = RunStatusRunning
 
+	// If someone canceled via store before we begin, do not flip to RUNNING.
+	if isCanceled() {
+		r.logger.Info("run already canceled; skipping start",
+			"trace_id", traceID,
+			"run_id", runID,
+		)
+		return ErrRunCanceled
+	}
+
+	run.Status = RunStatusRunning
 	if err := r.store.UpdateRun(run); err != nil {
 		r.logger.Error("run start update failed", "trace_id", traceID, "run_id", runID, "err", err)
 		return err
@@ -150,6 +172,15 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 	r.logger.Info("run started", "trace_id", traceID, "run_id", runID)
 
+	// ---- per-run cancelable context so /run-cancel can interrupt in-flight node.Run ----
+	runCtx, runCancel := context.WithCancel(ctx)
+	r.setRunCancel(runID, runCancel)
+	defer func() {
+		r.clearRunCancel(runID)
+		runCancel()
+	}()
+	// -------------------------------------------------------------------------------
+
 	// Ready queue = nodes with indegree 0 AND not already succeeded
 	var ready []string
 	for id, deg := range inDegree {
@@ -162,220 +193,380 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 
 	sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 
-	for len(ready) > 0 {
-		select {
-		case <-ctx.Done():
-			end := time.Now().UTC()
-			run.Status = RunStatusCanceled
-			run.EndedAt = &end
+	// FAN-OUT / FAN-IN section: run up to r.maxParallel ready nodes concurrently, and "join" via indegree unlocks
+	type nodeResult struct {
+		nodeID  string
+		attempt int
+		started time.Time
+		ended   time.Time
+		input   json.RawMessage
+		output  json.RawMessage
+		err     error
+	}
 
-			if run.StartedAt != nil {
-				r.metrics.ObserveRun(run.Status, end.Sub(*run.StartedAt))
+	maxPar := r.maxParallel
+	if maxPar < 1 {
+		maxPar = 1
+	}
+
+	resCh := make(chan nodeResult, maxPar)
+	running := 0
+
+	stopScheduling := false
+	externalCanceled := false // true if CancelRun already set run.Status=canceled in store
+	failed := false
+	waiting := false
+	var failErr error
+
+	for len(ready) > 0 || running > 0 {
+		// External cancel (CancelRun) should interrupt inflight and stop scheduling
+		if !stopScheduling && isCanceled() {
+			externalCanceled = true
+			stopScheduling = true
+			// interrupt inflight node.Run(ctx)
+			runCancel()
+		}
+
+		// Start as many ready nodes as we can
+		for !stopScheduling && running < maxPar && len(ready) > 0 {
+			// pop next ready node
+			nodeID := ready[0]
+			ready = ready[1:]
+
+			node, ok := nodeByID[nodeID]
+			if !ok {
+				return ErrGraphInvalid
 			}
 
-			r.logger.Info("run finished",
-				"trace_id", traceID,
-				"run_id", runID,
-				"status", run.Status,
-				"duration_ms", func() int64 {
-					if run.StartedAt == nil {
-						return 0
-					}
-					return end.Sub(*run.StartedAt).Milliseconds()
-				}(),
-				"err", ctx.Err(),
-			)
+			var nodeInput json.RawMessage
+			deps := parents[nodeID]
+			if len(deps) == 0 {
+				nodeInput = cloneRaw(initialInput)
+			} else {
+				sort.Slice(deps, func(i, j int) bool { return nodeIndex[deps[i]] < nodeIndex[deps[j]] })
+				agg := make(map[string]json.RawMessage, len(deps))
 
-			_ = r.store.UpdateRun(run)
-			_, _ = r.store.AppendEvent(RunEvent{
-				RunID:   runID,
-				Type:    EventRunFinished,
-				Payload: json.RawMessage(`{"status":"canceled"}`),
-			})
-			return ctx.Err()
-		default:
-		}
+				for _, depID := range deps {
+					agg[depID] = cloneRaw(outputs[depID])
+				}
 
-		// pop next ready node
-		nodeID := ready[0]
-		ready = ready[1:]
+				b, err := json.Marshal(agg)
+				if err != nil {
+					return err
+				}
 
-		node, ok := nodeByID[nodeID]
-		if !ok {
-			return ErrGraphInvalid
-		}
-
-		// Build node input:
-		// - root: initialInput
-		// - otherwise: {"depID": depOutput, ...} in a stable dep order
-		var nodeInput json.RawMessage
-		deps := parents[nodeID]
-		if len(deps) == 0 {
-			nodeInput = cloneRaw(initialInput)
-		} else {
-			sort.Slice(deps, func(i, j int) bool { return nodeIndex[deps[i]] < nodeIndex[deps[j]] })
-			agg := make(map[string]json.RawMessage, len(deps))
-
-			for _, depID := range deps {
-				agg[depID] = cloneRaw(outputs[depID])
+				nodeInput = json.RawMessage(b)
 			}
 
-			b, err := json.Marshal(agg)
-			if err != nil {
-				return err
+			// increment attempt on replay
+			attempt := 1
+			if prev := maxAttempt[node.NodeID]; prev > 0 {
+				attempt = prev + 1
 			}
+			maxAttempt[node.NodeID] = attempt
 
-			nodeInput = json.RawMessage(b)
-		}
+			nodeStart := time.Now().UTC()
 
-		// increment attempt on replay
-		attempt := 1
-		if prev := maxAttempt[node.NodeID]; prev > 0 {
-			attempt = prev + 1
-		}
-
-		maxAttempt[node.NodeID] = attempt
-		nodeStart := time.Now().UTC()
-
-		r.logger.Info("node started",
-			"trace_id", traceID,
-			"run_id", runID,
-			"step_id", node.NodeID,
-			"attempt", attempt,
-		)
-
-		ne := NodeExecution{
-			RunID:      runID,
-			WorkflowID: wfID,
-			NodeID:     node.NodeID,
-			Attempt:    attempt,
-			Status:     NodeStatusRunning,
-			StartedAt:  &nodeStart,
-			Input:      cloneRaw(nodeInput),
-		}
-
-		if err := r.store.UpsertNodeExecution(ne); err != nil {
-			r.logger.Error("node upsert start failed",
-				"trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
-			return err
-		}
-		_, _ = r.store.AppendEvent(RunEvent{
-			RunID:      runID,
-			Type:       EventNodeStarted,
-			WorkflowID: wfID,
-			NodeID:     node.NodeID,
-			Attempt:    attempt,
-		})
-
-		stepCtx := WithAttempt(ctx, attempt)
-		out, err := node.Run(stepCtx, cloneRaw(nodeInput))
-
-		// out, err := node.Run(ctx, cloneRaw(nodeInput))
-		nodeEnd := time.Now().UTC()
-		nodeDur := nodeEnd.Sub(nodeStart)
-
-		if err != nil {
-			r.metrics.ObserveNode(node.NodeID, false, nodeDur)
-
-			r.logger.Error("node failed",
+			r.logger.Info("node started",
 				"trace_id", traceID,
 				"run_id", runID,
 				"step_id", node.NodeID,
 				"attempt", attempt,
-				"duration_ms", nodeDur.Milliseconds(),
-				"err", err,
 			)
 
-			ne.Status = NodeStatusFailed
-			ne.EndedAt = &nodeEnd
-			ne.Error = err.Error()
-			_ = r.store.UpsertNodeExecution(ne)
-
-			p, _ := json.Marshal(map[string]any{"error": err.Error()})
-			_, _ = r.store.AppendEvent(RunEvent{
-				RunID:   runID,
-				Type:    EventNodeFailed,
-				NodeID:  node.NodeID,
-				Attempt: attempt,
-				Payload: p,
-			})
-
-			run.Status = RunStatusFailed
-			run.EndedAt = &nodeEnd
-
-			if run.StartedAt != nil {
-				r.metrics.ObserveRun(run.Status, nodeEnd.Sub(*run.StartedAt))
+			ne := NodeExecution{
+				RunID:      runID,
+				WorkflowID: wfID,
+				NodeID:     node.NodeID,
+				Attempt:    attempt,
+				Status:     NodeStatusRunning,
+				StartedAt:  &nodeStart,
+				Input:      cloneRaw(nodeInput),
 			}
 
-			r.logger.Info("run finished",
-				"trace_id", traceID,
-				"run_id", runID,
-				"status", run.Status,
-				"duration_ms", func() int64 {
-					if run.StartedAt == nil {
-						return 0
-					}
-					return nodeEnd.Sub(*run.StartedAt).Milliseconds()
-				}(),
-			)
+			if err := r.store.UpsertNodeExecution(ne); err != nil {
+				r.logger.Error("node upsert start failed",
+					"trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
+				return err
+			}
 
-			_ = r.store.UpdateRun(run)
-			p2, _ := json.Marshal(map[string]any{"status": "failed", "failed_node": node.NodeID})
 			_, _ = r.store.AppendEvent(RunEvent{
-				RunID:   runID,
-				Type:    EventRunFinished,
-				Payload: p2,
+				RunID:      runID,
+				Type:       EventNodeStarted,
+				WorkflowID: wfID,
+				NodeID:     node.NodeID,
+				Attempt:    attempt,
 			})
 
-			return ErrNodeFailed
+			// capture locals for goroutine
+			n := node
+			inp := cloneRaw(nodeInput)
+			started := nodeStart
+			att := attempt
+
+			running++
+
+			go func() {
+				// IMPORTANT: base execution context COMES from runCtx so external cancel can interrupt the node
+				stepCtx := WithAttempt(runCtx, att)
+
+				execCtx := stepCtx
+				cancelFn := func() {}
+				if n.TimeoutMS > 0 {
+					execCtx, cancelFn = context.WithTimeout(stepCtx, time.Duration(n.TimeoutMS)*time.Millisecond)
+				}
+
+				out, err := n.Run(execCtx, cloneRaw(inp))
+
+				// Always release timer resources immediately
+				cancelFn()
+
+				// If the context timed out, treat it as the failure reason
+				if execCtx.Err() == context.DeadlineExceeded {
+					err = context.DeadlineExceeded
+				}
+
+				resCh <- nodeResult{
+					nodeID:  n.NodeID,
+					attempt: att,
+					started: started,
+					ended:   time.Now().UTC(),
+					input:   cloneRaw(inp),
+					output:  cloneRaw(out),
+					err:     err,
+				}
+			}()
 		}
 
-		// success
-		r.metrics.ObserveNode(node.NodeID, true, nodeDur)
-
-		r.logger.Info("node finished",
-			"trace_id", traceID,
-			"run_id", runID,
-			"step_id", node.NodeID,
-			"attempt", attempt,
-			"duration_ms", nodeDur.Milliseconds(),
-		)
-
-		ne.Status = NodeStatusSucceeded
-		ne.EndedAt = &nodeEnd
-		ne.Output = cloneRaw(out)
-		if err := r.store.UpsertNodeExecution(ne); err != nil {
-			r.logger.Error("node upsert finish failed",
-				"trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
-			return err
+		// If nothing inflight, loop back to schedule (or exit if ready empty)
+		if running == 0 {
+			continue
 		}
 
-		p, _ := json.Marshal(map[string]any{"output": json.RawMessage(out)})
-		_, _ = r.store.AppendEvent(RunEvent{
-			RunID:   runID,
-			Type:    EventNodeFinished,
-			NodeID:  node.NodeID,
-			Attempt: attempt,
-			Payload: p,
-		})
+		// Wait for either a node result or cancel
+		select {
+		case <-runCtx.Done():
+			// If CancelRun already updated store, don't overwrite; just stop scheduling and drain
+			if isCanceled() {
+				externalCanceled = true
+			}
+			stopScheduling = true
+			// ensure inflight sees cancel
+			runCancel()
 
-		// store output for downstream deps
-		outputs[nodeID] = cloneRaw(out)
+		case res := <-resCh:
+			running--
 
-		// unlock children
-		for _, child := range children[nodeID] {
-			// if child already done from a previous run, ignore
-			if _, isDone := done[child]; isDone {
+			node := nodeByID[res.nodeID]
+			nodeEnd := res.ended
+			nodeDur := nodeEnd.Sub(res.started)
+
+			// If externally canceled, mark node as canceled (don’t fail run)
+			if externalCanceled || isCanceled() {
+				ne := NodeExecution{
+					RunID:      runID,
+					WorkflowID: wfID,
+					NodeID:     node.NodeID,
+					Attempt:    res.attempt,
+					Status:     NodeStatusCanceled,
+					StartedAt:  &res.started,
+					EndedAt:    &nodeEnd,
+					Input:      cloneRaw(res.input),
+				}
+				_ = r.store.UpsertNodeExecution(ne)
+				stopScheduling = true
 				continue
 			}
 
-			inDegree[child]--
-			if inDegree[child] == 0 {
-				ready = append(ready, child)
-			}
-		}
+			// ---- durable delay => WAITING + TimerScheduled ----
+			var de *DelayError
+			if res.err != nil && errors.As(res.err, &de) {
+				now := time.Now().UTC()
+				fireAt := now.Add(de.After)
 
-		sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
+				ne := NodeExecution{
+					RunID:      runID,
+					WorkflowID: wfID,
+					NodeID:     node.NodeID,
+					Attempt:    res.attempt,
+					Status:     NodeStatusWaiting,
+					StartedAt:  &res.started,
+					EndedAt:    &now,
+					Input:      cloneRaw(res.input),
+				}
+				_ = r.store.UpsertNodeExecution(ne)
+
+				_ = r.store.UpsertTimer(Timer{
+					RunID:      runID,
+					WorkflowID: wfID,
+					NodeID:     node.NodeID,
+					Attempt:    res.attempt,
+					Status:     TimerScheduled,
+					FireAt:     fireAt,
+					CreatedAt:  now,
+					Reason:     de.Reason,
+				})
+
+				p, _ := json.Marshal(map[string]any{
+					"fire_at": fireAt.Format(time.RFC3339Nano),
+					"reason":  de.Reason,
+				})
+				_, _ = r.store.AppendEvent(RunEvent{
+					RunID:      runID,
+					Type:       EventTimerScheduled,
+					WorkflowID: wfID,
+					NodeID:     node.NodeID,
+					Attempt:    res.attempt,
+					Payload:    p,
+				})
+
+				run.Status = RunStatusWaiting
+				run.EndedAt = nil
+				_ = r.store.UpdateRun(run)
+
+				r.logger.Info("node waiting (timer scheduled)",
+					"trace_id", traceID,
+					"run_id", runID,
+					"step_id", node.NodeID,
+					"attempt", res.attempt,
+					"fire_at", fireAt.Format(time.RFC3339Nano),
+					"reason", de.Reason,
+				)
+
+				// stop scheduling new work, but still drain inflight cleanly
+				waiting = true
+				stopScheduling = true
+				continue
+			}
+			// ---------------------------------------------------
+
+			if res.err != nil {
+				r.metrics.ObserveNode(node.NodeID, false, nodeDur)
+
+				r.logger.Error("node failed",
+					"trace_id", traceID,
+					"run_id", runID,
+					"step_id", node.NodeID,
+					"attempt", res.attempt,
+					"duration_ms", nodeDur.Milliseconds(),
+					"err", res.err,
+				)
+
+				ne := NodeExecution{
+					RunID:      runID,
+					WorkflowID: wfID,
+					NodeID:     node.NodeID,
+					Attempt:    res.attempt,
+					Status:     NodeStatusFailed,
+					StartedAt:  &res.started,
+					EndedAt:    &nodeEnd,
+					Input:      cloneRaw(res.input),
+					Error:      res.err.Error(),
+				}
+				_ = r.store.UpsertNodeExecution(ne)
+
+				p, _ := json.Marshal(map[string]any{"error": res.err.Error()})
+				_, _ = r.store.AppendEvent(RunEvent{
+					RunID:   runID,
+					Type:    EventNodeFailed,
+					NodeID:  node.NodeID,
+					Attempt: res.attempt,
+					Payload: p,
+				})
+
+				run.Status = RunStatusFailed
+				run.EndedAt = &nodeEnd
+
+				if run.StartedAt != nil {
+					r.metrics.ObserveRun(run.Status, nodeEnd.Sub(*run.StartedAt))
+				}
+
+				_ = r.store.UpdateRun(run)
+				p2, _ := json.Marshal(map[string]any{"status": "failed", "failed_node": node.NodeID})
+				_, _ = r.store.AppendEvent(RunEvent{
+					RunID:   runID,
+					Type:    EventRunFinished,
+					Payload: p2,
+				})
+
+				// fail fast: interrupt inflight
+				failed = true
+				failErr = ErrNodeFailed
+				stopScheduling = true
+				runCancel()
+				continue
+			}
+
+			// success
+			r.metrics.ObserveNode(node.NodeID, true, nodeDur)
+
+			r.logger.Info("node finished",
+				"trace_id", traceID,
+				"run_id", runID,
+				"step_id", node.NodeID,
+				"attempt", res.attempt,
+				"duration_ms", nodeDur.Milliseconds(),
+			)
+
+			ne := NodeExecution{
+				RunID:      runID,
+				WorkflowID: wfID,
+				NodeID:     node.NodeID,
+				Attempt:    res.attempt,
+				Status:     NodeStatusSucceeded,
+				StartedAt:  &res.started,
+				EndedAt:    &nodeEnd,
+				Input:      cloneRaw(res.input),
+				Output:     cloneRaw(res.output),
+			}
+			if err := r.store.UpsertNodeExecution(ne); err != nil {
+				return err
+			}
+
+			p, _ := json.Marshal(map[string]any{"output": json.RawMessage(res.output)})
+			_, _ = r.store.AppendEvent(RunEvent{
+				RunID:   runID,
+				Type:    EventNodeFinished,
+				NodeID:  node.NodeID,
+				Attempt: res.attempt,
+				Payload: p,
+			})
+
+			outputs[res.nodeID] = cloneRaw(res.output)
+
+			// unlock children
+			for _, child := range children[res.nodeID] {
+				if _, isDone := done[child]; isDone {
+					continue
+				}
+				inDegree[child]--
+				if inDegree[child] == 0 {
+					ready = append(ready, child)
+				}
+			}
+
+			sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
+		}
+	}
+
+	// If we failed, return the failure
+	if failed {
+		return failErr
+	}
+
+	// If CancelRun already set status in store, just return canceled (do not overwrite anything)
+	if externalCanceled || isCanceled() {
+		return ErrRunCanceled
+	}
+
+	// If we entered WAITING (timer scheduled), return nil (resume happens on timer fire)
+	if waiting || run.Status == RunStatusWaiting {
+		return nil
+	}
+
+	// if canceled while last node was running, do NOT overwrite as SUCCEEDED
+	if isCanceled() {
+		return ErrRunCanceled
 	}
 
 	// finish run success

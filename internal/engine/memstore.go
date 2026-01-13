@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -25,6 +26,12 @@ type Store interface {
 
 	AppendEvent(e RunEvent) (RunEvent, error)
 	ListEvents(runID string) []RunEvent
+
+	// Timers
+	UpsertTimer(t Timer) error
+	GetTimer(runID, nodeID string, attempt int) (Timer, bool)
+	ListTimers(runID string) []Timer
+	ListDueTimers(now time.Time) []Timer
 }
 
 type nodeKey struct {
@@ -39,6 +46,7 @@ type MemoryStore struct {
 	nodes   map[nodeKey]NodeExecution
 	events  map[string][]RunEvent
 	nextSeq map[string]int64
+	timers  map[string]Timer
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -47,6 +55,7 @@ func NewMemoryStore() *MemoryStore {
 		nodes:   make(map[nodeKey]NodeExecution),
 		events:  make(map[string][]RunEvent),
 		nextSeq: make(map[string]int64),
+		timers:  make(map[string]Timer),
 	}
 }
 
@@ -238,5 +247,109 @@ func cloneNodeExecution(n NodeExecution) NodeExecution {
 func cloneRunEvent(e RunEvent) RunEvent {
 	out := e
 	out.Payload = cloneRaw(e.Payload)
+	return out
+}
+
+// ---- Timers ----
+
+func timerKey(runID, nodeID string, attempt int) string {
+	return fmt.Sprintf("%s|%s|%d", runID, nodeID, attempt)
+}
+
+func cloneTimer(t Timer) Timer {
+	out := t
+	if t.FiredAt != nil {
+		x := (*t.FiredAt).UTC()
+		out.FiredAt = &x
+	}
+
+	out.FireAt = out.FireAt.UTC()
+	out.CreatedAt = out.CreatedAt.UTC()
+	return out
+}
+
+func (s *MemoryStore) UpsertTimer(t Timer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.runs[t.RunID]; !ok {
+		return ErrRunNotFound
+	}
+
+	if s.timers == nil {
+		s.timers = make(map[string]Timer)
+	}
+
+	k := timerKey(t.RunID, t.NodeID, t.Attempt)
+	s.timers[k] = cloneTimer(t)
+	return nil
+}
+
+func (s *MemoryStore) GetTimer(runID, nodeID string, attempt int) (Timer, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	t, ok := s.timers[timerKey(runID, nodeID, attempt)]
+	if !ok {
+		return Timer{}, false
+	}
+
+	return cloneTimer(t), true
+}
+
+func (s *MemoryStore) ListTimers(runID string) []Timer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]Timer, 0)
+	for _, t := range s.timers {
+		if t.RunID == runID {
+			out = append(out, cloneTimer(t))
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FireAt.Equal(out[j].FireAt) {
+			if out[i].NodeID == out[j].NodeID {
+				return out[i].Attempt < out[j].Attempt
+			}
+			return out[i].NodeID < out[j].NodeID
+		}
+		return out[i].FireAt.Before(out[j].FireAt)
+	})
+
+	return out
+}
+
+func (s *MemoryStore) ListDueTimers(now time.Time) []Timer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now = now.UTC()
+
+	out := make([]Timer, 0)
+	for _, t := range s.timers {
+		if t.Status != TimerScheduled {
+			continue
+		}
+
+		if !t.FireAt.After(now) { // fire_at <= now
+			out = append(out, cloneTimer(t))
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FireAt.Equal(out[j].FireAt) {
+			if out[i].RunID == out[j].RunID {
+				if out[i].NodeID == out[j].NodeID {
+					return out[i].Attempt < out[j].Attempt
+				}
+				return out[i].NodeID < out[j].NodeID
+			}
+			return out[i].RunID < out[j].RunID
+		}
+		return out[i].FireAt.Before(out[j].FireAt)
+	})
+
 	return out
 }

@@ -10,6 +10,7 @@ import (
 type RunStatus string
 type NodeStatus string
 type RunEventType string
+type TimerStatus string
 
 type Run struct {
 	RunID      string    `json:"run_id"`
@@ -54,9 +55,36 @@ type NodeExecution struct {
 	Error string `json:"error,omitempty"`
 }
 
+type Timer struct {
+	RunID      string      `json:"run_id"`
+	WorkflowID string      `json:"workflow_id,omitempty"`
+	NodeID     string      `json:"node_id"` // step_id
+	Attempt    int         `json:"attempt"`
+	Status     TimerStatus `json:"status"`
+
+	FireAt    time.Time  `json:"fire_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	FiredAt   *time.Time `json:"fired_at,omitempty"`
+
+	Reason string `json:"reason,omitempty"`
+}
+
+const (
+	TimerScheduled TimerStatus = "scheduled"
+	TimerFired     TimerStatus = "fired"
+	TimerCanceled  TimerStatus = "canceled"
+)
+
+const (
+	EventTimerScheduled RunEventType = "timer_scheduled"
+	EventTimerFired     RunEventType = "timer_fired"
+	EventTimerCanceled  RunEventType = "timer_canceled"
+)
+
 const (
 	RunStatusQueued    RunStatus = "queued"
 	RunStatusRunning   RunStatus = "running"
+	RunStatusWaiting   RunStatus = "waiting"
 	RunStatusSucceeded RunStatus = "succeeded"
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCanceled  RunStatus = "canceled"
@@ -65,6 +93,7 @@ const (
 const (
 	NodeStatusQueued    NodeStatus = "queued"
 	NodeStatusRunning   NodeStatus = "running"
+	NodeStatusWaiting   NodeStatus = "waiting"
 	NodeStatusSucceeded NodeStatus = "succeeded"
 	NodeStatusFailed    NodeStatus = "failed"
 	NodeStatusCanceled  NodeStatus = "canceled"
@@ -82,7 +111,7 @@ const (
 
 func (s RunStatus) Valid() bool {
 	switch s {
-	case RunStatusQueued, RunStatusRunning, RunStatusSucceeded, RunStatusFailed, RunStatusCanceled:
+	case RunStatusQueued, RunStatusRunning, RunStatusWaiting, RunStatusSucceeded, RunStatusFailed, RunStatusCanceled:
 		return true
 
 	default:
@@ -92,8 +121,9 @@ func (s RunStatus) Valid() bool {
 
 func (s NodeStatus) Valid() bool {
 	switch s {
-	case NodeStatusQueued, NodeStatusRunning, NodeStatusSucceeded, NodeStatusFailed, NodeStatusCanceled:
+	case NodeStatusQueued, NodeStatusRunning, NodeStatusWaiting, NodeStatusSucceeded, NodeStatusFailed, NodeStatusCanceled:
 		return true
+
 	default:
 		return false
 	}

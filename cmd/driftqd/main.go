@@ -299,14 +299,37 @@ func main() {
 	runner := engine.NewRunner(runStore)
 	runner.SetLogger(logger)
 
+	// fire due timers in the background (durable delay primitive)
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-appCtx.Done():
+				return
+			case t := <-ticker.C:
+				n, err := runner.FireDueTimers(t.UTC())
+				if err != nil {
+					logger.Error("timers: fire due timers failed", "err", err)
+					continue
+				}
+				if n > 0 {
+					logger.Info("timers: fired", "count", n)
+				}
+			}
+		}
+	}()
+
 	// global registry used by /debug/run-spec (and replay) :)
 	reg := engine.NewHandlerRegistry()
 
 	reg.Register("noop", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		return input, nil
 	})
-	reg.Register("sleep_50ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-		time.Sleep(50 * time.Millisecond)
+
+	reg.Register("sleep_500ms", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		time.Sleep(500 * time.Millisecond)
 		return input, nil
 	})
 
@@ -316,6 +339,13 @@ func main() {
 			return nil, errors.New("boom")
 		}
 		return json.RawMessage(`{"ok":true}`), nil
+	})
+
+	reg.Register("delay_once_2s", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		if engine.AttemptFrom(ctx) <= 1 {
+			return nil, engine.Delay(2*time.Second, "demo delay once")
+		}
+		return json.RawMessage(`{"ok":true,"after":"delay"}`), nil
 	})
 
 	runner.SetHandlerRegistry(reg)
