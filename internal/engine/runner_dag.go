@@ -520,14 +520,17 @@ func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, init
 				Input:      cloneRaw(res.input),
 				Output:     cloneRaw(res.output),
 			}
+
 			if err := r.store.UpsertNodeExecution(ne); err != nil {
 				return err
 			}
 
-			payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, res.attempt, cloneRaw(res.output))
+			// Build payload that either inlines output or stores it as an artifact
+			payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, res.attempt, res.output)
 			if err != nil {
 				return err
 			}
+
 			_, _ = r.store.AppendEvent(RunEvent{
 				RunID:      runID,
 				Type:       EventNodeFinished,
