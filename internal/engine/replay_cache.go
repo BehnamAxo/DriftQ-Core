@@ -16,9 +16,11 @@ func (r *Runner) buildReplayCacheFromRun(srcRunID string) map[string]replayCache
 		if ne.Status != NodeStatusSucceeded {
 			continue
 		}
+
 		if len(ne.Output) == 0 {
 			continue
 		}
+
 		cur, ok := cache[ne.NodeID]
 		if !ok || ne.Attempt > cur.Attempt {
 			cache[ne.NodeID] = replayCacheEntry{

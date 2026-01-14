@@ -11,12 +11,19 @@ import (
 var ErrGraphInvalid = errors.New("invalid workflow graph")
 var ErrRunCanceled = errors.New("run canceled")
 
+// Public wrapper (existing API)
 func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) error {
 	return r.runDAG(ctx, runID, g, initialInput, nil)
 }
 
+// Internal wrapper (old behavior, no replay cache)
 func (r *Runner) runDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage) error {
-	return r.runDAGWithCache(ctx, runID, g, initialInput, spec, nil)
+	return r.runDAGWithReplayCache(ctx, runID, g, initialInput, spec, nil)
+}
+
+// Internal wrapper (time-travel replay uses this)
+func (r *Runner) runDAGWithReplayCache(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage, cache map[string]replayCacheEntry) error {
+	return r.runDAGWithCache(ctx, runID, g, initialInput, spec, cache)
 }
 
 func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage, spec json.RawMessage, cache map[string]replayCacheEntry) error {
@@ -237,71 +244,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			nodeID := ready[0]
 			ready = ready[1:]
 
-			// ---------------- REPLAY CACHE SHORT-CIRCUIT TODO: maybe pull this out of this function later ----------------
-			if cache != nil {
-				if hit, ok := cache[nodeID]; ok {
-					now := time.Now().UTC()
-
-					// Keep events consistent
-					_, _ = r.store.AppendEvent(RunEvent{
-						RunID:      runID,
-						Type:       EventNodeStarted,
-						WorkflowID: wfID,
-						NodeID:     nodeID,
-						Attempt:    hit.Attempt,
-					})
-
-					ne := NodeExecution{
-						RunID:      runID,
-						WorkflowID: wfID,
-						NodeID:     nodeID,
-						Attempt:    hit.Attempt,
-						Status:     NodeStatusSucceeded,
-						StartedAt:  &now,
-						EndedAt:    &now,
-						Output:     cloneRaw(hit.Output),
-					}
-					_ = r.store.UpsertNodeExecution(ne)
-
-					payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, nodeID, hit.Attempt, cloneRaw(hit.Output))
-					if err != nil {
-						return err
-					}
-
-					_, _ = r.store.AppendEvent(RunEvent{
-						RunID:      runID,
-						Type:       EventNodeFinished,
-						WorkflowID: wfID,
-						NodeID:     nodeID,
-						Attempt:    hit.Attempt,
-						Payload:    payload,
-					})
-
-					// store output for downstream deps
-					outputs[nodeID] = cloneRaw(hit.Output)
-
-					// unlock children
-					for _, child := range children[nodeID] {
-						if _, isDone := done[child]; isDone {
-							continue
-						}
-						inDegree[child]--
-						if inDegree[child] == 0 {
-							ready = append(ready, child)
-						}
-					}
-
-					sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
-					continue
-				}
-			}
-			// ------------------------------------------------------------
-
 			node, ok := nodeByID[nodeID]
 			if !ok {
 				return ErrGraphInvalid
 			}
 
+			// Build input
 			var nodeInput json.RawMessage
 			deps := parents[nodeID]
 			if len(deps) == 0 {
@@ -309,16 +257,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			} else {
 				sort.Slice(deps, func(i, j int) bool { return nodeIndex[deps[i]] < nodeIndex[deps[j]] })
 				agg := make(map[string]json.RawMessage, len(deps))
-
 				for _, depID := range deps {
 					agg[depID] = cloneRaw(outputs[depID])
 				}
-
 				b, err := json.Marshal(agg)
 				if err != nil {
 					return err
 				}
-
 				nodeInput = json.RawMessage(b)
 			}
 
@@ -331,6 +276,89 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 			nodeStart := time.Now().UTC()
 
+			// ---------------- REPLAY CACHE SHORT-CIRCUIT ----------------
+			if cache != nil {
+				if entry, ok := cache[node.NodeID]; ok {
+					// synthetic "instant" completion
+					nodeEnd := nodeStart
+					nodeDur := nodeEnd.Sub(nodeStart)
+
+					r.logger.Info("node replay-cache hit",
+						"trace_id", traceID,
+						"run_id", runID,
+						"step_id", node.NodeID,
+						"attempt", attempt,
+						"cached_attempt", entry.Attempt,
+					)
+
+					// Emit started for consistent event stream
+					_, _ = r.store.AppendEvent(RunEvent{
+						RunID:      runID,
+						Type:       EventNodeStarted,
+						WorkflowID: wfID,
+						NodeID:     node.NodeID,
+						Attempt:    attempt,
+					})
+
+					out := cloneRaw(entry.Output)
+
+					// Persist succeeded immediately (no goroutine)
+					ne := NodeExecution{
+						RunID:      runID,
+						WorkflowID: wfID,
+						NodeID:     node.NodeID,
+						Attempt:    attempt,
+						Status:     NodeStatusSucceeded,
+						StartedAt:  &nodeStart,
+						EndedAt:    &nodeEnd,
+						Input:      cloneRaw(nodeInput),
+						Output:     out,
+					}
+					if err := r.store.UpsertNodeExecution(ne); err != nil {
+						return err
+					}
+
+					// IMPORTANT: mark as done so skip/indegree logic stays correct
+					done[node.NodeID] = ne
+
+					// Emit finished event (inline or artifact)
+					payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, attempt, out)
+					if err != nil {
+						return err
+					}
+					_, _ = r.store.AppendEvent(RunEvent{
+						RunID:      runID,
+						Type:       EventNodeFinished,
+						WorkflowID: wfID,
+						NodeID:     node.NodeID,
+						Attempt:    attempt,
+						Payload:    payload,
+					})
+
+					r.metrics.ObserveNode(node.NodeID, true, nodeDur)
+
+					// Make output available to downstream nodes
+					outputs[node.NodeID] = out
+
+					// unlock children
+					for _, child := range children[node.NodeID] {
+						if _, isDone := done[child]; isDone {
+							continue
+						}
+
+						inDegree[child]--
+						if inDegree[child] == 0 {
+							ready = append(ready, child)
+						}
+					}
+					sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
+
+					continue
+				}
+			}
+			// ------------------------------------------------------------
+
+			// Normal execution path (no cache hit)
 			r.logger.Info("node started",
 				"trace_id", traceID,
 				"run_id", runID,
@@ -347,7 +375,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				StartedAt:  &nodeStart,
 				Input:      cloneRaw(nodeInput),
 			}
-
 			if err := r.store.UpsertNodeExecution(ne); err != nil {
 				r.logger.Error("node upsert start failed",
 					"trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
@@ -371,7 +398,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			running++
 
 			go func() {
-				// IMPORTANT: base execution context COMES from runCtx so external cancel can interrupt the node
 				stepCtx := WithAttempt(runCtx, att)
 
 				execCtx := stepCtx
@@ -382,10 +408,8 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 				out, err := n.Run(execCtx, cloneRaw(inp))
 
-				// Always release timer resources immediately
 				cancelFn()
 
-				// If the context timed out, treat it as the failure reason
 				if execCtx.Err() == context.DeadlineExceeded {
 					err = context.DeadlineExceeded
 				}
@@ -533,7 +557,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				_, _ = r.store.AppendEvent(RunEvent{
 					RunID:      runID,
 					Type:       EventNodeFailed,
-					WorkflowID: wfID, // <<< added
+					WorkflowID: wfID,
 					NodeID:     node.NodeID,
 					Attempt:    res.attempt,
 					Payload:    p,
