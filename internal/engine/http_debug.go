@@ -4,13 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
 
-// Adds minimal observability endpoints
+type nodeStatusRow struct {
+	NodeID      string     `json:"node_id"`
+	Attempt     int        `json:"attempt"`
+	Status      string     `json:"status"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	EndedAt     *time.Time `json:"ended_at,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	HasInput    bool       `json:"has_input"`
+	HasOutput   bool       `json:"has_output"`
+	InputBytes  int        `json:"input_bytes,omitempty"`
+	OutputBytes int        `json:"output_bytes,omitempty"`
+}
+
+func traceIDFromRequest(req *http.Request) string {
+	tid := strings.TrimSpace(req.Header.Get("X-Trace-Id"))
+	if tid == "" {
+		tid = NewTraceID()
+	}
+	return tid
+}
+
 func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
+	// snapshot internal runner metrics (this is in-memory metrics, not Prometheus)
 	mux.HandleFunc("/debug/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -26,7 +49,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		_ = enc.Encode(snap)
 	})
 
-	// run a demo 2-node workflow to generate metrics quickly
+	// run a tiny 2-node DAG so you can generate runs/events/metrics quickly
 	mux.HandleFunc("/debug/run-demo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -34,50 +57,44 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		// Pull trace_id from the incoming request (set by middleware) and if it's missing, generate one so logs still correlate
-		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
-		if traceID == "" {
-			traceID = NewTraceID()
-		}
+		traceID := traceIDFromRequest(r)
+		ctx := WithTraceID(r.Context(), traceID)
 
-		// Node A: x = x + 1
 		nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			var m map[string]int
 			if err := json.Unmarshal(input, &m); err != nil {
 				return nil, err
 			}
-			time.Sleep(25 * time.Millisecond) // simulate work
+			time.Sleep(25 * time.Millisecond)
 			m["x"] = m["x"] + 1
 			return json.Marshal(m)
 		}
 
-		// Node B: x = x * 2
 		nodeB := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			var m map[string]int
 			if err := json.Unmarshal(input, &m); err != nil {
 				return nil, err
 			}
-			time.Sleep(40 * time.Millisecond) // simulate work
+			time.Sleep(40 * time.Millisecond)
 			m["x"] = m["x"] * 2
 			return json.Marshal(m)
 		}
 
-		wf := Workflow{
-			WorkflowID: "wf_demo",
+		g := WorkflowGraph{
+			ID: "wf_demo",
 			Nodes: []NodeDef{
 				{NodeID: "A", Run: nodeA},
 				{NodeID: "B", Run: nodeB},
+			},
+			Edges: []NodeEdge{
+				{From: "A", To: "B"},
 			},
 		}
 
 		runID := "demo-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 		initial := json.RawMessage(`{"x":1}`)
 
-		// IMPORTANT: run with engine trace context so runner logs use the same trace_id
-		ctx := WithTraceID(r.Context(), traceID)
-
-		err := runner.RunWorkflow(ctx, runID, wf, initial)
-		if err != nil {
+		if err := runner.RunDAG(ctx, runID, g, initial); err != nil {
 			http.Error(w, "run failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -90,7 +107,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
-	// Body is:
+	// Body:
 	// {
 	//   "run_id": "optional",
 	//   "spec": { ...workflow spec json... },
@@ -103,10 +120,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
-		if traceID == "" {
-			traceID = NewTraceID()
-		}
+		traceID := traceIDFromRequest(r)
 
 		var body struct {
 			RunID string          `json:"run_id"`
@@ -114,7 +128,9 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			Input json.RawMessage `json:"input"`
 		}
 
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -166,7 +182,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
-	// Body: { "run_id": "..." , "reason": "optional reason" }
+	// Body: { "run_id": "...", "reason": "optional" }
 	mux.HandleFunc("/debug/run-cancel", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -193,15 +209,10 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
-		if traceID == "" {
-			traceID = NewTraceID()
-		}
-
+		traceID := traceIDFromRequest(r)
 		ctx := WithTraceID(r.Context(), traceID)
 
 		if err := runner.CancelRun(ctx, body.RunID, body.Reason); err != nil {
-			// Treat not-found as 404; everything else as 400 for now.
 			if errors.Is(err, ErrRunNotFound) {
 				http.Error(w, "run not found", http.StatusNotFound)
 				return
@@ -219,6 +230,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
+	// Big dump: run + raw node executions + events + timers (for deep debugging)
 	mux.HandleFunc("/debug/run-state", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -226,7 +238,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		runID := r.URL.Query().Get("run_id")
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 		if runID == "" {
 			http.Error(w, "missing run_id", http.StatusBadRequest)
 			return
@@ -247,8 +259,13 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(resp)
 	})
+
+	// Small/fast summary: run + per-node status rows (this is what your CLI should use)
+	mux.HandleFunc("/debug/run", runner.handleDebugRun)
 
 	mux.HandleFunc("/debug/artifact-meta", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -263,29 +280,34 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
-		if traceID == "" {
-			traceID = NewTraceID()
-		}
+		traceID := traceIDFromRequest(r)
 		ctx := WithTraceID(r.Context(), traceID)
 
 		_, meta, err := runner.GetArtifact(ctx, artifactID)
 		if err != nil {
-			switch err {
-			case ErrInvalidArtifactID:
+			if errors.Is(err, ErrInvalidArtifactID) {
 				http.Error(w, "invalid artifact id", http.StatusBadRequest)
-			case ErrArtifactNotFound:
-				http.Error(w, "artifact not found", http.StatusNotFound)
-			case ErrArtifactStoreUnset:
-				http.Error(w, "artifact store not configured", http.StatusBadRequest)
-			default:
-				http.Error(w, "get artifact meta failed: "+err.Error(), http.StatusInternalServerError)
+				return
 			}
+
+			if errors.Is(err, ErrArtifactNotFound) {
+				http.Error(w, "artifact not found", http.StatusNotFound)
+				return
+			}
+
+			if errors.Is(err, ErrArtifactStoreUnset) {
+				http.Error(w, "artifact store not configured", http.StatusBadRequest)
+				return
+			}
+
+			http.Error(w, "get artifact meta failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{
 			"ok":          true,
 			"artifact_id": artifactID,
 			"meta":        meta,
@@ -306,24 +328,27 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
-		if traceID == "" {
-			traceID = NewTraceID()
-		}
+		traceID := traceIDFromRequest(r)
 		ctx := WithTraceID(r.Context(), traceID)
 
 		b, meta, err := runner.GetArtifact(ctx, artifactID)
 		if err != nil {
-			switch err {
-			case ErrInvalidArtifactID:
+			if errors.Is(err, ErrInvalidArtifactID) {
 				http.Error(w, "invalid artifact id", http.StatusBadRequest)
-			case ErrArtifactNotFound:
-				http.Error(w, "artifact not found", http.StatusNotFound)
-			case ErrArtifactStoreUnset:
-				http.Error(w, "artifact store not configured", http.StatusBadRequest)
-			default:
-				http.Error(w, "get artifact failed: "+err.Error(), http.StatusInternalServerError)
+				return
 			}
+
+			if errors.Is(err, ErrArtifactNotFound) {
+				http.Error(w, "artifact not found", http.StatusNotFound)
+				return
+			}
+
+			if errors.Is(err, ErrArtifactStoreUnset) {
+				http.Error(w, "artifact store not configured", http.StatusBadRequest)
+				return
+			}
+
+			http.Error(w, "get artifact failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -338,4 +363,95 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(b)
 	})
+
+	// (Optional helper endpoint: I can delete this later)
+	mux.HandleFunc("/debug/topics-create", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			http.Error(w, "missing name", http.StatusBadRequest)
+			return
+		}
+
+		partitions := 1
+		if p := strings.TrimSpace(r.URL.Query().Get("partitions")); p != "" {
+			fs := flag.NewFlagSet("topics-create", flag.ContinueOnError)
+			pi := fs.Int("partitions", 1, "")
+			_ = fs.Parse([]string{"-partitions=" + p})
+			partitions = *pi
+			if partitions < 1 {
+				http.Error(w, "partitions must be >= 1", http.StatusBadRequest)
+				return
+			}
+		}
+
+		// This endpoint is only here to help test the CLI
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"name":       name,
+			"partitions": partitions,
+			"note":       "use the real /v1/topics endpoint via driftqctl; this is just a helper",
+		})
+	})
+}
+
+func (r *Runner) handleDebugRun(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	runID := strings.TrimSpace(req.URL.Query().Get("run_id"))
+	if runID == "" {
+		http.Error(w, "missing run_id", http.StatusBadRequest)
+		return
+	}
+
+	run, ok := r.store.GetRun(runID)
+	if !ok {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
+	nodes := r.store.ListNodeExecutions(runID)
+
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].NodeID == nodes[j].NodeID {
+			return nodes[i].Attempt < nodes[j].Attempt
+		}
+		return nodes[i].NodeID < nodes[j].NodeID
+	})
+
+	out := make([]nodeStatusRow, 0, len(nodes))
+	for _, ne := range nodes {
+		out = append(out, nodeStatusRow{
+			NodeID:      ne.NodeID,
+			Attempt:     ne.Attempt,
+			Status:      string(ne.Status),
+			StartedAt:   ne.StartedAt,
+			EndedAt:     ne.EndedAt,
+			Error:       ne.Error,
+			HasInput:    len(ne.Input) > 0,
+			HasOutput:   len(ne.Output) > 0,
+			InputBytes:  len(ne.Input),
+			OutputBytes: len(ne.Output),
+		})
+	}
+
+	resp := map[string]any{
+		"ok":    true,
+		"run":   run,
+		"nodes": out,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(resp)
 }
