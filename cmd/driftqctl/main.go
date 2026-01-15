@@ -93,6 +93,9 @@ func cmdTopics(baseURL string, timeout time.Duration, args []string) error {
 		fmt.Printf("created topic %q partitions=%d\n", *name, *partitions)
 		return nil
 
+	case "runs":
+		return cmdRuns(baseURL, timeout, args[1:])
+
 	default:
 		return fmt.Errorf("topics: unknown subcommand %q (use: list|ls|create)", args[0])
 	}
@@ -188,6 +191,20 @@ func doPOST(baseURL string, timeout time.Duration, path string) (*http.Response,
 	}
 
 	// if CLI timeout provided
+	client := http.DefaultClient
+	if timeout > 0 {
+		client = &http.Client{Timeout: timeout}
+	}
+
+	return client.Do(req)
+}
+
+func doGET(baseURL string, timeout time.Duration, path string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	client := http.DefaultClient
 	if timeout > 0 {
 		client = &http.Client{Timeout: timeout}
