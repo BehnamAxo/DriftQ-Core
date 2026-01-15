@@ -31,9 +31,7 @@ func (r *Runner) buildNodeFinishedPayload(ctx context.Context, runID, workflowID
 		NodeID:     nodeID,
 		Attempt:    attempt,
 
-		Labels: map[string]string{
-			"kind": "node_output",
-		},
+		Labels: map[string]string{"kind": "step_output"},
 	})
 
 	if err != nil {

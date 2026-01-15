@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -208,6 +209,74 @@ func (s *LocalArtifactStore) Delete(ctx context.Context, artifactID string) erro
 	_ = os.Remove(metaPath)
 	_ = os.Remove(blobPath)
 	return nil
+}
+
+type PruneStats struct {
+	Considered int
+	Deleted    int
+}
+
+// Deletes artifacts whose meta.CreatedAt is strictly before cutoff
+func (s *LocalArtifactStore) PruneOlderThan(ctx context.Context, cutoff time.Time) (PruneStats, error) {
+	var stats PruneStats
+
+	metaRoot := filepath.Join(s.root, "meta")
+	if _, err := os.Stat(metaRoot); errors.Is(err, os.ErrNotExist) {
+		// Nothing to prune
+		return stats, nil
+	} else if err != nil {
+		return stats, err
+	}
+
+	err := filepath.WalkDir(metaRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+
+		// Respect caller cancellation
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		stats.Considered++
+
+		mb, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		var meta ArtifactMeta
+		if err := json.Unmarshal(mb, &meta); err != nil {
+			return fmt.Errorf("bad meta json at %s: %w", path, err)
+		}
+
+		// If CreatedAt is missing, skip (don’t delete unknown-age artifacts).
+		if meta.CreatedAt.IsZero() {
+			return nil
+		}
+
+		if meta.CreatedAt.Before(cutoff) {
+			artifactID := strings.TrimSuffix(d.Name(), ".json")
+			_ = s.Delete(ctx, artifactID) // best-effort
+			stats.Deleted++
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return stats, err
+	}
+
+	return stats, nil
 }
 
 // This guy writes data to a temp file in the same dir then renames
