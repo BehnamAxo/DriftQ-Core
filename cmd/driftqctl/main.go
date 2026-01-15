@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -39,20 +41,23 @@ func main() {
 }
 
 func usage() {
-	fmt.Println(`driftqctl [--base-url URL] <command> [args]
+	fmt.Println(`driftqctl [--base-url URL] [--timeout DURATION] <command> [args]
 
 	Commands:
-		topics list|ls   List topics (GET /v1/topics)
+		topics list|ls                 List topics (GET /v1/topics)
+		topics create --name T [...]   Create topic (POST /v1/topics?name=&partitions=)
+		topics peek --topic T [...]    Peek messages (GET /v1/consume streaming NDJSON)
 
 	Examples:
 		driftqctl topics list
-		driftqctl --base-url http://localhost:8080 topics ls
+		driftqctl --base-url http://localhost:8080 topics create --name demo --partitions 1
+		driftqctl --base-url http://127.0.0.1:8080 topics peek --topic demo --n 5 --lease-ms 250 --wait-ms 750
 	`)
 }
 
 func cmdTopics(baseURL string, timeout time.Duration, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("topics: missing subcommand (use: list|ls|create)")
+		return fmt.Errorf("topics: missing subcommand (use: list|ls|create|peek)")
 	}
 
 	switch args[0] {
@@ -93,19 +98,23 @@ func cmdTopics(baseURL string, timeout time.Duration, args []string) error {
 		fmt.Printf("created topic %q partitions=%d\n", *name, *partitions)
 		return nil
 
+	case "peek":
+		return topicsPeek(baseURL, timeout, args[1:])
+
 	case "runs":
+		// leaving this wiring as-is for now
 		return cmdRuns(baseURL, timeout, args[1:])
 
 	default:
-		return fmt.Errorf("topics: unknown subcommand %q (use: list|ls|create)", args[0])
+		return fmt.Errorf("topics: unknown subcommand %q (use: list|ls|create|peek)", args[0])
 	}
 }
 
 func topicsList(baseURL string, timeout time.Duration) error {
-	url := strings.TrimRight(baseURL, "/") + "/v1/topics"
+	u := strings.TrimRight(baseURL, "/") + "/v1/topics"
 
 	c := &http.Client{Timeout: timeout}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
@@ -120,8 +129,7 @@ func topicsList(baseURL string, timeout time.Duration) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// This is super useful for debugging
-		return fmt.Errorf("GET %s: %s\n%s", url, resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("GET %s: %s\n%s", u, resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	var v any
@@ -131,6 +139,141 @@ func topicsList(baseURL string, timeout time.Duration) error {
 	}
 
 	printTopics(v)
+	return nil
+}
+
+func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("topics peek", flag.ContinueOnError)
+	topic := fs.String("topic", "", "topic name (required)")
+	partition := fs.Int("partition", -1, "partition (default: all partitions)")
+	n := fs.Int("n", 5, "max messages to print")
+	leaseMS := fs.Int("lease-ms", 250, "lease duration in ms (short is safer for peek)")
+	waitMS := fs.Int("wait-ms", 750, "how long to wait for data before exiting as empty (ms)")
+	group := fs.String("group", "_peek", "consumer group (default: _peek)")
+	owner := fs.String("owner", "", "owner id (default: auto)")
+	pretty := fs.Bool("pretty", false, "pretty-print each JSON line")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	t := strings.TrimSpace(*topic)
+	if t == "" {
+		return fmt.Errorf("topics peek: --topic is required")
+	}
+
+	if *n < 1 {
+		return fmt.Errorf("topics peek: --n must be >= 1")
+	}
+	if *leaseMS < 0 {
+		return fmt.Errorf("topics peek: --lease-ms must be >= 0")
+	}
+
+	if *waitMS < 0 {
+		return fmt.Errorf("topics peek: --wait-ms must be >= 0")
+	}
+
+	o := strings.TrimSpace(*owner)
+	if o == "" {
+		o = defaultOwner()
+	}
+
+	q := url.Values{}
+	q.Set("topic", t)
+	q.Set("group", strings.TrimSpace(*group))
+	q.Set("owner", o)
+
+	if *leaseMS > 0 {
+		q.Set("lease_ms", fmt.Sprintf("%d", *leaseMS))
+	}
+
+	if *partition >= 0 {
+		q.Set("partition", fmt.Sprintf("%d", *partition))
+	}
+
+	path := "/v1/consume?" + q.Encode()
+	fullURL := strings.TrimRight(baseURL, "/") + path
+
+	// For peek, we usually want a shorter "give up quickly" timeout than the global CLI timeout.
+	clientTimeout := timeout
+	if *waitMS > 0 {
+		w := time.Duration(*waitMS) * time.Millisecond
+		if clientTimeout <= 0 || w < clientTimeout {
+			clientTimeout = w
+		}
+	}
+
+	if clientTimeout <= 0 {
+		clientTimeout = 5 * time.Second
+	}
+
+	client := &http.Client{Timeout: clientTimeout}
+	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Accept", "application/x-ndjson")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// If we timed out waiting for messages, treat as empty
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			fmt.Println("(empty)")
+			return nil
+		}
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GET %s: %s\n%s", fullURL, resp.Status, strings.TrimSpace(string(b)))
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	count := 0
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+
+		count++
+		if *pretty {
+			var v any
+			if err := json.Unmarshal([]byte(line), &v); err != nil {
+				fmt.Println(line)
+			} else {
+				b, _ := json.MarshalIndent(v, "", "  ")
+				fmt.Println(string(b))
+			}
+		} else {
+			fmt.Println(line)
+		}
+
+		if count >= *n {
+			break
+		}
+	}
+
+	if err := sc.Err(); err != nil && count == 0 {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			fmt.Println("(empty)")
+			return nil
+		}
+
+		fmt.Println("(empty)")
+		return nil
+	}
+
+	if count == 0 {
+		fmt.Println("(empty)")
+	}
+
 	return nil
 }
 
@@ -190,7 +333,6 @@ func doPOST(baseURL string, timeout time.Duration, path string) (*http.Response,
 		return nil, err
 	}
 
-	// if CLI timeout provided
 	client := http.DefaultClient
 	if timeout > 0 {
 		client = &http.Client{Timeout: timeout}
@@ -211,4 +353,15 @@ func doGET(baseURL string, timeout time.Duration, path string) (*http.Response, 
 	}
 
 	return client.Do(req)
+}
+
+func defaultOwner() string {
+	host, _ := os.Hostname()
+	host = strings.TrimSpace(host)
+
+	if host == "" {
+		host = "host"
+	}
+
+	return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
 }
