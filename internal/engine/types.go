@@ -39,6 +39,12 @@ type RunEvent struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+type NodeFinishedPayload struct {
+	Output       json.RawMessage `json:"output,omitempty"`
+	ArtifactRef  *ArtifactRef    `json:"artifact_ref,omitempty"`
+	ArtifactMeta *ArtifactMeta   `json:"artifact_meta,omitempty"`
+}
+
 type NodeExecution struct {
 	RunID      string     `json:"run_id"`
 	WorkflowID string     `json:"workflow_id"`

@@ -249,4 +249,93 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
+
+	mux.HandleFunc("/debug/artifact-meta", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		artifactID := strings.TrimSpace(r.URL.Query().Get("artifact_id"))
+		if artifactID == "" {
+			http.Error(w, "missing artifact_id", http.StatusBadRequest)
+			return
+		}
+
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = NewTraceID()
+		}
+		ctx := WithTraceID(r.Context(), traceID)
+
+		_, meta, err := runner.GetArtifact(ctx, artifactID)
+		if err != nil {
+			switch err {
+			case ErrInvalidArtifactID:
+				http.Error(w, "invalid artifact id", http.StatusBadRequest)
+			case ErrArtifactNotFound:
+				http.Error(w, "artifact not found", http.StatusNotFound)
+			case ErrArtifactStoreUnset:
+				http.Error(w, "artifact store not configured", http.StatusBadRequest)
+			default:
+				http.Error(w, "get artifact meta failed: "+err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":          true,
+			"artifact_id": artifactID,
+			"meta":        meta,
+			"trace_id":    traceID,
+		})
+	})
+
+	mux.HandleFunc("/debug/artifact-get", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		artifactID := strings.TrimSpace(r.URL.Query().Get("artifact_id"))
+		if artifactID == "" {
+			http.Error(w, "missing artifact_id", http.StatusBadRequest)
+			return
+		}
+
+		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		if traceID == "" {
+			traceID = NewTraceID()
+		}
+		ctx := WithTraceID(r.Context(), traceID)
+
+		b, meta, err := runner.GetArtifact(ctx, artifactID)
+		if err != nil {
+			switch err {
+			case ErrInvalidArtifactID:
+				http.Error(w, "invalid artifact id", http.StatusBadRequest)
+			case ErrArtifactNotFound:
+				http.Error(w, "artifact not found", http.StatusNotFound)
+			case ErrArtifactStoreUnset:
+				http.Error(w, "artifact store not configured", http.StatusBadRequest)
+			default:
+				http.Error(w, "get artifact failed: "+err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+
+		ct := strings.TrimSpace(meta.ContentType)
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("X-Artifact-Id", meta.ArtifactID)
+		w.Header().Set("X-Artifact-Sha256", meta.Sha256)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(b)
+	})
 }

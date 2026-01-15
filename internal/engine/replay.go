@@ -25,40 +25,15 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 
 	// 2) If cache miss, fall back to stored spec (replay-after-restart)
 	if !ok {
-		if len(run.Spec) == 0 {
-			return fmt.Errorf(
-				"replay: workflow graph not found in memory and no stored spec for workflow_id=%q (run_id=%q)",
-				run.WorkflowID, runID,
-			)
-		}
-		if r.registry == nil {
-			return fmt.Errorf(
-				"replay: no cached graph; runner has no handler registry to compile stored spec (workflow_id=%q run_id=%q)",
-				run.WorkflowID, runID,
-			)
-		}
-
-		g, spec, err := ParseWorkflowSpecJSON(run.Spec)
+		exec2, err := r.compileExecutableFromStoredSpec(runID, run)
 		if err != nil {
-			return fmt.Errorf("replay: parse stored spec failed: %w", err)
+			return err
 		}
-
-		exec2, err := CompileSpecToExecutable(spec, g, r.registry)
-		if err != nil {
-			return fmt.Errorf("replay: compile stored spec failed: %w", err)
-		}
-
-		// keep IDs aligned so logs + caches are sane
-		if exec2.ID == "" || exec2.ID != run.WorkflowID {
-			exec2.ID = run.WorkflowID
-		}
-
-		r.rememberGraph(run.WorkflowID, exec2)
 		exec = exec2
 	}
 
 	// Prefer stored initial input; fallback to the first root node's recorded input
-	initial := json.RawMessage(nil)
+	var initial json.RawMessage
 	if len(run.InitialInput) > 0 {
 		initial = cloneRaw(run.InitialInput)
 	} else {
@@ -67,7 +42,11 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 
 	switch mode {
 	case ReplayTimeTravel:
-		return r.runDAG(ctx, runID, exec, initial, run.Spec)
+		// Build a cache from the run history so we can short-circuit node execution
+		cache := r.buildReplayCacheFromRun(runID)
+
+		// IMPORTANT: use the cache-aware runner; plain runDAG() would discard the cache
+		return r.runDAGWithReplayCache(ctx, runID, exec, initial, run.Spec, cache)
 
 	case ReplayLive:
 		return errors.New("replay live not implemented yet")
@@ -77,6 +56,40 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 	}
 }
 
+func (r *Runner) compileExecutableFromStoredSpec(runID string, run Run) (WorkflowGraph, error) {
+	if len(run.Spec) == 0 {
+		return WorkflowGraph{}, fmt.Errorf(
+			"replay: no cached graph and no stored spec (workflow_id=%q run_id=%q)",
+			run.WorkflowID, runID,
+		)
+	}
+	if r.registry == nil {
+		return WorkflowGraph{}, fmt.Errorf(
+			"replay: no cached graph; runner has no handler registry to compile stored spec (workflow_id=%q run_id=%q)",
+			run.WorkflowID, runID,
+		)
+	}
+
+	g, spec, err := ParseWorkflowSpecJSON(run.Spec)
+	if err != nil {
+		return WorkflowGraph{}, fmt.Errorf("replay: parse stored spec failed: %w", err)
+	}
+
+	exec2, err := CompileSpecToExecutable(spec, g, r.registry)
+	if err != nil {
+		return WorkflowGraph{}, fmt.Errorf("replay: compile stored spec failed: %w", err)
+	}
+
+	// Keep IDs aligned so logs + caches are sane
+	if exec2.ID == "" || exec2.ID != run.WorkflowID {
+		exec2.ID = run.WorkflowID
+	}
+
+	r.rememberGraph(run.WorkflowID, exec2)
+	return exec2, nil
+}
+
+// If Run.InitialInput wasn't stored, infer it from the earliest attempt of the root node's recorded Input.
 func (r *Runner) initialInputFromRun(runID string, g WorkflowGraph) json.RawMessage {
 	incoming := map[string]int{}
 	for _, n := range g.Nodes {
