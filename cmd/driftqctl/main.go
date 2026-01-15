@@ -146,12 +146,13 @@ func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("topics peek", flag.ContinueOnError)
 	topic := fs.String("topic", "", "topic name (required)")
 	partition := fs.Int("partition", -1, "partition (default: all partitions)")
-	n := fs.Int("n", 5, "max messages to print")
-	leaseMS := fs.Int("lease-ms", 250, "lease duration in ms (short is safer for peek)")
+	n := fs.Int("n", 5, "max unique messages to print")
+	leaseMS := fs.Int("lease-ms", 2000, "lease duration in ms (avoid very small values for peek)")
 	waitMS := fs.Int("wait-ms", 750, "how long to wait for data before exiting as empty (ms)")
 	group := fs.String("group", "_peek", "consumer group (default: _peek)")
 	owner := fs.String("owner", "", "owner id (default: auto)")
 	pretty := fs.Bool("pretty", false, "pretty-print each JSON line")
+	allowRedelivery := fs.Bool("allow-redelivery", false, "print redelivered messages too (default: dedupe by offset)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -165,12 +166,9 @@ func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
 	if *n < 1 {
 		return fmt.Errorf("topics peek: --n must be >= 1")
 	}
-	if *leaseMS < 0 {
-		return fmt.Errorf("topics peek: --lease-ms must be >= 0")
-	}
 
-	if *waitMS < 0 {
-		return fmt.Errorf("topics peek: --wait-ms must be >= 0")
+	if *leaseMS < 0 || *waitMS < 0 {
+		return fmt.Errorf("topics peek: --lease-ms/--wait-ms must be >= 0")
 	}
 
 	o := strings.TrimSpace(*owner)
@@ -194,7 +192,7 @@ func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
 	path := "/v1/consume?" + q.Encode()
 	fullURL := strings.TrimRight(baseURL, "/") + path
 
-	// For peek, we usually want a shorter "give up quickly" timeout than the global CLI timeout.
+	// For peek: bail quickly if nothing shows up.
 	clientTimeout := timeout
 	if *waitMS > 0 {
 		w := time.Duration(*waitMS) * time.Millisecond
@@ -218,7 +216,7 @@ func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// If we timed out waiting for messages, treat as empty
+		// treat timeout as empty
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			fmt.Println("(empty)")
 			return nil
@@ -232,17 +230,43 @@ func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
 		return fmt.Errorf("GET %s: %s\n%s", fullURL, resp.Status, strings.TrimSpace(string(b)))
 	}
 
+	type consumeLine struct {
+		Partition int   `json:"partition"`
+		Offset    int64 `json:"offset"`
+	}
+
+	type key struct {
+		p int
+		o int64
+	}
+
+	seen := map[key]struct{}{}
+	unique := 0
+
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
-	count := 0
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
 
-		count++
+		// Dedupe by (partition, offset) so we do not print redeliveries in the same peek
+		if !*allowRedelivery {
+			var m consumeLine
+			if err := json.Unmarshal([]byte(line), &m); err == nil {
+				k := key{p: m.Partition, o: m.Offset}
+				if _, ok := seen[k]; ok {
+					break
+				}
+
+				seen[k] = struct{}{}
+			}
+		}
+
+		unique++
+
 		if *pretty {
 			var v any
 			if err := json.Unmarshal([]byte(line), &v); err != nil {
@@ -255,23 +279,14 @@ func topicsPeek(baseURL string, timeout time.Duration, args []string) error {
 			fmt.Println(line)
 		}
 
-		if count >= *n {
+		if unique >= *n {
 			break
 		}
 	}
 
-	if err := sc.Err(); err != nil && count == 0 {
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			fmt.Println("(empty)")
-			return nil
-		}
-
+	if unique == 0 {
 		fmt.Println("(empty)")
 		return nil
-	}
-
-	if count == 0 {
-		fmt.Println("(empty)")
 	}
 
 	return nil
