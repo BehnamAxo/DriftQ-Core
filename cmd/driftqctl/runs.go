@@ -53,7 +53,7 @@ type debugRunResp struct {
 
 func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("runs: missing subcommand (use: status|step|events|state)")
+		return fmt.Errorf("runs: missing subcommand (use: status|step|events|state|diff)")
 	}
 
 	switch args[0] {
@@ -76,7 +76,7 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 		return runsDiff(baseURL, timeout, args[1:])
 
 	default:
-		return fmt.Errorf("runs: unknown subcommand %q (use: status|step|events|state)", args[0])
+		return fmt.Errorf("runs: unknown subcommand %q (use: status|step|events|state|diff)", args[0])
 	}
 }
 
@@ -453,93 +453,131 @@ func runsDiff(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("runs diff", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run id (required)")
 	nodeID := fs.String("node-id", "", "node id (required)")
-	from := fs.Int("from", 0, "from attempt (optional)")
-	to := fs.Int("to", 0, "to attempt (optional)")
-	raw := fs.Bool("raw", false, "print raw JSON for both attempts")
+	from := fs.Int("from", 0, "from attempt (optional; default: previous attempt)")
+	to := fs.Int("to", 0, "to attempt (optional; default: latest attempt)")
+	raw := fs.Bool("raw", false, "print full raw JSON for both attempts")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	rid := strings.TrimSpace(*runID)
+	id := strings.TrimSpace(*runID)
 	nid := strings.TrimSpace(*nodeID)
-	if rid == "" {
+	if id == "" {
 		return fmt.Errorf("runs diff: --run-id is required")
 	}
-
 	if nid == "" {
 		return fmt.Errorf("runs diff: --node-id is required")
 	}
 
-	state, err := fetchRunState(baseURL, timeout, rid)
+	root, err := fetchRunState(baseURL, timeout, id)
 	if err != nil {
 		return err
 	}
 
-	var steps []nodeExec
-	for _, ne := range state.Nodes {
-		if ne.NodeID == nid {
-			steps = append(steps, ne)
-		}
+	nodes, err := decodeNodesAsMaps(root)
+	if err != nil {
+		return err
+	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("runs diff: no node executions found for run_id=%q", id)
 	}
 
-	if len(steps) == 0 {
-		return fmt.Errorf("runs diff: no executions found for node %q in run %q", nid, rid)
+	// collect attempts for this node
+	byAttempt := map[int]map[string]any{}
+	var attempts []int
+
+	for _, m := range nodes {
+		if pickString(m, "node_id", "nodeId", "NodeID") != nid {
+			continue
+		}
+		att := pickInt(m, "attempt", "Attempt")
+		if att <= 0 {
+			continue
+		}
+		byAttempt[att] = m
+		attempts = append(attempts, att)
 	}
 
-	sort.Slice(steps, func(i, j int) bool { return steps[i].Attempt < steps[j].Attempt })
+	if len(attempts) == 0 {
+		return fmt.Errorf("runs diff: no executions found for node=%q", nid)
+	}
 
-	var a, b *nodeExec
+	sort.Ints(attempts)
+	attempts = uniqueSortedInts(attempts)
 
-	// pick attempts
-	if *from > 0 || *to > 0 {
-		if *from <= 0 || *to <= 0 {
-			return fmt.Errorf("runs diff: if you set one of --from/--to, you must set both")
+	// pick default from/to if not provided
+	f := *from
+	t := *to
+
+	if f == 0 && t == 0 {
+		if len(attempts) < 2 {
+			return fmt.Errorf("runs diff: need at least 2 attempts for node=%q (have %d)", nid, len(attempts))
 		}
-
-		for i := range steps {
-			if steps[i].Attempt == *from {
-				a = &steps[i]
+		f = attempts[len(attempts)-2]
+		t = attempts[len(attempts)-1]
+	} else if f == 0 && t > 0 {
+		// pick the attempt immediately before 'to'
+		idx := indexOfInt(attempts, t)
+		if idx <= 0 {
+			return fmt.Errorf("runs diff: cannot infer --from for --to=%d (available: %v)", t, attempts)
+		}
+		f = attempts[idx-1]
+	} else if f > 0 && t == 0 {
+		// pick the attempt immediately after 'from' if exists; otherwise latest
+		idx := indexOfInt(attempts, f)
+		if idx < 0 {
+			return fmt.Errorf("runs diff: attempt --from=%d not found (available: %v)", f, attempts)
+		}
+		if idx+1 < len(attempts) {
+			t = attempts[idx+1]
+		} else {
+			if len(attempts) < 2 {
+				return fmt.Errorf("runs diff: need at least 2 attempts for node=%q", nid)
 			}
-
-			if steps[i].Attempt == *to {
-				b = &steps[i]
+			t = attempts[len(attempts)-1]
+			if t == f {
+				return fmt.Errorf("runs diff: cannot infer --to; only attempt=%d exists", f)
 			}
 		}
-
-		if a == nil || b == nil {
-			return fmt.Errorf("runs diff: attempt not found (have attempts: %s)", attemptList(steps))
-		}
-	} else {
-		if len(steps) < 2 {
-			return fmt.Errorf("runs diff: need at least 2 attempts to diff (have attempts: %s)", attemptList(steps))
-		}
-
-		a = &steps[len(steps)-2]
-		b = &steps[len(steps)-1]
 	}
 
-	// header
-	fmt.Printf("run_id=%s node_id=%s diff attempt %d -> %d\n", rid, nid, a.Attempt, b.Attempt)
-
-	printIfChanged("status", a.Status, b.Status)
-	printIfChanged("error", strings.TrimSpace(a.Error), strings.TrimSpace(b.Error))
-
-	adur := durationStr(a.StartedAt, a.EndedAt)
-	bdur := durationStr(b.StartedAt, b.EndedAt)
-	if adur != bdur {
-		fmt.Printf("dur: %s -> %s\n", adur, bdur)
+	fromObj, ok := byAttempt[f]
+	if !ok {
+		return fmt.Errorf("runs diff: attempt --from=%d not found for node=%q (available: %v)", f, nid, attempts)
 	}
-
-	printJSONDiff("input", a.Input, b.Input)
-	printJSONDiff("output", a.Output, b.Output)
+	toObj, ok := byAttempt[t]
+	if !ok {
+		return fmt.Errorf("runs diff: attempt --to=%d not found for node=%q (available: %v)", t, nid, attempts)
+	}
 
 	if *raw {
-		fmt.Println("\n--- attempt", a.Attempt, "raw ---")
-		fmt.Println(prettyJSON(*a))
-		fmt.Println("\n--- attempt", b.Attempt, "raw ---")
-		fmt.Println(prettyJSON(*b))
+		fmt.Printf("run_id=%s node_id=%s from=%d to=%d\n\n", id, nid, f, t)
+
+		b1, _ := json.MarshalIndent(fromObj, "", "  ")
+		fmt.Println(string(b1))
+		fmt.Println()
+
+		b2, _ := json.MarshalIndent(toObj, "", "  ")
+		fmt.Println(string(b2))
+		return nil
 	}
+
+	// summary
+	fmt.Printf("run_id=%s node_id=%s attempts=%d->%d\n", id, nid, f, t)
+
+	fromStatus := pickString(fromObj, "status", "Status")
+	toStatus := pickString(toObj, "status", "Status")
+	fmt.Printf("status: %s -> %s\n", emptyTo(fromStatus, "-"), emptyTo(toStatus, "-"))
+
+	fromErr := pickString(fromObj, "error", "Error")
+	toErr := pickString(toObj, "error", "Error")
+	fmt.Printf("error:  %s -> %s\n", emptyTo(fromErr, "-"), emptyTo(toErr, "-"))
+
+	fmt.Printf("dur:    %s -> %s\n", durFromMap(fromObj), durFromMap(toObj))
+
+	printAnyDelta("input", fromObj["input"], toObj["input"])
+	printAnyDelta("output", fromObj["output"], toObj["output"])
 
 	return nil
 }
@@ -669,6 +707,131 @@ func diffMaps(a, b map[string]any, prefix string) []string {
 }
 
 func prettyJSON(v any) string {
-	b, _ := json.MarshalIndent(v, "", "  ")
+	if v == nil {
+		return ""
+	}
+
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+
 	return string(b)
+}
+
+func decodeNodesAsMaps(root *runStateResp) ([]map[string]any, error) {
+	var nodes []map[string]any
+
+	b, err := json.Marshal(root.Nodes)
+	if err != nil {
+		return nil, fmt.Errorf("runs: marshal nodes: %w", err)
+	}
+
+	if string(b) == "null" || len(b) == 0 {
+		return nil, nil
+	}
+
+	if err := json.Unmarshal(b, &nodes); err != nil {
+		return nil, fmt.Errorf("runs: decode nodes: %w", err)
+	}
+
+	return nodes, nil
+}
+
+func durFromMap(m map[string]any) string {
+	startS := pickString(m, "started_at", "startedAt", "StartedAt")
+	endS := pickString(m, "ended_at", "endedAt", "EndedAt")
+	if startS == "" || endS == "" {
+		return "-"
+	}
+
+	st, e1 := time.Parse(time.RFC3339Nano, startS)
+	en, e2 := time.Parse(time.RFC3339Nano, endS)
+	if e1 != nil || e2 != nil {
+		return "-"
+	}
+
+	return en.Sub(st).String()
+}
+
+func printAnyDelta(label string, a, b any) {
+	sa := canonicalJSON(a)
+	sb := canonicalJSON(b)
+
+	if sa == sb {
+		fmt.Printf("%s: (unchanged)\n", label)
+		return
+	}
+
+	fmt.Printf("%s: changed\n", label)
+
+	if sa == "" {
+		fmt.Printf("  - from: <empty>\n")
+	} else {
+		fmt.Printf("  - from:\n%s\n", indentBlock(prettyJSON(a), "    "))
+	}
+
+	if sb == "" {
+		fmt.Printf("  - to:   <empty>\n")
+	} else {
+		fmt.Printf("  - to:\n%s\n", indentBlock(prettyJSON(b), "    "))
+	}
+}
+
+func canonicalJSON(v any) string {
+	if v == nil {
+		return ""
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+
+	// normalize whitespace by re-decoding
+	var tmp any
+	if err := json.Unmarshal(b, &tmp); err != nil {
+		return string(bytes.TrimSpace(b))
+	}
+
+	nb, _ := json.Marshal(tmp)
+	return string(nb)
+}
+
+func indentBlock(s, prefix string) string {
+	if s == "" {
+		return ""
+	}
+
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = prefix + lines[i]
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func uniqueSortedInts(in []int) []int {
+	if len(in) == 0 {
+		return in
+	}
+
+	out := []int{in[0]}
+	for i := 1; i < len(in); i++ {
+		if in[i] != in[i-1] {
+			out = append(out, in[i])
+		}
+	}
+
+	return out
+}
+
+func indexOfInt(xs []int, v int) int {
+	for i := range xs {
+		if xs[i] == v {
+			return i
+		}
+	}
+
+	return -1
 }
