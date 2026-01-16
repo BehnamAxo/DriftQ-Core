@@ -40,13 +40,18 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
+
 		if strings.TrimSpace(*runID) == "" {
 			return fmt.Errorf("runs show: --run-id is required")
 		}
+
 		return runsShow(baseURL, timeout, *runID)
 
 	case "status":
 		return runsStatus(baseURL, timeout, args[1:])
+
+	case "events":
+		return runsEvents(baseURL, timeout, args[1:])
 
 	default:
 		return fmt.Errorf("runs: unknown subcommand %q (use: show|get|status)", args[0])
@@ -154,6 +159,89 @@ func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 		fmt.Printf("%s\t%d\t%s\t%s\t%d\t%d\t%s\n",
 			n.NodeID, n.Attempt, n.Status, dur, n.InputBytes, n.OutputBytes, errStr,
 		)
+	}
+
+	return nil
+}
+
+func runsEvents(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs events", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+	raw := fs.Bool("raw", false, "print raw JSON response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	if id == "" {
+		return fmt.Errorf("runs events: --run-id is required")
+	}
+
+	// uses existing debug endpoint that includes events
+	path := "/debug/run-state?run_id=" + url.QueryEscape(id)
+	resp, err := doGET(baseURL, timeout, path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs events failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	if *raw {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+
+	var v map[string]any
+	if err := json.Unmarshal(body, &v); err != nil {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+
+	eventsAny, _ := v["events"]
+	events, ok := eventsAny.([]any)
+	if !ok || len(events) == 0 {
+		fmt.Println("(no events)")
+		return nil
+	}
+
+	// Print a compact timeline. We don't assume exact schema; we try common keys
+	for _, e := range events {
+		em, ok := e.(map[string]any)
+		if !ok {
+			b, _ := json.Marshal(e)
+			fmt.Println(string(b))
+			continue
+		}
+
+		ts := pickString(em, "ts", "timestamp", "time", "created_at", "CreatedAt")
+		typ := pickString(em, "type", "event_type", "EventType")
+		node := pickString(em, "node_id", "NodeID", "step_id", "StepID")
+		attempt := pickString(em, "attempt", "Attempt")
+
+		line := ""
+		if ts != "" {
+			line += ts + " "
+		}
+
+		if typ != "" {
+			line += typ
+		} else {
+			line += "(event)"
+		}
+
+		if node != "" {
+			line += " node=" + node
+		}
+
+		if attempt != "" {
+			line += " attempt=" + attempt
+		}
+
+		fmt.Println(line)
 	}
 
 	return nil
