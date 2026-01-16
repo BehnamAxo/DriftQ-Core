@@ -1,13 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -25,73 +25,66 @@ type nodeStatusRow struct {
 	OutputBytes int        `json:"output_bytes,omitempty"`
 }
 
+type nodeExec struct {
+	RunID      string     `json:"run_id"`
+	WorkflowID string     `json:"workflow_id"`
+	NodeID     string     `json:"node_id"`
+	Attempt    int        `json:"attempt"`
+	Status     string     `json:"status"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	Input      any        `json:"input,omitempty"`
+	Output     any        `json:"output,omitempty"`
+}
+
+type runStateResp struct {
+	Ok     bool       `json:"ok"`
+	Run    any        `json:"run"`
+	Nodes  []nodeExec `json:"nodes"`
+	Events any        `json:"events"`
+	Timers any        `json:"timers"`
+}
+
+type debugRunResp struct {
+	Run   map[string]any  `json:"run"`
+	Nodes []nodeStatusRow `json:"nodes"`
+}
+
 func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf(`runs: missing subcommand
-use:
-  runs show   --run-id <id>      (raw JSON summary)
-  runs status --run-id <id>      (compact table)
-  runs events --run-id <id>      (timeline from /debug/run-state)
-`)
+		return fmt.Errorf("runs: missing subcommand (use: status|step|events|state)")
 	}
 
 	switch args[0] {
-	case "show", "get":
-		fs := flag.NewFlagSet("runs show", flag.ContinueOnError)
-		runID := fs.String("run-id", "", "run id (required)")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if strings.TrimSpace(*runID) == "" {
-			return fmt.Errorf("runs show: --run-id is required")
-		}
-		return runsShow(baseURL, timeout, *runID)
-
 	case "status":
 		return runsStatus(baseURL, timeout, args[1:])
 
-	case "events", "timeline", "tl":
+	case "step":
+		return runsStep(baseURL, timeout, args[1:])
+
+	case "events":
 		return runsEvents(baseURL, timeout, args[1:])
 
+	case "state":
+		return runsState(baseURL, timeout, args[1:])
+
+	case "show", "get":
+		return runsStatus(baseURL, timeout, args[1:])
+
+	case "diff":
+		return runsDiff(baseURL, timeout, args[1:])
+
 	default:
-		return fmt.Errorf(`runs: unknown subcommand %q
-use:
-  runs show|get
-  runs status
-  runs events|timeline|tl
-`, args[0])
+		return fmt.Errorf("runs: unknown subcommand %q (use: status|step|events|state)", args[0])
 	}
-}
-
-func runsShow(baseURL string, timeout time.Duration, runID string) error {
-	path := "/debug/run?run_id=" + url.QueryEscape(strings.TrimSpace(runID))
-
-	resp, err := doGET(baseURL, timeout, path)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("runs show failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var v any
-	if err := json.Unmarshal(body, &v); err != nil {
-		fmt.Println(strings.TrimSpace(string(body)))
-		return nil
-	}
-
-	pretty, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Println(string(pretty))
-	return nil
 }
 
 func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("runs status", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run id (required)")
 	raw := fs.Bool("raw", false, "print raw JSON response")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -101,7 +94,6 @@ func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 		return fmt.Errorf("runs status: --run-id is required")
 	}
 
-	// status uses the smaller /debug/run endpoint (summary nodes)
 	path := "/debug/run?run_id=" + url.QueryEscape(id)
 	resp, err := doGET(baseURL, timeout, path)
 	if err != nil {
@@ -119,10 +111,7 @@ func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 		return nil
 	}
 
-	var out struct {
-		Run   map[string]any  `json:"run"`
-		Nodes []nodeStatusRow `json:"nodes"`
-	}
+	var out debugRunResp
 	if err := json.Unmarshal(body, &out); err != nil {
 		fmt.Println(strings.TrimSpace(string(body)))
 		return nil
@@ -136,12 +125,15 @@ func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 	if wfid != "" {
 		fmt.Printf(" workflow_id=%s", wfid)
 	}
+
 	if status != "" {
 		fmt.Printf(" status=%s", status)
 	}
+
 	if updated != "" {
 		fmt.Printf(" updated_at=%s", updated)
 	}
+
 	fmt.Println()
 
 	if len(out.Nodes) == 0 {
@@ -157,8 +149,8 @@ func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 		}
 
 		errStr := strings.TrimSpace(n.Error)
-		if len(errStr) > 60 {
-			errStr = errStr[:57] + "..."
+		if len(errStr) > 80 {
+			errStr = errStr[:77] + "..."
 		}
 
 		fmt.Printf("%s\t%d\t%s\t%s\t%d\t%d\t%s\n",
@@ -169,11 +161,131 @@ func runsStatus(baseURL string, timeout time.Duration, args []string) error {
 	return nil
 }
 
+func runsStep(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs step", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+	nodeID := fs.String("node-id", "", "node id (required)")
+	attempt := fs.Int("attempt", 0, "attempt number (optional)")
+	raw := fs.Bool("raw", false, "print raw JSON for matching node execution(s)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	nid := strings.TrimSpace(*nodeID)
+	if id == "" {
+		return fmt.Errorf("runs step: --run-id is required")
+	}
+
+	if nid == "" {
+		return fmt.Errorf("runs step: --node-id is required")
+	}
+
+	root, err := fetchRunState(baseURL, timeout, id)
+	if err != nil {
+		return err
+	}
+
+	var nodes []map[string]any
+	{
+		b, err := json.Marshal(root.Nodes)
+		if err != nil {
+			return fmt.Errorf("runs step: marshal nodes: %w", err)
+		}
+
+		if string(b) != "null" && string(b) != "" {
+			if err := json.Unmarshal(b, &nodes); err != nil {
+				return fmt.Errorf("runs step: decode nodes: %w", err)
+			}
+		}
+	}
+
+	if len(nodes) == 0 {
+		fmt.Println("(no node executions)")
+		return nil
+	}
+
+	type match struct {
+		Attempt int
+		Obj     map[string]any
+	}
+	var matches []match
+
+	for _, m := range nodes {
+		if pickString(m, "node_id", "nodeId", "NodeID") != nid {
+			continue
+		}
+
+		att := pickInt(m, "attempt", "Attempt")
+		if *attempt > 0 && att != *attempt {
+			continue
+		}
+
+		matches = append(matches, match{Attempt: att, Obj: m})
+	}
+
+	if len(matches) == 0 {
+		if *attempt > 0 {
+			return fmt.Errorf("runs step: no executions found for node=%q attempt=%d", nid, *attempt)
+		}
+
+		return fmt.Errorf("runs step: no executions found for node=%q", nid)
+	}
+
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Attempt < matches[j].Attempt })
+
+	if *raw {
+		for _, mm := range matches {
+			b, _ := json.MarshalIndent(mm.Obj, "", "  ")
+			fmt.Println(string(b))
+			fmt.Println()
+		}
+		return nil
+	}
+
+	// nice summary view
+	fmt.Printf("run_id=%s node_id=%s\n", id, nid)
+	fmt.Println("ATT\tSTATUS\tDUR\tSTART\tEND\tERR")
+
+	for _, mm := range matches {
+		m := mm.Obj
+		status := pickString(m, "status", "Status")
+		startS := pickString(m, "started_at", "startedAt", "StartedAt")
+		endS := pickString(m, "ended_at", "endedAt", "EndedAt")
+		errStr := pickString(m, "error", "Error")
+
+		dur := "-"
+		if startS != "" && endS != "" {
+			st, e1 := time.Parse(time.RFC3339Nano, startS)
+			en, e2 := time.Parse(time.RFC3339Nano, endS)
+			if e1 == nil && e2 == nil {
+				dur = en.Sub(st).String()
+			}
+		}
+
+		if len(errStr) > 90 {
+			errStr = errStr[:87] + "..."
+		}
+
+		fmt.Printf("%d\t%s\t%s\t%s\t%s\t%s\n",
+			mm.Attempt,
+			emptyTo(status, "-"),
+			dur,
+			shortTime(startS),
+			shortTime(endS),
+			emptyTo(errStr, "-"),
+		)
+	}
+
+	return nil
+}
+
 func runsEvents(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("runs events", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run id (required)")
-	raw := fs.Bool("raw", false, "print raw events JSON")
-	limit := fs.Int("n", 0, "limit number of events printed (0 = no limit)")
+	raw := fs.Bool("raw", false, "print raw events JSON (one object per block)")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -183,7 +295,69 @@ func runsEvents(baseURL string, timeout time.Duration, args []string) error {
 		return fmt.Errorf("runs events: --run-id is required")
 	}
 
-	// events come from the big dump endpoint
+	root, err := fetchRunState(baseURL, timeout, id)
+	if err != nil {
+		return err
+	}
+
+	var evs []map[string]any
+	{
+		b, err := json.Marshal(root.Events)
+		if err != nil {
+			return fmt.Errorf("runs events: marshal events: %w", err)
+		}
+		if string(b) != "null" && string(b) != "" {
+			if err := json.Unmarshal(b, &evs); err != nil {
+				return fmt.Errorf("runs events: decode events: %w", err)
+			}
+		}
+	}
+
+	if len(evs) == 0 {
+		fmt.Println("(no events)")
+		return nil
+	}
+
+	if *raw {
+		for _, e := range evs {
+			b, _ := json.MarshalIndent(e, "", "  ")
+			fmt.Println(string(b))
+			fmt.Println()
+		}
+		return nil
+	}
+
+	fmt.Println("TIME\tNODE\tATT\tEVENT\tDETAIL")
+	for _, m := range evs {
+		at := pickString(m, "at", "At")
+		node := pickString(m, "node_id", "nodeId", "NodeID")
+		att := pickInt(m, "attempt", "Attempt")
+		typ := pickString(m, "type", "Type")
+
+		detail := ""
+		if p, ok := m["payload"]; ok && p != nil {
+			detail = compactAny(p, 140)
+		}
+
+		fmt.Printf("%s\t%s\t%d\t%s\t%s\n", at, node, att, typ, detail)
+	}
+
+	return nil
+}
+
+func runsState(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs state", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+	raw := fs.Bool("raw", false, "print raw JSON response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	if id == "" {
+		return fmt.Errorf("runs state: --run-id is required")
+	}
+
 	path := "/debug/run-state?run_id=" + url.QueryEscape(id)
 	resp, err := doGET(baseURL, timeout, path)
 	if err != nil {
@@ -193,166 +367,23 @@ func runsEvents(baseURL string, timeout time.Duration, args []string) error {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("runs events failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("runs state failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	var state map[string]any
-	if err := json.Unmarshal(body, &state); err != nil {
+	if *raw {
 		fmt.Println(strings.TrimSpace(string(body)))
 		return nil
 	}
 
-	evAny, _ := state["events"]
-	events, _ := evAny.([]any)
-	if len(events) == 0 {
-		fmt.Println("(no events)")
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		fmt.Println(strings.TrimSpace(string(body)))
 		return nil
 	}
 
-	if *raw {
-		pretty, _ := json.MarshalIndent(events, "", "  ")
-		fmt.Println(string(pretty))
-		return nil
-	}
-
-	rows := make([]eventRow, 0, len(events))
-	for _, e := range events {
-		r, ok := toEventRow(e)
-		if !ok {
-			continue
-		}
-		rows = append(rows, r)
-	}
-
-	// If we got parseable timestamps, sort by time; otherwise keep insertion order.
-	sort.SliceStable(rows, func(i, j int) bool {
-		ti := rows[i].t
-		tj := rows[j].t
-		if ti.IsZero() || tj.IsZero() {
-			return false
-		}
-		return ti.Before(tj)
-	})
-
-	if *limit > 0 && *limit < len(rows) {
-		rows = rows[:*limit]
-	}
-
-	fmt.Println("TIME\tTYPE\tNODE\tATT\tDETAIL")
-	for _, r := range rows {
-		ts := r.timeStr
-		if !r.t.IsZero() {
-			ts = r.t.Format(time.RFC3339Nano)
-		}
-		if ts == "" {
-			ts = "-"
-		}
-		node := r.node
-		if node == "" {
-			node = "-"
-		}
-		att := "-"
-		if r.attempt >= 0 {
-			att = strconv.Itoa(r.attempt)
-		}
-		typ := r.typ
-		if typ == "" {
-			typ = "-"
-		}
-		detail := strings.TrimSpace(r.detail)
-		if len(detail) > 120 {
-			detail = detail[:117] + "..."
-		}
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\n", ts, typ, node, att, detail)
-	}
-
+	pretty, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Println(string(pretty))
 	return nil
-}
-
-type eventRow struct {
-	t       time.Time
-	timeStr string
-	typ     string
-	node    string
-	attempt int // -1 if unknown
-	detail  string
-}
-
-func toEventRow(e any) (eventRow, bool) {
-	m, ok := e.(map[string]any)
-	if !ok {
-		return eventRow{}, false
-	}
-
-	// common-ish keys (we don’t know your exact event struct, so we’re flexible)
-	timeStr := pickString(m, "ts", "time", "at", "created_at", "occurred_at", "timestamp")
-	typ := pickString(m, "type", "event_type", "kind", "name")
-	node := pickString(m, "node_id", "node", "step_id", "step", "task")
-	attempt := pickInt(m, "attempt", "try", "step_attempt", "node_attempt")
-
-	detail := pickString(m, "message", "reason", "status", "state", "error", "note")
-	if detail == "" {
-		// if the event has a nested blob, try to keep it short but useful
-		if d, ok := m["data"]; ok {
-			b, _ := json.Marshal(d)
-			detail = string(b)
-		} else {
-			// last resort: encode entire event
-			b, _ := json.Marshal(m)
-			detail = string(b)
-		}
-	}
-
-	t := parseAnyTime(m, timeStr)
-
-	return eventRow{
-		t:       t,
-		timeStr: timeStr,
-		typ:     typ,
-		node:    node,
-		attempt: attempt,
-		detail:  detail,
-	}, true
-}
-
-func parseAnyTime(m map[string]any, s string) time.Time {
-	s = strings.TrimSpace(s)
-	if s != "" {
-		// try common RFC formats
-		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-			return t
-		}
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			return t
-		}
-	}
-
-	// maybe the JSON used a numeric timestamp field
-	for _, k := range []string{"ts", "timestamp", "time"} {
-		v, ok := m[k]
-		if !ok {
-			continue
-		}
-		switch vv := v.(type) {
-		case float64:
-			// seconds vs ms heuristic
-			if vv > 1e12 {
-				return time.UnixMilli(int64(vv))
-			}
-			if vv > 1e9 {
-				return time.Unix(int64(vv), 0)
-			}
-		case int64:
-			if vv > 1e12 {
-				return time.UnixMilli(vv)
-			}
-			if vv > 1e9 {
-				return time.Unix(vv, 0)
-			}
-		}
-	}
-
-	return time.Time{}
 }
 
 func pickString(m map[string]any, keys ...string) string {
@@ -363,28 +394,281 @@ func pickString(m map[string]any, keys ...string) string {
 			}
 		}
 	}
+
 	return ""
 }
 
 func pickInt(m map[string]any, keys ...string) int {
 	for _, k := range keys {
-		v, ok := m[k]
-		if !ok {
-			continue
-		}
-		switch vv := v.(type) {
-		case float64:
-			return int(vv)
-		case int:
-			return vv
-		case int64:
-			return int(vv)
-		case string:
-			n, err := strconv.Atoi(strings.TrimSpace(vv))
-			if err == nil {
-				return n
+		if v, ok := m[k]; ok {
+			switch vv := v.(type) {
+			case float64:
+				return int(vv)
+			case int:
+				return vv
 			}
 		}
 	}
-	return -1
+
+	return 0
+}
+
+func compactAny(v any, max int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		return s[:max-3] + "..."
+	}
+
+	return s
+}
+
+func emptyTo(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+
+	return s
+}
+
+func shortTime(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+
+	// print just time-ish part to keep table readable
+	if len(s) > 19 {
+		return s[:19]
+	}
+
+	return s
+}
+
+func runsDiff(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs diff", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+	nodeID := fs.String("node-id", "", "node id (required)")
+	from := fs.Int("from", 0, "from attempt (optional)")
+	to := fs.Int("to", 0, "to attempt (optional)")
+	raw := fs.Bool("raw", false, "print raw JSON for both attempts")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	rid := strings.TrimSpace(*runID)
+	nid := strings.TrimSpace(*nodeID)
+	if rid == "" {
+		return fmt.Errorf("runs diff: --run-id is required")
+	}
+
+	if nid == "" {
+		return fmt.Errorf("runs diff: --node-id is required")
+	}
+
+	state, err := fetchRunState(baseURL, timeout, rid)
+	if err != nil {
+		return err
+	}
+
+	var steps []nodeExec
+	for _, ne := range state.Nodes {
+		if ne.NodeID == nid {
+			steps = append(steps, ne)
+		}
+	}
+
+	if len(steps) == 0 {
+		return fmt.Errorf("runs diff: no executions found for node %q in run %q", nid, rid)
+	}
+
+	sort.Slice(steps, func(i, j int) bool { return steps[i].Attempt < steps[j].Attempt })
+
+	var a, b *nodeExec
+
+	// pick attempts
+	if *from > 0 || *to > 0 {
+		if *from <= 0 || *to <= 0 {
+			return fmt.Errorf("runs diff: if you set one of --from/--to, you must set both")
+		}
+
+		for i := range steps {
+			if steps[i].Attempt == *from {
+				a = &steps[i]
+			}
+
+			if steps[i].Attempt == *to {
+				b = &steps[i]
+			}
+		}
+
+		if a == nil || b == nil {
+			return fmt.Errorf("runs diff: attempt not found (have attempts: %s)", attemptList(steps))
+		}
+	} else {
+		if len(steps) < 2 {
+			return fmt.Errorf("runs diff: need at least 2 attempts to diff (have attempts: %s)", attemptList(steps))
+		}
+
+		a = &steps[len(steps)-2]
+		b = &steps[len(steps)-1]
+	}
+
+	// header
+	fmt.Printf("run_id=%s node_id=%s diff attempt %d -> %d\n", rid, nid, a.Attempt, b.Attempt)
+
+	printIfChanged("status", a.Status, b.Status)
+	printIfChanged("error", strings.TrimSpace(a.Error), strings.TrimSpace(b.Error))
+
+	adur := durationStr(a.StartedAt, a.EndedAt)
+	bdur := durationStr(b.StartedAt, b.EndedAt)
+	if adur != bdur {
+		fmt.Printf("dur: %s -> %s\n", adur, bdur)
+	}
+
+	printJSONDiff("input", a.Input, b.Input)
+	printJSONDiff("output", a.Output, b.Output)
+
+	if *raw {
+		fmt.Println("\n--- attempt", a.Attempt, "raw ---")
+		fmt.Println(prettyJSON(*a))
+		fmt.Println("\n--- attempt", b.Attempt, "raw ---")
+		fmt.Println(prettyJSON(*b))
+	}
+
+	return nil
+}
+
+func fetchRunState(baseURL string, timeout time.Duration, runID string) (*runStateResp, error) {
+	path := "/debug/run-state?run_id=" + url.QueryEscape(runID)
+	resp, err := doGET(baseURL, timeout, path)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("runs state failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out runStateResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("runs state: bad json: %w", err)
+	}
+	return &out, nil
+}
+
+func attemptList(xs []nodeExec) string {
+	var a []string
+	for _, x := range xs {
+		a = append(a, fmt.Sprintf("%d", x.Attempt))
+	}
+
+	return strings.Join(a, ",")
+}
+
+func durationStr(s, e *time.Time) string {
+	if s == nil || e == nil {
+		return "-"
+	}
+
+	return e.Sub(*s).String()
+}
+
+func printIfChanged(label, a, b string) {
+	if a == b {
+		return
+	}
+
+	// keep it obvious for CLI users
+	if a == "" {
+		a = "(empty)"
+	}
+
+	if b == "" {
+		b = "(empty)"
+	}
+	fmt.Printf("%s: %s -> %s\n", label, a, b)
+}
+
+func printJSONDiff(label string, a, b any) {
+	aj := normalizeJSON(a)
+	bj := normalizeJSON(b)
+
+	if bytes.Equal(aj, bj) {
+		return
+	}
+
+	var am map[string]any
+	var bm map[string]any
+	if json.Unmarshal(aj, &am) == nil && json.Unmarshal(bj, &bm) == nil {
+		lines := diffMaps(am, bm, label)
+		if len(lines) == 0 {
+			return
+		}
+		for _, ln := range lines {
+			fmt.Println(ln)
+		}
+		return
+	}
+
+	fmt.Printf("%s: %s -> %s\n", label, strings.TrimSpace(string(aj)), strings.TrimSpace(string(bj)))
+}
+
+func normalizeJSON(v any) []byte {
+	if v == nil {
+		return []byte("null")
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		// fallback to fmt
+		return []byte(fmt.Sprintf("%v", v))
+	}
+
+	return b
+}
+
+func diffMaps(a, b map[string]any, prefix string) []string {
+	keys := map[string]struct{}{}
+	for k := range a {
+		keys[k] = struct{}{}
+	}
+
+	for k := range b {
+		keys[k] = struct{}{}
+	}
+
+	var all []string
+	for k := range keys {
+		av, aok := a[k]
+		bv, bok := b[k]
+
+		switch {
+		case aok && !bok:
+			all = append(all, fmt.Sprintf("%s.%s: %s -> (missing)", prefix, k, strings.TrimSpace(string(normalizeJSON(av)))))
+		case !aok && bok:
+			all = append(all, fmt.Sprintf("%s.%s: (missing) -> %s", prefix, k, strings.TrimSpace(string(normalizeJSON(bv)))))
+		default:
+			aj := strings.TrimSpace(string(normalizeJSON(av)))
+			bj := strings.TrimSpace(string(normalizeJSON(bv)))
+			if aj != bj {
+				all = append(all, fmt.Sprintf("%s.%s: %s -> %s", prefix, k, aj, bj))
+			}
+		}
+	}
+
+	sort.Strings(all)
+	return all
+}
+
+func prettyJSON(v any) string {
+	b, _ := json.MarshalIndent(v, "", "  ")
+	return string(b)
 }
