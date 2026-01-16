@@ -34,6 +34,12 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "runs":
+		if err := cmdRuns(*baseURL, *timeout, args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
 	default:
 		usage()
 		os.Exit(2)
@@ -41,17 +47,18 @@ func main() {
 }
 
 func usage() {
-	fmt.Println(`driftqctl [--base-url URL] [--timeout DURATION] <command> [args]
+	fmt.Println(`driftqctl [--base-url URL] <command> [args]
 
 	Commands:
 		topics list|ls                 List topics (GET /v1/topics)
-		topics create --name T [...]   Create topic (POST /v1/topics?name=&partitions=)
-		topics peek --topic T [...]    Peek messages (GET /v1/consume streaming NDJSON)
+		topics create --name T [--partitions N]   Create topic (POST /v1/topics?...)
+		topics peek --topic T [--n N]             Peek messages (GET /v1/consume ...)
+		runs status --run-id ID [--raw]          Show run + step status (GET /debug/run)
 
 	Examples:
 		driftqctl topics list
 		driftqctl --base-url http://localhost:8080 topics create --name demo --partitions 1
-		driftqctl --base-url http://127.0.0.1:8080 topics peek --topic demo --n 5 --lease-ms 250 --wait-ms 750
+		driftqctl --base-url http://localhost:8080 runs status --run-id demo-20260101T000000Z
 	`)
 }
 
@@ -101,9 +108,9 @@ func cmdTopics(baseURL string, timeout time.Duration, args []string) error {
 	case "peek":
 		return topicsPeek(baseURL, timeout, args[1:])
 
-	case "runs":
-		// leaving this wiring as-is for now
-		return cmdRuns(baseURL, timeout, args[1:])
+	// case "runs":
+	// 	// leaving this wiring as-is for now
+	// 	return cmdRuns(baseURL, timeout, args[1:])
 
 	default:
 		return fmt.Errorf("topics: unknown subcommand %q (use: list|ls|create|peek)", args[0])
