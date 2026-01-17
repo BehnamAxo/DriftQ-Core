@@ -276,6 +276,45 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	// Small/fast summary: run + per-node status rows (this is what your CLI should use)
 	mux.HandleFunc("/debug/run", runner.handleDebugRun)
 
+	// list runs (for CLI: "what runs exist?")
+	mux.HandleFunc("/debug/runs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		limit := 50
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+
+		if limit < 1 {
+			limit = 1
+		}
+
+		if limit > 200 {
+			limit = 200
+		}
+
+		runs := runner.store.ListRuns()
+
+		if len(runs) > limit {
+			runs = runs[:limit]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{
+			"ok":    true,
+			"limit": limit,
+			"runs":  runs,
+		})
+	})
+
 	mux.HandleFunc("/debug/artifact-meta", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
