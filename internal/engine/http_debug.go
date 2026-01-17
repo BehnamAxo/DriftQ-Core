@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/driftq-org/DriftQ-Core/internal/debugtypes"
 )
 
 type nodeStatusRow struct {
@@ -469,24 +471,10 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 		TopicCount(ctx context.Context, topic string) (int64, error)
 	}
 
-	// LagRow is a snapshot row for consumer lag inspection.
-	// Convention:
-	// - head_offset: next offset to be produced (high watermark)
-	// - committed_offset: last committed/acked offset for the group (or "next to deliver", depending on your broker)
-	// - inflight: currently leased but not yet acked
-	// - lag: head_offset - committed_offset (clamped to >= 0)
-	type LagRow struct {
-		Group           string `json:"group"`
-		Topic           string `json:"topic"`
-		Partition       int    `json:"partition"`
-		HeadOffset      int64  `json:"head_offset"`
-		CommittedOffset int64  `json:"committed_offset"`
-		Inflight        int64  `json:"inflight"`
-		Lag             int64  `json:"lag"`
-	}
+	type LagRow = debugtypes.ConsumerLagRow
 
 	type consumerLagInspector interface {
-		ConsumerLag(ctx context.Context, group string, topic string) ([]LagRow, error)
+		ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error)
 	}
 
 	mux.HandleFunc("/debug/topics/lag", func(w http.ResponseWriter, r *http.Request) {
@@ -533,6 +521,7 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 			if partFilter != nil && row.Partition != *partFilter {
 				continue
 			}
+
 			lag := row.HeadOffset - row.CommittedOffset
 			if lag < 0 {
 				lag = 0
