@@ -50,15 +50,37 @@ func usage() {
 	fmt.Println(`driftqctl [--base-url URL] <command> [args]
 
 	Commands:
-		topics list|ls                 List topics (GET /v1/topics)
-		topics create --name T [--partitions N]   Create topic (POST /v1/topics?...)
-		topics peek --topic T [--n N]             Peek messages (GET /v1/consume ...)
-		runs status --run-id ID [--raw]          Show run + step status (GET /debug/run)
-		runs list|ls [--limit N]            List recent runs (GET /debug/runs)
+		topics list|ls
+				List topics (GET /v1/topics)
+
+		topics create --name T [--partitions N]
+				Create topic (POST /v1/topics?name=...&partitions=...)
+
+		topics peek --topic T [--n N] [--partition P] [--group G] [--lease-ms MS] [--wait-ms MS] [--pretty] [--allow-redelivery]
+				Peek messages (GET /v1/consume ...)
+
+		runs list|ls [--limit N]
+				List recent runs (GET /debug/runs)
+
+		runs status --run-id ID [--raw]
+				Show run + step status (GET /debug/run)
+
+		runs events --run-id ID [--raw]
+				Show run event timeline (GET /debug/run-state)
+
+		runs state --run-id ID [--raw]
+				Dump full run state (GET /debug/run-state)
+
+		runs step --run-id ID --node-id N [--attempt K] [--raw]
+				Inspect node executions (GET /debug/run-state)
+
+		runs diff --run-id ID --node-id N [--from A] [--to B] [--raw]
+				Diff two attempts of a node (needs retries) (GET /debug/run-state)
 
 	Examples:
 		driftqctl topics list
 		driftqctl --base-url http://localhost:8080 topics create --name demo --partitions 1
+		driftqctl --base-url http://localhost:8080 runs list --limit 20
 		driftqctl --base-url http://localhost:8080 runs status --run-id demo-20260101T000000Z
 	`)
 }
