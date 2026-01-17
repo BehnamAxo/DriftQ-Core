@@ -63,24 +63,30 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		traceID := traceIDFromRequest(r)
 		ctx := WithTraceID(r.Context(), traceID)
 
+		type demoPayload struct {
+			X int `json:"x"`
+		}
+
 		nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			var m map[string]int
-			if err := json.Unmarshal(input, &m); err != nil {
+			var p demoPayload
+			if err := json.Unmarshal(input, &p); err != nil {
 				return nil, err
 			}
+
 			time.Sleep(25 * time.Millisecond)
-			m["x"] = m["x"] + 1
-			return json.Marshal(m)
+			p.X++
+			return json.Marshal(p)
 		}
 
 		nodeB := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			var m map[string]int
-			if err := json.Unmarshal(input, &m); err != nil {
+			var p demoPayload
+			if err := json.Unmarshal(input, &p); err != nil {
 				return nil, err
 			}
+
 			time.Sleep(40 * time.Millisecond)
-			m["x"] = m["x"] * 2
-			return json.Marshal(m)
+			p.X *= 2
+			return json.Marshal(p)
 		}
 
 		g := WorkflowGraph{
