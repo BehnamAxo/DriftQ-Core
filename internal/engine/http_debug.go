@@ -7,6 +7,7 @@ import (
 	"flag"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,9 +30,11 @@ func traceIDFromRequest(req *http.Request) string {
 	if tid == "" {
 		tid = NewTraceID()
 	}
+
 	return tid
 }
 
+// This is runner-only
 func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	// snapshot internal runner metrics (this is in-memory metrics, not Prometheus)
 	mux.HandleFunc("/debug/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -396,6 +399,110 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"name":       name,
 			"partitions": partitions,
 			"note":       "use the real /v1/topics endpoint via driftqctl; this is just a helper",
+		})
+	})
+}
+
+// This is broker-only and it mounts debug-only topic inspection routes
+func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
+	type topicLister interface {
+		ListTopics() ([]string, error)
+	}
+
+	type topicCounter interface {
+		TopicCount(topic string) (int64, error)
+	}
+
+	type topicPeeker interface {
+		Peek(topic string, limit int) ([]any, error)
+	}
+
+	mux.HandleFunc("/debug/topics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		li, ok := b.(topicLister)
+		if !ok {
+			http.Error(w, "broker does not support ListTopics()", http.StatusNotImplemented)
+			return
+		}
+
+		topics, err := li.ListTopics()
+		if err != nil {
+			http.Error(w, "list topics failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var out []map[string]any
+		for _, t := range topics {
+			row := map[string]any{"topic": t}
+
+			if c, ok := b.(topicCounter); ok {
+				if n, err := c.TopicCount(t); err == nil {
+					row["messages"] = n
+				}
+			}
+
+			out = append(out, row)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{"ok": true, "topics": out})
+	})
+
+	mux.HandleFunc("/debug/topics/peek", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		topic := strings.TrimSpace(r.URL.Query().Get("topic"))
+		if topic == "" {
+			http.Error(w, "missing topic", http.StatusBadRequest)
+			return
+		}
+
+		limit := 10
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+
+		if limit < 1 {
+			limit = 1
+		}
+
+		if limit > 100 {
+			limit = 100
+		}
+
+		pk, ok := b.(topicPeeker)
+		if !ok {
+			http.Error(w, "peek not supported by broker", http.StatusNotImplemented)
+			return
+		}
+
+		msgs, err := pk.Peek(topic, limit)
+		if err != nil {
+			http.Error(w, "peek failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{
+			"ok":       true,
+			"topic":    topic,
+			"limit":    limit,
+			"messages": msgs,
 		})
 	})
 }

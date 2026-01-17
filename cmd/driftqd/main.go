@@ -37,6 +37,10 @@ type server struct {
 	broker broker.Broker
 }
 
+type topicDebugAdapter struct {
+	b broker.Broker
+}
+
 type TestRouter struct{}
 
 type statusRecorder struct {
@@ -48,6 +52,10 @@ type statusRecorder struct {
 type promSink struct {
 	produceRejected *prometheus.CounterVec
 	dlqTotal        *prometheus.CounterVec
+}
+
+func (a topicDebugAdapter) ListTopics() ([]string, error) {
+	return a.b.ListTopics(context.Background())
 }
 
 func (p *promSink) IncProduceRejected(reason string) {
@@ -102,15 +110,6 @@ type traceIDKey struct{}
 func withTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDKey{}, traceID)
 }
-
-// func traceIDFrom(ctx context.Context) string {
-// 	if v := ctx.Value(traceIDKey{}); v != nil {
-// 		if s, ok := v.(string); ok && s != "" {
-// 			return s
-// 		}
-// 	}
-// 	return ""
-// }
 
 func newTraceID() string {
 	return newRequestID()
@@ -353,6 +352,7 @@ func main() {
 	rootMux := http.NewServeMux()
 	v1Mux := http.NewServeMux()
 	engine.AttachDebugRoutes(rootMux, runner)
+	engine.AttachTopicDebugRoutes(rootMux, topicDebugAdapter{b: b})
 
 	// v1 routes
 	v1Mux.HandleFunc("/healthz", s.requireMethod(http.MethodGet)(s.handleHealthz))
