@@ -63,6 +63,9 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	}
 
 	switch args[0] {
+	case "demo":
+		return runsDemo(baseURL, timeout, args[1:])
+
 	case "list", "ls":
 		return runsList(baseURL, timeout, args[1:])
 
@@ -87,6 +90,47 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	default:
 		return fmt.Errorf("runs: unknown subcommand %q (use: status|step|events|state|diff)", args[0])
 	}
+}
+
+func runsDemo(baseURL string, timeout time.Duration, args []string) error {
+	// for now ignoring it
+	_ = args
+	resp, err := doPOST(baseURL, timeout, "/debug/run-demo")
+
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs demo failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		// fallback: just print raw JSON
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+
+	runID, _ := out["run_id"].(string)
+	traceID, _ := out["trace_id"].(string)
+
+	if runID == "" {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+
+	if traceID != "" {
+		fmt.Printf("run_id=%s trace_id=%s\n", runID, traceID)
+	} else {
+		fmt.Printf("run_id=%s\n", runID)
+	}
+
+	fmt.Printf("next: driftqctl runs status --run-id %s\n", runID)
+
+	return nil
 }
 
 func runsStatus(baseURL string, timeout time.Duration, args []string) error {

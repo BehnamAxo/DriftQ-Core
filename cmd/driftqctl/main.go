@@ -62,6 +62,9 @@ func usage() {
 		runs list|ls [--limit N]
 				List recent runs (GET /debug/runs)
 
+		runs demo
+				Create a demo run (POST /debug/run-demo)
+
 		runs status --run-id ID [--raw]
 				Show run + step status (GET /debug/run)
 
@@ -81,6 +84,7 @@ func usage() {
 		driftqctl topics list
 		driftqctl --base-url http://localhost:8080 topics create --name demo --partitions 1
 		driftqctl --base-url http://localhost:8080 runs list --limit 20
+		driftqctl --base-url http://localhost:8080 runs demo
 		driftqctl --base-url http://localhost:8080 runs status --run-id demo-20260101T000000Z
 	`)
 }
