@@ -417,6 +417,14 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 		Peek(topic string, limit int) ([]any, error)
 	}
 
+	type topicListerCtx interface {
+		ListTopics(ctx context.Context) ([]string, error)
+	}
+
+	type topicCounterCtx interface {
+		TopicCount(ctx context.Context, topic string) (int64, error)
+	}
+
 	mux.HandleFunc("/debug/topics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -424,23 +432,38 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 			return
 		}
 
-		li, ok := b.(topicLister)
-		if !ok {
+		ctx := r.Context()
+
+		var (
+			topics []string
+			err    error
+		)
+
+		if li, ok := b.(topicListerCtx); ok {
+			topics, err = li.ListTopics(ctx)
+		} else if li, ok := b.(topicLister); ok {
+			topics, err = li.ListTopics()
+		} else {
 			http.Error(w, "broker does not support ListTopics()", http.StatusNotImplemented)
 			return
 		}
 
-		topics, err := li.ListTopics()
 		if err != nil {
 			http.Error(w, "list topics failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		out := make([]map[string]any, 0, len(topics))
+
 		for _, t := range topics {
 			row := map[string]any{"topic": t}
 
-			if c, ok := b.(topicCounter); ok {
+			// best-effort counts if supported
+			if c, ok := b.(topicCounterCtx); ok {
+				if n, err := c.TopicCount(ctx, t); err == nil {
+					row["messages"] = n
+				}
+			} else if c, ok := b.(topicCounter); ok {
 				if n, err := c.TopicCount(t); err == nil {
 					row["messages"] = n
 				}
