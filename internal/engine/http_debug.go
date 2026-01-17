@@ -425,6 +425,100 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 		TopicCount(ctx context.Context, topic string) (int64, error)
 	}
 
+	// LagRow is a snapshot row for consumer lag inspection.
+	// Convention:
+	// - head_offset: next offset to be produced (high watermark)
+	// - committed_offset: last committed/acked offset for the group (or "next to deliver", depending on your broker)
+	// - inflight: currently leased but not yet acked
+	// - lag: head_offset - committed_offset (clamped to >= 0)
+	type LagRow struct {
+		Group           string `json:"group"`
+		Topic           string `json:"topic"`
+		Partition       int    `json:"partition"`
+		HeadOffset      int64  `json:"head_offset"`
+		CommittedOffset int64  `json:"committed_offset"`
+		Inflight        int64  `json:"inflight"`
+		Lag             int64  `json:"lag"`
+	}
+
+	type consumerLagInspector interface {
+		ConsumerLag(ctx context.Context, group string, topic string) ([]LagRow, error)
+	}
+
+	mux.HandleFunc("/debug/topics/lag", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		group := strings.TrimSpace(r.URL.Query().Get("group"))
+		if group == "" {
+			http.Error(w, "missing group", http.StatusBadRequest)
+			return
+		}
+
+		topic := strings.TrimSpace(r.URL.Query().Get("topic")) // optional
+
+		// optional partition filter
+		partFilter := (*int)(nil)
+		if v := strings.TrimSpace(r.URL.Query().Get("partition")); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				http.Error(w, "invalid partition", http.StatusBadRequest)
+				return
+			}
+			partFilter = &n
+		}
+
+		li, ok := b.(consumerLagInspector)
+		if !ok {
+			http.Error(w, "lag not supported by broker", http.StatusNotImplemented)
+			return
+		}
+
+		rows, err := li.ConsumerLag(r.Context(), group, topic)
+		if err != nil {
+			http.Error(w, "lag failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// compute lag + apply partition filter
+		out := make([]LagRow, 0, len(rows))
+		for _, row := range rows {
+			if partFilter != nil && row.Partition != *partFilter {
+				continue
+			}
+			lag := row.HeadOffset - row.CommittedOffset
+			if lag < 0 {
+				lag = 0
+			}
+			row.Lag = lag
+			out = append(out, row)
+		}
+
+		// stable output order
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Topic != out[j].Topic {
+				return out[i].Topic < out[j].Topic
+			}
+			if out[i].Group != out[j].Group {
+				return out[i].Group < out[j].Group
+			}
+			return out[i].Partition < out[j].Partition
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{
+			"ok":    true,
+			"group": group,
+			"topic": topic,
+			"rows":  out,
+		})
+	})
+
 	mux.HandleFunc("/debug/topics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
