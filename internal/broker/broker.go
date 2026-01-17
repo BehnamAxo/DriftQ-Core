@@ -729,7 +729,6 @@ func (b *InMemoryBroker) createTopicLocked(name string, partitions int) error {
 
 	b.topics[name] = &TopicState{
 		partitions: make([][]Message, partitions),
-		nextOffset: 0,
 	}
 
 	return nil
@@ -760,6 +759,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 		if po < 0 || po >= numPartitions {
 			return errors.New("partition_override out of range")
 		}
+
 		part = po
 	}
 
@@ -805,8 +805,9 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 		}
 	}
 
-	msg.Offset = ts.nextOffset
+	// Kafka-style per-partition offsets: offset == index in that partition’s log
 	msg.Partition = part
+	msg.Offset = int64(len(ts.partitions[part]))
 
 	// WAL append first (if configured)
 	if b.wal != nil {
@@ -861,8 +862,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 		}
 	}
 
-	// Commit to in-memory state
-	ts.nextOffset++
+	// Commit to in-memory state (no ts.nextOffset anymore)
 	ts.partitions[part] = append(ts.partitions[part], msg)
 
 	// Deliver what we can
