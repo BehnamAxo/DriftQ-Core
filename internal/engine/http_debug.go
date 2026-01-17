@@ -436,7 +436,7 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 			return
 		}
 
-		var out []map[string]any
+		out := make([]map[string]any, 0, len(topics))
 		for _, t := range topics {
 			row := map[string]any{"topic": t}
 
