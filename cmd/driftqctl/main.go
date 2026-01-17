@@ -54,6 +54,7 @@ func usage() {
 		topics create --name T [--partitions N]   Create topic (POST /v1/topics?...)
 		topics peek --topic T [--n N]             Peek messages (GET /v1/consume ...)
 		runs status --run-id ID [--raw]          Show run + step status (GET /debug/run)
+		runs list|ls [--limit N]            List recent runs (GET /debug/runs)
 
 	Examples:
 		driftqctl topics list

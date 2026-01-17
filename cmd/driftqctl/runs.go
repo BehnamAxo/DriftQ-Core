@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+type debugRunsResp struct {
+	Ok    bool     `json:"ok"`
+	Count int      `json:"count"`
+	Runs  []string `json:"runs"`
+}
+
 type nodeStatusRow struct {
 	NodeID      string     `json:"node_id"`
 	Attempt     int        `json:"attempt"`
@@ -53,10 +59,13 @@ type debugRunResp struct {
 
 func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("runs: missing subcommand (use: status|step|events|state|diff)")
+		return fmt.Errorf("runs: missing subcommand (use: list|status|step|events|state|diff)")
 	}
 
 	switch args[0] {
+	case "list", "ls":
+		return runsList(baseURL, timeout, args[1:])
+
 	case "status":
 		return runsStatus(baseURL, timeout, args[1:])
 
@@ -386,67 +395,58 @@ func runsState(baseURL string, timeout time.Duration, args []string) error {
 	return nil
 }
 
-func pickString(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			if s, ok := v.(string); ok {
-				return strings.TrimSpace(s)
-			}
-		}
+func runsList(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs list", flag.ContinueOnError)
+	limit := fs.Int("limit", 50, "max runs to return")
+	raw := fs.Bool("raw", false, "print raw JSON response")
+
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	return ""
-}
-
-func pickInt(m map[string]any, keys ...string) int {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			switch vv := v.(type) {
-			case float64:
-				return int(vv)
-			case int:
-				return vv
-			}
-		}
+	q := url.Values{}
+	if *limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", *limit))
 	}
 
-	return 0
-}
+	path := "/debug/runs"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
 
-func compactAny(v any, max int) string {
-	b, err := json.Marshal(v)
+	resp, err := doGET(baseURL, timeout, path)
 	if err != nil {
-		return ""
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs list failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	s := strings.TrimSpace(string(b))
-	if len(s) > max {
-		return s[:max-3] + "..."
+	if *raw {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
 	}
 
-	return s
-}
-
-func emptyTo(s, fallback string) string {
-	if strings.TrimSpace(s) == "" {
-		return fallback
+	var out debugRunsResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
 	}
 
-	return s
-}
-
-func shortTime(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "-"
+	if len(out.Runs) == 0 {
+		fmt.Println("(no runs)")
+		return nil
 	}
 
-	// print just time-ish part to keep table readable
-	if len(s) > 19 {
-		return s[:19]
+	// IMPORTANT: don't sort here if you want "newest first" from the server.
+	for _, id := range out.Runs {
+		fmt.Println(id)
 	}
 
-	return s
+	return nil
 }
 
 func runsDiff(baseURL string, timeout time.Duration, args []string) error {
@@ -582,6 +582,69 @@ func runsDiff(baseURL string, timeout time.Duration, args []string) error {
 	return nil
 }
 
+func pickString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			if s, ok := v.(string); ok {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+
+	return ""
+}
+
+func pickInt(m map[string]any, keys ...string) int {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch vv := v.(type) {
+			case float64:
+				return int(vv)
+			case int:
+				return vv
+			}
+		}
+	}
+
+	return 0
+}
+
+func compactAny(v any, max int) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		return s[:max-3] + "..."
+	}
+
+	return s
+}
+
+func emptyTo(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+
+	return s
+}
+
+func shortTime(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+
+	// print just time-ish part to keep table readable
+	if len(s) > 19 {
+		return s[:19]
+	}
+
+	return s
+}
+
 func fetchRunState(baseURL string, timeout time.Duration, runID string) (*runStateResp, error) {
 	path := "/debug/run-state?run_id=" + url.QueryEscape(runID)
 	resp, err := doGET(baseURL, timeout, path)
@@ -600,110 +663,6 @@ func fetchRunState(baseURL string, timeout time.Duration, runID string) (*runSta
 		return nil, fmt.Errorf("runs state: bad json: %w", err)
 	}
 	return &out, nil
-}
-
-func attemptList(xs []nodeExec) string {
-	var a []string
-	for _, x := range xs {
-		a = append(a, fmt.Sprintf("%d", x.Attempt))
-	}
-
-	return strings.Join(a, ",")
-}
-
-func durationStr(s, e *time.Time) string {
-	if s == nil || e == nil {
-		return "-"
-	}
-
-	return e.Sub(*s).String()
-}
-
-func printIfChanged(label, a, b string) {
-	if a == b {
-		return
-	}
-
-	// keep it obvious for CLI users
-	if a == "" {
-		a = "(empty)"
-	}
-
-	if b == "" {
-		b = "(empty)"
-	}
-	fmt.Printf("%s: %s -> %s\n", label, a, b)
-}
-
-func printJSONDiff(label string, a, b any) {
-	aj := normalizeJSON(a)
-	bj := normalizeJSON(b)
-
-	if bytes.Equal(aj, bj) {
-		return
-	}
-
-	var am map[string]any
-	var bm map[string]any
-	if json.Unmarshal(aj, &am) == nil && json.Unmarshal(bj, &bm) == nil {
-		lines := diffMaps(am, bm, label)
-		if len(lines) == 0 {
-			return
-		}
-		for _, ln := range lines {
-			fmt.Println(ln)
-		}
-		return
-	}
-
-	fmt.Printf("%s: %s -> %s\n", label, strings.TrimSpace(string(aj)), strings.TrimSpace(string(bj)))
-}
-
-func normalizeJSON(v any) []byte {
-	if v == nil {
-		return []byte("null")
-	}
-
-	b, err := json.Marshal(v)
-	if err != nil {
-		// fallback to fmt
-		return []byte(fmt.Sprintf("%v", v))
-	}
-
-	return b
-}
-
-func diffMaps(a, b map[string]any, prefix string) []string {
-	keys := map[string]struct{}{}
-	for k := range a {
-		keys[k] = struct{}{}
-	}
-
-	for k := range b {
-		keys[k] = struct{}{}
-	}
-
-	var all []string
-	for k := range keys {
-		av, aok := a[k]
-		bv, bok := b[k]
-
-		switch {
-		case aok && !bok:
-			all = append(all, fmt.Sprintf("%s.%s: %s -> (missing)", prefix, k, strings.TrimSpace(string(normalizeJSON(av)))))
-		case !aok && bok:
-			all = append(all, fmt.Sprintf("%s.%s: (missing) -> %s", prefix, k, strings.TrimSpace(string(normalizeJSON(bv)))))
-		default:
-			aj := strings.TrimSpace(string(normalizeJSON(av)))
-			bj := strings.TrimSpace(string(normalizeJSON(bv)))
-			if aj != bj {
-				all = append(all, fmt.Sprintf("%s.%s: %s -> %s", prefix, k, aj, bj))
-			}
-		}
-	}
-
-	sort.Strings(all)
-	return all
 }
 
 func prettyJSON(v any) string {

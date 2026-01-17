@@ -276,7 +276,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	// Small/fast summary: run + per-node status rows (this is what your CLI should use)
 	mux.HandleFunc("/debug/run", runner.handleDebugRun)
 
-	// list runs (for CLI: "what runs exist?")
+	// List runs (newest first), GET /debug/runs?limit=50
 	mux.HandleFunc("/debug/runs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -295,14 +295,13 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			limit = 1
 		}
 
-		if limit > 200 {
-			limit = 200
+		if limit > 500 {
+			limit = 500
 		}
 
-		runs := runner.store.ListRuns()
-
-		if len(runs) > limit {
-			runs = runs[:limit]
+		ids := runner.store.ListRuns()
+		if len(ids) > limit {
+			ids = ids[:limit]
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -310,8 +309,8 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
 			"ok":    true,
-			"limit": limit,
-			"runs":  runs,
+			"count": len(ids),
+			"runs":  ids,
 		})
 	})
 
