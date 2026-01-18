@@ -62,9 +62,6 @@ func usage() {
 		runs list|ls [--limit N]
 				List recent runs (GET /debug/runs)
 
-		runs demo
-				Create a demo run (POST /debug/run-demo)
-
 		runs status --run-id ID [--raw]
 				Show run + step status (GET /debug/run)
 
@@ -80,12 +77,18 @@ func usage() {
 		runs diff --run-id ID --node-id N [--from A] [--to B] [--raw]
 				Diff two attempts of a node (needs retries) (GET /debug/run-state)
 
+		runs cancel --run-id ID [--reason TEXT]
+				Cancel a run (POST /debug/run-cancel)
+
+		runs demo [--run-id ID]
+				Run the built-in demo workflow (POST /debug/run-demo)
+
 	Examples:
 		driftqctl topics list
 		driftqctl --base-url http://localhost:8080 topics create --name demo --partitions 1
 		driftqctl --base-url http://localhost:8080 runs list --limit 20
-		driftqctl --base-url http://localhost:8080 runs demo
 		driftqctl --base-url http://localhost:8080 runs status --run-id demo-20260101T000000Z
+		driftqctl --base-url http://localhost:8080 runs cancel --run-id demo-20260101T000000Z --reason "stop it"
 	`)
 }
 

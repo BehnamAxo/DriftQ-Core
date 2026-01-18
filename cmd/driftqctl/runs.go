@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -59,12 +60,18 @@ type debugRunResp struct {
 
 func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("runs: missing subcommand (use: list|status|step|events|state|diff)")
+		return fmt.Errorf("runs: missing subcommand (use: list|status|step|events|state|diff|cancel|demo)")
 	}
 
 	switch args[0] {
+	case "cancel":
+		return runsCancel(baseURL, timeout, args[1:])
+
 	case "demo":
 		return runsDemo(baseURL, timeout, args[1:])
+
+	case "diff":
+		return runsDiff(baseURL, timeout, args[1:])
 
 	case "list", "ls":
 		return runsList(baseURL, timeout, args[1:])
@@ -84,11 +91,8 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	case "show", "get":
 		return runsStatus(baseURL, timeout, args[1:])
 
-	case "diff":
-		return runsDiff(baseURL, timeout, args[1:])
-
 	default:
-		return fmt.Errorf("runs: unknown subcommand %q (use: status|step|events|state|diff)", args[0])
+		return fmt.Errorf("runs: unknown subcommand %q (use: list|status|step|events|state|diff|cancel|demo)", args[0])
 	}
 }
 
@@ -130,6 +134,65 @@ func runsDemo(baseURL string, timeout time.Duration, args []string) error {
 
 	fmt.Printf("next: driftqctl runs status --run-id %s\n", runID)
 
+	return nil
+}
+
+func runsCancel(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs cancel", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+	reason := fs.String("reason", "", "optional reason")
+	raw := fs.Bool("raw", false, "print raw JSON response")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	if id == "" {
+		return fmt.Errorf("runs cancel: --run-id is required")
+	}
+
+	bodyObj := map[string]string{"run_id": id}
+	if strings.TrimSpace(*reason) != "" {
+		bodyObj["reason"] = strings.TrimSpace(*reason)
+	}
+
+	b, err := json.Marshal(bodyObj)
+	if err != nil {
+		return fmt.Errorf("runs cancel: marshal body: %w", err)
+	}
+
+	u := strings.TrimRight(baseURL, "/") + "/debug/run-cancel"
+
+	client := http.DefaultClient
+	if timeout > 0 {
+		client = &http.Client{Timeout: timeout}
+	}
+
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs cancel failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	if *raw {
+		fmt.Println(strings.TrimSpace(string(respBody)))
+		return nil
+	}
+
+	fmt.Printf("canceled run_id=%s\n", id)
 	return nil
 }
 
