@@ -250,6 +250,9 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 	resCh := make(chan nodeResult, maxPar)
 	running := 0
+	inflightKey := map[string]string{}     // nodeID -> capKey
+	lastThrottle := map[string]time.Time{} // capKey -> last event time (local suppression)
+	throttleRetry := 25 * time.Millisecond
 
 	stopScheduling := false
 	externalCanceled := false // true if CancelRun already set run.Status=canceled in store
@@ -328,28 +331,17 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		}
 
 		// Start as many ready nodes as we can
-		for !stopScheduling && running < maxPar && len(ready) > 0 {
+		scheduledAny := false
+		maxSkips := len(ready)
+		skips := 0
 
-			// v2.7: max attempts budget (global across run)
-			if !budgetExceeded && effBudget.MaxAttempts > 0 && (attemptsUsed+1) > effBudget.MaxAttempts {
-				triggerBudgetExceeded(BudgetExceededPayload{
-					Scope:  BudgetScopeRun,
-					Reason: BudgetReasonMaxAttempts,
-					Limit:  map[string]any{"max_attempts": effBudget.MaxAttempts},
-					Used:   map[string]any{"attempts": attemptsUsed},
-				})
+		for !stopScheduling && running < maxPar && len(ready) > 0 {
+			// If everything in ready is throttled, bail out and wait a bit (avoid infinite loop / CPU spin stuff)
+			if skips >= maxSkips && !scheduledAny {
 				break
 			}
 
-			// count this attempt as "spent"
-			attemptsUsed++
-			run.BudgetUsage.Attempts = attemptsUsed
-			if run.StartedAt != nil {
-				run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
-			}
-			_ = r.store.UpdateRun(run)
-
-			// pop next ready node
+			// pop next ready node (ONLY ONCE)
 			nodeID := ready[0]
 			ready = ready[1:]
 
@@ -357,6 +349,70 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			if !ok {
 				return ErrGraphInvalid
 			}
+
+			// v2.7: max attempts budget (global across run)
+			// IMPORTANT: check this BEFORE acquiring caps, otherwise you can leak inflight cap slots
+			if !budgetExceeded && effBudget.MaxAttempts > 0 && (attemptsUsed+1) > effBudget.MaxAttempts {
+				triggerBudgetExceeded(BudgetExceededPayload{
+					Scope:  BudgetScopeRun,
+					Reason: BudgetReasonMaxAttempts,
+					Limit:  map[string]any{"max_attempts": effBudget.MaxAttempts},
+					Used:   map[string]any{"attempts": attemptsUsed},
+				})
+
+				break
+			}
+
+			// v2.7: concurrency cap by topic (skip during replay cache runs)
+			if cache == nil && node.Topic != "" {
+				cap, scope, key := r.concurrencyCapFor(tenantID, node.Topic)
+				if cap > 0 {
+					acqOK, inflight := r.tryAcquireCap(key, cap)
+					if !acqOK {
+						// put it back and try others
+						ready = append(ready, nodeID)
+						skips++
+
+						now := time.Now().UTC()
+						if shouldEmitThrottle(lastThrottle, key, now, 250*time.Millisecond) {
+							p, _ := json.Marshal(ThrottledPayload{
+								Reason:       "concurrency_cap",
+								Scope:        scope,
+								TenantID:     tenantID,
+								Topic:        node.Topic,
+								Limit:        cap,
+								Inflight:     inflight,
+								RetryAfterMS: throttleRetry.Milliseconds(),
+							})
+
+							_, _ = r.store.AppendEvent(RunEvent{
+								RunID:      runID,
+								Type:       EventThrottled,
+								WorkflowID: wfID,
+								NodeID:     node.NodeID,
+								Payload:    p,
+							})
+						}
+
+						continue
+					}
+
+					// acquired: remember so we can release when node finishes
+					inflightKey[nodeID] = key
+				}
+			}
+
+			// we are actually going to start work (or replay-cache it)
+			scheduledAny = true
+			skips = 0
+
+			// count this attempt as "spent" (note that throttling does NOT consume attempts)
+			attemptsUsed++
+			run.BudgetUsage.Attempts = attemptsUsed
+			if run.StartedAt != nil {
+				run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
+			}
+			_ = r.store.UpdateRun(run)
 
 			// Build input
 			var nodeInput json.RawMessage
@@ -366,26 +422,34 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			} else {
 				sort.Slice(deps, func(i, j int) bool { return nodeIndex[deps[i]] < nodeIndex[deps[j]] })
 				agg := make(map[string]json.RawMessage, len(deps))
+
 				for _, depID := range deps {
 					agg[depID] = cloneRaw(outputs[depID])
 				}
+
 				b, err := json.Marshal(agg)
 				if err != nil {
+					// release cap if we acquired it
+					if key := inflightKey[nodeID]; key != "" {
+						r.releaseCap(key)
+						delete(inflightKey, nodeID)
+					}
+
 					return err
 				}
 				nodeInput = json.RawMessage(b)
 			}
 
-			// increment attempt on replay
+			// increment attempt number per node
 			attempt := 1
 			if prev := maxAttempt[node.NodeID]; prev > 0 {
 				attempt = prev + 1
 			}
-			maxAttempt[node.NodeID] = attempt
 
+			maxAttempt[node.NodeID] = attempt
 			nodeStart := time.Now().UTC()
 
-			// ---------------- REPLAY CACHE SHORT-CIRCUIT ----------------
+			// REPLAY CACHE SHORT-CIRCUIT section
 			if cache != nil {
 				if entry, ok := cache[node.NodeID]; ok {
 					// synthetic "instant" completion
@@ -400,7 +464,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						"cached_attempt", entry.Attempt,
 					)
 
-					// Emit started for consistent event stream
 					_, _ = r.store.AppendEvent(RunEvent{
 						RunID:      runID,
 						Type:       EventNodeStarted,
@@ -411,7 +474,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 					out := cloneRaw(entry.Output)
 
-					// Persist succeeded immediately (no goroutine)
 					ne := NodeExecution{
 						RunID:      runID,
 						WorkflowID: wfID,
@@ -423,18 +485,19 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						Input:      cloneRaw(nodeInput),
 						Output:     out,
 					}
+
 					if err := r.store.UpsertNodeExecution(ne); err != nil {
 						return err
 					}
 
-					// IMPORTANT: mark as done so skip/indegree logic stays correct
+					// mark done (IMPORTANT)
 					done[node.NodeID] = ne
 
-					// Emit finished event (inline or artifact)
 					payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, attempt, out)
 					if err != nil {
 						return err
 					}
+
 					_, _ = r.store.AppendEvent(RunEvent{
 						RunID:      runID,
 						Type:       EventNodeFinished,
@@ -445,16 +508,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					})
 
 					r.metrics.ObserveNode(node.NodeID, true, nodeDur)
-
-					// Make output available to downstream nodes
 					outputs[node.NodeID] = out
 
-					// unlock children
 					for _, child := range children[node.NodeID] {
 						if _, isDone := done[child]; isDone {
 							continue
 						}
-
 						inDegree[child]--
 						if inDegree[child] == 0 {
 							ready = append(ready, child)
@@ -465,7 +524,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					continue
 				}
 			}
-			// ------------------------------------------------------------
 
 			// Normal execution path (no cache hit)
 			r.logger.Info("node started",
@@ -484,9 +542,15 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				StartedAt:  &nodeStart,
 				Input:      cloneRaw(nodeInput),
 			}
+
 			if err := r.store.UpsertNodeExecution(ne); err != nil {
-				r.logger.Error("node upsert start failed",
-					"trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
+				r.logger.Error("node upsert start failed", "trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
+				// release cap if we acquired it
+				if key := inflightKey[nodeID]; key != "" {
+					r.releaseCap(key)
+					delete(inflightKey, nodeID)
+				}
+
 				return err
 			}
 
@@ -498,7 +562,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				Attempt:    attempt,
 			})
 
-			// capture locals for goroutine
 			n := node
 			inp := cloneRaw(nodeInput)
 			started := nodeStart
@@ -535,8 +598,22 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			}()
 		}
 
-		// If nothing inflight, loop back to schedule (or exit if ready empty)
+		// If nothing inflight:
+		// - if stopScheduling => we're done (don't spin forever with ready still populated)
+		// - if ready has items but they're throttled => wait briefly to avoid CPU spin
 		if running == 0 {
+			if stopScheduling {
+				break
+			}
+
+			if len(ready) > 0 {
+				select {
+				case <-runCtx.Done():
+					stopScheduling = true
+					runCancel()
+				case <-time.After(throttleRetry):
+				}
+			}
 			continue
 		}
 
@@ -553,6 +630,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 		case res := <-resCh:
 			running--
+
+			// v2.7: release any acquired cap slot
+			if key := inflightKey[res.nodeID]; key != "" {
+				r.releaseCap(key)
+				delete(inflightKey, res.nodeID)
+			}
 
 			node := nodeByID[res.nodeID]
 			nodeEnd := res.ended
@@ -738,6 +821,8 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			if err := r.store.UpsertNodeExecution(ne); err != nil {
 				return err
 			}
+
+			done[res.nodeID] = ne
 
 			// Build payload that either inlines output or stores it as an artifact
 			payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, res.attempt, res.output)

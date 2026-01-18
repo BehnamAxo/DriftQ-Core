@@ -49,6 +49,12 @@ type Runner struct {
 	defaultRunBudget BudgetPolicy
 	tenantBudgets    map[string]BudgetPolicy
 	rateLimiter      RateLimiter
+
+	// (in-memory for now)
+	throttleMu      sync.Mutex
+	topicCaps       map[string]int            // topic -> cap
+	tenantTopicCaps map[string]map[string]int // tenant -> (topic -> cap)
+	inflightCaps    map[string]int            // capKey -> inflight count
 }
 
 func NewRunner(store Store) *Runner {
@@ -61,6 +67,9 @@ func NewRunner(store Store) *Runner {
 		cancels:             make(map[string]context.CancelFunc),
 		artifactInlineLimit: DefaultArtifactInlineLimit,
 		tenantBudgets:       make(map[string]BudgetPolicy),
+		topicCaps:           make(map[string]int),
+		tenantTopicCaps:     make(map[string]map[string]int),
+		inflightCaps:        make(map[string]int),
 	}
 }
 
