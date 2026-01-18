@@ -77,6 +77,9 @@ func usage() {
 		runs diff --run-id ID --node-id N [--from A] [--to B] [--raw]
 				Diff two attempts of a node (needs retries) (GET /debug/run-state)
 
+		runs artifacts --run-id ID [--node-id N] [--raw]
+				List artifacts for a run (GET /debug/run-state + GET /debug/artifact-meta)
+
 		runs cancel --run-id ID [--reason TEXT]
 				Cancel a run (POST /debug/run-cancel)
 
@@ -88,6 +91,7 @@ func usage() {
 		driftqctl --base-url http://localhost:8080 topics create --name demo --partitions 1
 		driftqctl --base-url http://localhost:8080 runs list --limit 20
 		driftqctl --base-url http://localhost:8080 runs status --run-id demo-20260101T000000Z
+		driftqctl --base-url http://localhost:8080 runs artifacts --run-id demo-20260101T000000Z
 		driftqctl --base-url http://localhost:8080 runs cancel --run-id demo-20260101T000000Z --reason "stop it"
 	`)
 }
