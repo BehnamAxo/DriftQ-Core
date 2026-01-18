@@ -60,6 +60,7 @@ func NewRunner(store Store) *Runner {
 		maxParallel:         1,
 		cancels:             make(map[string]context.CancelFunc),
 		artifactInlineLimit: DefaultArtifactInlineLimit,
+		tenantBudgets:       make(map[string]BudgetPolicy),
 	}
 }
 

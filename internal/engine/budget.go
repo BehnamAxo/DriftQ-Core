@@ -2,8 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrBudgetExceeded = errors.New("budget exceeded")
 
 // BudgetPolicy is a best-effort safety guardrail for a run
 //
@@ -113,4 +116,57 @@ func TenantIDFrom(ctx context.Context) string {
 	}
 
 	return ""
+}
+
+func effectiveBudget(def BudgetPolicy, tenant BudgetPolicy, perRun BudgetPolicy) BudgetPolicy {
+	return BudgetPolicy{
+		MaxTokens:          minPosI64(def.MaxTokens, tenant.MaxTokens, perRun.MaxTokens),
+		MaxDollars:         minPosF64(def.MaxDollars, tenant.MaxDollars, perRun.MaxDollars),
+		WallClockTimeoutMS: minPosI64(def.WallClockTimeoutMS, tenant.WallClockTimeoutMS, perRun.WallClockTimeoutMS),
+		MaxAttempts:        minPosInt(def.MaxAttempts, tenant.MaxAttempts, perRun.MaxAttempts),
+	}
+}
+
+func minPosI64(vals ...int64) int64 {
+	var out int64
+	for _, v := range vals {
+		if v <= 0 {
+			continue
+		}
+
+		if out == 0 || v < out {
+			out = v
+		}
+	}
+
+	return out
+}
+
+func minPosF64(vals ...float64) float64 {
+	var out float64
+	for _, v := range vals {
+		if v <= 0 {
+			continue
+		}
+		if out == 0 || v < out {
+			out = v
+		}
+	}
+
+	return out
+}
+
+func minPosInt(vals ...int) int {
+	var out int
+	for _, v := range vals {
+		if v <= 0 {
+			continue
+		}
+
+		if out == 0 || v < out {
+			out = v
+		}
+	}
+
+	return out
 }

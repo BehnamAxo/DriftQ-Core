@@ -60,6 +60,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	done := map[string]NodeExecution{}
 	outputs := map[string]json.RawMessage{}
 	maxAttempt := map[string]int{}
+	attemptsUsed := 0
 
 	if ok {
 		run = existingRun
@@ -90,6 +91,8 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		r.logger.Info("resuming existing run", "trace_id", traceID, "run_id", runID)
 
 		prevNodes := r.store.ListNodeExecutions(runID)
+		attemptsUsed = len(prevNodes)
+
 		for _, ne := range prevNodes {
 			// track max attempt per node (even for failed/running/waiting records)
 			if ne.Attempt > maxAttempt[ne.NodeID] {
@@ -183,8 +186,33 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 	r.logger.Info("run started", "trace_id", traceID, "run_id", runID)
 
-	// ---- per-run cancelable context so /run-cancel can interrupt in-flight node.Run ----
+	// v2.7: tenant + effective budget snapshot
+	tenantID := run.TenantID
+	if tenantID == "" {
+		tenantID = TenantIDFrom(ctx)
+		if tenantID != "" {
+			run.TenantID = tenantID
+		}
+	}
+
+	defBudget := r.getDefaultRunBudget()
+	tenantBudget, _ := r.getTenantBudget(tenantID)
+	effBudget := effectiveBudget(defBudget, tenantBudget, run.RunBudget)
+
+	// snapshot effective policy + usage onto the run so debugger/CLI can show it
+	run.RunBudget = effBudget
+	run.BudgetUsage.Attempts = attemptsUsed
+	if run.StartedAt != nil {
+		run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
+	}
+	_ = r.store.UpdateRun(run)
+
+	// make tenant available to handlers
+	ctx = WithTenantID(ctx, tenantID)
+
+	// per-run cancelable context so /run-cancel can interrupt in-flight node.Run
 	runCtx, runCancel := context.WithCancel(ctx)
+
 	r.setRunCancel(runID, runCancel)
 	defer func() {
 		r.clearRunCancel(runID)
@@ -229,7 +257,68 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	waiting := false
 	var failErr error
 
+	budgetExceeded := false
+
+	triggerBudgetExceeded := func(p BudgetExceededPayload) {
+		if budgetExceeded {
+			return
+		}
+		budgetExceeded = true
+
+		end := time.Now().UTC()
+		run.Status = RunStatusFailed
+		run.EndedAt = &end
+		run.TerminalReason = "budget_exceeded"
+
+		run.BudgetUsage.Attempts = attemptsUsed
+		if run.StartedAt != nil {
+			run.BudgetUsage.WallClock = end.Sub(*run.StartedAt).Milliseconds()
+		}
+
+		meta, _ := json.Marshal(p)
+		run.TerminalMeta = meta
+		_ = r.store.UpdateRun(run)
+
+		// record event + clear reason
+		_, _ = r.store.AppendEvent(RunEvent{
+			RunID:      runID,
+			Type:       EventBudgetExceeded,
+			WorkflowID: wfID,
+			Payload:    meta,
+		})
+
+		// terminal run_finished (don’t let success/other paths also emit one later)
+		fin, _ := json.Marshal(map[string]any{
+			"status":          "failed",
+			"terminal_reason": "budget_exceeded",
+		})
+		_, _ = r.store.AppendEvent(RunEvent{
+			RunID:      runID,
+			Type:       EventRunFinished,
+			WorkflowID: wfID,
+			Payload:    fin,
+		})
+
+		// stop scheduling + interrupt inflight
+		stopScheduling = true
+		runCancel()
+	}
+
 	for len(ready) > 0 || running > 0 {
+
+		// v2.7: wall-clock timeout budget
+		if !budgetExceeded && effBudget.WallClockTimeoutMS > 0 && run.StartedAt != nil {
+			used := time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
+			if used > effBudget.WallClockTimeoutMS {
+				triggerBudgetExceeded(BudgetExceededPayload{
+					Scope:  BudgetScopeRun,
+					Reason: BudgetReasonWallClock,
+					Limit:  map[string]any{"wall_clock_timeout_ms": effBudget.WallClockTimeoutMS},
+					Used:   map[string]any{"wall_clock_ms": used},
+				})
+			}
+		}
+
 		// External cancel (CancelRun) should interrupt inflight and stop scheduling
 		if !stopScheduling && isCanceled() {
 			externalCanceled = true
@@ -240,6 +329,26 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 		// Start as many ready nodes as we can
 		for !stopScheduling && running < maxPar && len(ready) > 0 {
+
+			// v2.7: max attempts budget (global across run)
+			if !budgetExceeded && effBudget.MaxAttempts > 0 && (attemptsUsed+1) > effBudget.MaxAttempts {
+				triggerBudgetExceeded(BudgetExceededPayload{
+					Scope:  BudgetScopeRun,
+					Reason: BudgetReasonMaxAttempts,
+					Limit:  map[string]any{"max_attempts": effBudget.MaxAttempts},
+					Used:   map[string]any{"attempts": attemptsUsed},
+				})
+				break
+			}
+
+			// count this attempt as "spent"
+			attemptsUsed++
+			run.BudgetUsage.Attempts = attemptsUsed
+			if run.StartedAt != nil {
+				run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
+			}
+			_ = r.store.UpdateRun(run)
+
 			// pop next ready node
 			nodeID := ready[0]
 			ready = ready[1:]
@@ -448,6 +557,23 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			node := nodeByID[res.nodeID]
 			nodeEnd := res.ended
 			nodeDur := nodeEnd.Sub(res.started)
+
+			// v2.7: budget exceeded => treat inflight results as canceled (don’t flip run/node into “failed”)
+			if budgetExceeded {
+				ne := NodeExecution{
+					RunID:      runID,
+					WorkflowID: wfID,
+					NodeID:     res.nodeID,
+					Attempt:    res.attempt,
+					Status:     NodeStatusCanceled,
+					StartedAt:  &res.started,
+					EndedAt:    &nodeEnd,
+					Input:      cloneRaw(res.input),
+					Error:      "budget_exceeded",
+				}
+				_ = r.store.UpsertNodeExecution(ne)
+				continue
+			}
 
 			// If externally canceled, mark node as canceled (don’t fail run)
 			if externalCanceled || isCanceled() {
@@ -663,6 +789,10 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	// if canceled while last node was running, do NOT overwrite as SUCCEEDED
 	if isCanceled() {
 		return ErrRunCanceled
+	}
+
+	if budgetExceeded {
+		return ErrBudgetExceeded
 	}
 
 	// finish run success
