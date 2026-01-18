@@ -243,6 +243,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		err     error
 	}
 
+	type usageEvent struct {
+		nodeID  string
+		attempt int
+		delta   UsageDelta
+	}
+
 	maxPar := r.maxParallel
 	if maxPar < 1 {
 		maxPar = 1
@@ -250,6 +256,8 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 	resCh := make(chan nodeResult, maxPar)
 	running := 0
+	usageCh := make(chan usageEvent, maxPar*16) // best efford
+
 	inflightKey := map[string]string{}     // nodeID -> capKey
 	lastThrottle := map[string]time.Time{} // capKey -> last event time (local suppression)
 	throttleRetry := 25 * time.Millisecond
@@ -259,7 +267,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	failed := false
 	waiting := false
 	var failErr error
-
 	budgetExceeded := false
 
 	triggerBudgetExceeded := func(p BudgetExceededPayload) {
@@ -572,6 +579,20 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			go func() {
 				stepCtx := WithAttempt(runCtx, att)
 
+				// v2.7: allow handlers to consult provider rate limits
+				if rl := r.getRateLimiter(); rl != nil {
+					stepCtx = WithRateLimiter(stepCtx, rl)
+				}
+
+				// v2.7: allow handlers to report token/$ usage (best-effort, non-blocking)
+				stepCtx = WithUsageSink(stepCtx, func(d UsageDelta) {
+					select {
+					case usageCh <- usageEvent{nodeID: n.NodeID, attempt: att, delta: d}:
+					default:
+						// drop to avoid deadlocks if run ends while a goroutine still reports
+					}
+				})
+
 				execCtx := stepCtx
 				cancelFn := func() {}
 				if n.TimeoutMS > 0 {
@@ -611,6 +632,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				case <-runCtx.Done():
 					stopScheduling = true
 					runCancel()
+
 				case <-time.After(throttleRetry):
 				}
 			}
@@ -619,14 +641,47 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 		// Wait for either a node result or cancel
 		select {
-		case <-runCtx.Done():
-			// If CancelRun already updated store, don't overwrite; just stop scheduling and drain
-			if isCanceled() {
-				externalCanceled = true
+		case ue := <-usageCh:
+			// v2.7: token/$ accounting + budget enforcement (best-effort)
+			if budgetExceeded {
+				break
 			}
-			stopScheduling = true
-			// ensure inflight sees cancel
-			runCancel()
+
+			if ue.delta.Tokens != 0 {
+				run.BudgetUsage.Tokens += ue.delta.Tokens
+			}
+
+			if ue.delta.Dollars != 0 {
+				run.BudgetUsage.Dollars += ue.delta.Dollars
+			}
+
+			if run.StartedAt != nil {
+				run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
+			}
+
+			_ = r.store.UpdateRun(run)
+
+			if effBudget.MaxTokens > 0 && run.BudgetUsage.Tokens > effBudget.MaxTokens {
+				triggerBudgetExceeded(BudgetExceededPayload{
+					Scope:  BudgetScopeRun,
+					Reason: BudgetReasonTokens,
+					Limit:  map[string]any{"max_tokens": effBudget.MaxTokens},
+					Used:   map[string]any{"tokens": run.BudgetUsage.Tokens},
+				})
+
+				break
+			}
+
+			if effBudget.MaxDollars > 0 && run.BudgetUsage.Dollars > effBudget.MaxDollars {
+				triggerBudgetExceeded(BudgetExceededPayload{
+					Scope:  BudgetScopeRun,
+					Reason: BudgetReasonDollars,
+					Limit:  map[string]any{"max_dollars": effBudget.MaxDollars},
+					Used:   map[string]any{"dollars": run.BudgetUsage.Dollars},
+				})
+
+				// break
+			}
 
 		case res := <-resCh:
 			running--
