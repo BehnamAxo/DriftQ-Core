@@ -46,8 +46,10 @@ func CompileSpecToExecutable(spec WorkflowSpec, g WorkflowGraph, reg *HandlerReg
 		if !ok {
 			return WorkflowGraph{}, fmt.Errorf("no handler registered for topic %q (node %s)", topic, nd.NodeID)
 		}
+
 		out.Nodes = append(out.Nodes, NodeDef{
 			NodeID: nd.NodeID,
+			Topic:  topic,
 			Run:    fn,
 		})
 	}

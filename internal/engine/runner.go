@@ -24,6 +24,7 @@ type Workflow struct {
 
 type NodeDef struct {
 	NodeID    string
+	Topic     string
 	Run       NodeFunc
 	TimeoutMS int
 }
@@ -43,6 +44,11 @@ type Runner struct {
 	// v2.5 artifacts
 	artifacts           ArtifactStore // optional (nil = inline only)
 	artifactInlineLimit int           // bytes, if output > limit => store as artifact + emit ref
+
+	// v2.7 budgets/throttles
+	defaultRunBudget BudgetPolicy
+	tenantBudgets    map[string]BudgetPolicy
+	rateLimiter      RateLimiter
 }
 
 func NewRunner(store Store) *Runner {
