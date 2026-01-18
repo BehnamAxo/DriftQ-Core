@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -37,7 +37,6 @@ func traceIDFromRequest(req *http.Request) string {
 	if tid == "" {
 		tid = NewTraceID()
 	}
-
 	return tid
 }
 
@@ -71,6 +70,10 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 
 		store, err := runner.getArtifactStore()
 		if err != nil {
+			if errors.Is(err, ErrArtifactStoreUnset) {
+				http.Error(w, "artifact store not configured", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -113,6 +116,10 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		_ = enc.Encode(snap)
 	})
 
+	// POST /debug/run-demo
+	// Optional input:
+	//   - query: ?x=5
+	//   - JSON body: {"x":5}
 	mux.HandleFunc("/debug/run-demo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -127,9 +134,48 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			X int `json:"x"`
 		}
 
+		// default input
+		x := 1
+
+		// query overrides
+		if qs := strings.TrimSpace(r.URL.Query().Get("x")); qs != "" {
+			n, err := strconv.Atoi(qs)
+			if err != nil {
+				http.Error(w, "x must be an int", http.StatusBadRequest)
+				return
+			}
+			x = n
+		} else {
+			// optional JSON body
+			var p demoPayload
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&p); err != nil && !errors.Is(err, io.EOF) {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			// if body present, use it (even if x=0)
+			if !errors.Is(dec.Decode(&struct{}{}), io.EOF) {
+				// if there's extra junk after the first object
+				// NOTE: Decoder's state is weird after second decode; easiest is to just reject.
+				// But we already attempted a second decode; if it's not EOF, it's extra tokens.
+				http.Error(w, "bad json: trailing data", http.StatusBadRequest)
+				return
+			}
+			// If the first decode succeeded (not EOF), use p.X
+			// We detect that by checking ContentLength/Body read is messy; easiest: trust that if p != zero value and body existed.
+			// But p.X may legitimately be 0, so we need a safer approach.
+			// The simplest: if ContentLength != 0, assume caller intended a body.
+			if r.ContentLength != 0 {
+				x = p.X
+			}
+		}
+
 		// IMPORTANT: define runID before node funcs so they can capture it
 		runID := "demo-" + time.Now().UTC().Format("20060102T150405.000000000Z")
-		initial := json.RawMessage(`{"x":1}`)
+
+		initialBytes, _ := json.Marshal(demoPayload{X: x})
+		initial := json.RawMessage(initialBytes)
 
 		nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			var p demoPayload
@@ -206,6 +252,11 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		if err := runner.RunDAG(ctx, runID, g, initial); err != nil {
+			// Make the common failure mode obvious
+			if errors.Is(err, ErrArtifactStoreUnset) {
+				http.Error(w, "run failed: artifact store not configured", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "run failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -396,7 +447,6 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		if limit < 1 {
 			limit = 1
 		}
-
 		if limit > 500 {
 			limit = 500
 		}
@@ -438,17 +488,14 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				http.Error(w, "invalid artifact id", http.StatusBadRequest)
 				return
 			}
-
 			if errors.Is(err, ErrArtifactNotFound) {
 				http.Error(w, "artifact not found", http.StatusNotFound)
 				return
 			}
-
 			if errors.Is(err, ErrArtifactStoreUnset) {
 				http.Error(w, "artifact store not configured", http.StatusBadRequest)
 				return
 			}
-
 			http.Error(w, "get artifact meta failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -486,17 +533,14 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				http.Error(w, "invalid artifact id", http.StatusBadRequest)
 				return
 			}
-
 			if errors.Is(err, ErrArtifactNotFound) {
 				http.Error(w, "artifact not found", http.StatusNotFound)
 				return
 			}
-
 			if errors.Is(err, ErrArtifactStoreUnset) {
 				http.Error(w, "artifact store not configured", http.StatusBadRequest)
 				return
 			}
-
 			http.Error(w, "get artifact failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -529,14 +573,12 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 
 		partitions := 1
 		if p := strings.TrimSpace(r.URL.Query().Get("partitions")); p != "" {
-			fs := flag.NewFlagSet("topics-create", flag.ContinueOnError)
-			pi := fs.Int("partitions", 1, "")
-			_ = fs.Parse([]string{"-partitions=" + p})
-			partitions = *pi
-			if partitions < 1 {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 1 {
 				http.Error(w, "partitions must be >= 1", http.StatusBadRequest)
 				return
 			}
+			partitions = n
 		}
 
 		// This endpoint is only here to help test the CLI
@@ -551,22 +593,19 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 
 // This is broker-only and it mounts debug-only topic inspection routes
 func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
+	// (UNCHANGED BELOW)
 	type topicLister interface {
 		ListTopics() ([]string, error)
 	}
-
 	type topicCounter interface {
 		TopicCount(topic string) (int64, error)
 	}
-
 	type topicPeeker interface {
 		Peek(topic string, limit int) ([]any, error)
 	}
-
 	type topicListerCtx interface {
 		ListTopics(ctx context.Context) ([]string, error)
 	}
-
 	type topicCounterCtx interface {
 		TopicCount(ctx context.Context, topic string) (int64, error)
 	}
