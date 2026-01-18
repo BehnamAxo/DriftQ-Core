@@ -9,14 +9,38 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
+
+type runArtifactsResp struct {
+	Ok        bool          `json:"ok"`
+	RunID     string        `json:"run_id"`
+	Count     int           `json:"count"`
+	Artifacts []runArtifact `json:"artifacts"`
+}
+
+type runArtifact struct {
+	ArtifactID   string            `json:"artifact_id"`
+	Sha256       string            `json:"sha256"`
+	ContentType  string            `json:"content_type,omitempty"`
+	Size         int64             `json:"size"`
+	CreatedAt    time.Time         `json:"created_at"`
+	RunID        string            `json:"run_id,omitempty"`
+	WorkflowID   string            `json:"workflow_id,omitempty"`
+	NodeID       string            `json:"node_id,omitempty"`
+	Attempt      int               `json:"attempt,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	OriginalName string            `json:"original_name,omitempty"`
+}
 
 func runsArtifacts(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("runs artifacts", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run id (required)")
 	nodeID := fs.String("node-id", "", "optional node id filter")
-	raw := fs.Bool("raw", false, "print raw JSON list of artifact IDs")
+	limit := fs.Int("limit", 50, "max artifacts to return")
+	raw := fs.Bool("raw", false, "print raw JSON response")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -27,108 +51,96 @@ func runsArtifacts(baseURL string, timeout time.Duration, args []string) error {
 		return fmt.Errorf("runs artifacts: --run-id is required")
 	}
 
-	root, err := fetchRunState(baseURL, timeout, id)
+	if *limit <= 0 {
+		*limit = 50
+	}
+
+	path := "/debug/run-artifacts?run_id=" + url.QueryEscape(id) + "&limit=" + url.QueryEscape(fmt.Sprintf("%d", *limit))
+	resp, err := doGET(baseURL, timeout, path)
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
-	nodes, err := decodeNodesAsMaps(root)
-	if err != nil {
-		return err
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs artifacts failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	if *raw {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+
+	var out runArtifactsResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		// fallback: print body
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
 	}
 
 	wantNode := strings.TrimSpace(*nodeID)
 
-	idsSet := map[string]struct{}{}
-	for _, n := range nodes {
-		if wantNode != "" {
-			if pickString(n, "node_id", "nodeId", "NodeID") != wantNode {
-				continue
+	arts := out.Artifacts
+	if wantNode != "" {
+		filtered := make([]runArtifact, 0, len(arts))
+		for _, a := range arts {
+			if strings.TrimSpace(a.NodeID) == wantNode {
+				filtered = append(filtered, a)
 			}
 		}
-		collectArtifactIDs(n, idsSet)
+		arts = filtered
 	}
 
-	ids := make([]string, 0, len(idsSet))
-	for k := range idsSet {
-		ids = append(ids, k)
-	}
-
-	sort.Strings(ids)
-
-	if *raw {
-		b, _ := json.MarshalIndent(map[string]any{
-			"ok":        true,
-			"run_id":    id,
-			"node_id":   wantNode,
-			"count":     len(ids),
-			"artifacts": ids,
-		}, "", "  ")
-		fmt.Println(string(b))
-		return nil
-	}
-
-	if len(ids) == 0 {
+	if len(arts) == 0 {
 		fmt.Println("(no artifacts found)")
 		return nil
 	}
 
-	for _, a := range ids {
-		fmt.Println(a)
+	// stable-ish ordering: node, attempt, created_at, artifact_id
+	sort.Slice(arts, func(i, j int) bool {
+		if arts[i].NodeID != arts[j].NodeID {
+			return arts[i].NodeID < arts[j].NodeID
+		}
+		if arts[i].Attempt != arts[j].Attempt {
+			return arts[i].Attempt < arts[j].Attempt
+		}
+		if !arts[i].CreatedAt.Equal(arts[j].CreatedAt) {
+			return arts[i].CreatedAt.Before(arts[j].CreatedAt)
+		}
+		return arts[i].ArtifactID < arts[j].ArtifactID
+	})
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ARTIFACT_ID\tSIZE\tTYPE\tNODE\tATT\tCREATED\tNAME\tDESC")
+	for _, a := range arts {
+		ct := strings.TrimSpace(a.ContentType)
+		if ct == "" {
+			ct = "-"
+		}
+
+		name := strings.TrimSpace(a.OriginalName)
+		if name == "" {
+			name = "-"
+		}
+
+		desc := strings.TrimSpace(a.Description)
+		if desc == "" {
+			desc = "-"
+		}
+
+		created := "-"
+		if !a.CreatedAt.IsZero() {
+			created = a.CreatedAt.UTC().Format(time.RFC3339Nano)
+		}
+
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			a.ArtifactID, a.Size, ct, a.NodeID, a.Attempt, created, name, desc,
+		)
 	}
+	_ = tw.Flush()
+
 	return nil
-}
-
-func collectArtifactIDs(v any, out map[string]struct{}) {
-	switch t := v.(type) {
-	case map[string]any:
-		for k, vv := range t {
-			switch k {
-			case "artifact_id", "artifactId":
-				if s, ok := vv.(string); ok {
-					s = strings.TrimSpace(s)
-					if s != "" {
-						out[s] = struct{}{}
-					}
-				}
-				continue
-
-			case "artifact_ids", "artifactIds":
-				if arr, ok := vv.([]any); ok {
-					for _, it := range arr {
-						if s, ok := it.(string); ok {
-							s = strings.TrimSpace(s)
-							if s != "" {
-								out[s] = struct{}{}
-							}
-						}
-					}
-				}
-				// still recurse in case it is a weird shape
-				collectArtifactIDs(vv, out)
-				continue
-
-			case "artifacts", "Artifacts":
-				collectArtifactIDs(vv, out)
-				continue
-			}
-
-			// general recursion
-			collectArtifactIDs(vv, out)
-		}
-
-	case []any:
-		for _, it := range t {
-			collectArtifactIDs(it, out)
-		}
-
-	case string:
-		// only capture strings when they are inside an artifacts key path, we don't know context here, so do nothing
-		return
-
-	default:
-		return
-	}
 }
 
 func runsArtifactMeta(baseURL string, timeout time.Duration, args []string) error {

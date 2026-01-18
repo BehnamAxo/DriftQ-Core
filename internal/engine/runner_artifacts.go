@@ -10,7 +10,7 @@ func (r *Runner) buildNodeFinishedPayload(ctx context.Context, runID, workflowID
 	_ = strings.TrimSpace(runID)
 	_ = strings.TrimSpace(workflowID)
 	_ = strings.TrimSpace(nodeID)
-	_ = attempt // kept for next step when ArtifactMeta grows
+	_ = attempt // kept for future when ArtifactMeta grows
 
 	limit := r.GetArtifactInlineLimit()
 
@@ -51,6 +51,7 @@ func (r *Runner) getArtifactStore() (ArtifactStore, error) {
 	if r.artifacts == nil {
 		return nil, ErrArtifactStoreUnset
 	}
+
 	return r.artifacts, nil
 }
 
@@ -61,6 +62,7 @@ func (r *Runner) GetArtifactInlineLimit() int {
 	if r.artifactInlineLimit < 0 {
 		return 0
 	}
+
 	return r.artifactInlineLimit
 }
 
@@ -69,6 +71,7 @@ func (r *Runner) PutArtifact(ctx context.Context, data []byte, meta ArtifactMeta
 	if err != nil {
 		return ArtifactRef{}, ArtifactMeta{}, err
 	}
+
 	return s.Put(ctx, data, meta)
 }
 

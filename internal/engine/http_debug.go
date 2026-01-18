@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -27,6 +28,10 @@ type nodeStatusRow struct {
 	OutputBytes int        `json:"output_bytes,omitempty"`
 }
 
+type runArtifactLister interface {
+	ListByRun(ctx context.Context, runID string, limit int) ([]ArtifactMeta, error)
+}
+
 func traceIDFromRequest(req *http.Request) string {
 	tid := strings.TrimSpace(req.Header.Get("X-Trace-Id"))
 	if tid == "" {
@@ -38,6 +43,60 @@ func traceIDFromRequest(req *http.Request) string {
 
 // This is runner-only
 func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
+	mux.HandleFunc("/debug/run-artifacts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := WithTraceID(r.Context(), traceID)
+
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+		if runID == "" {
+			http.Error(w, "run_id is required", http.StatusBadRequest)
+			return
+		}
+
+		limit := 200
+		if s := strings.TrimSpace(r.URL.Query().Get("limit")); s != "" {
+			n, err := strconv.Atoi(s)
+			if err != nil || n <= 0 {
+				http.Error(w, "limit must be a positive int", http.StatusBadRequest)
+				return
+			}
+			limit = n
+		}
+
+		store, err := runner.getArtifactStore()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		l, ok := store.(runArtifactLister)
+		if !ok {
+			http.Error(w, fmt.Sprintf("artifact store does not support listing (type=%T)", store), http.StatusNotImplemented)
+			return
+		}
+
+		items, err := l.ListByRun(ctx, runID, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"run_id":    runID,
+			"count":     len(items),
+			"artifacts": items,
+			"trace_id":  traceID,
+		})
+	})
+
 	// snapshot internal runner metrics (this is in-memory metrics, not Prometheus)
 	mux.HandleFunc("/debug/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -68,63 +127,71 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			X int `json:"x"`
 		}
 
-		// Handles either:
-		//   {"x":1}
-		// or wrapper:
-		//   {"output":{"x":1}}
-		unwrapDemoPayload := func(input json.RawMessage) (demoPayload, error) {
-			// try direct first
-			var p demoPayload
-			if err := json.Unmarshal(input, &p); err == nil {
-				return p, nil
-			}
-
-			// try wrapper
-			var wrap struct {
-				Output demoPayload `json:"output"`
-			}
-			if err := json.Unmarshal(input, &wrap); err != nil {
-				return demoPayload{}, err
-			}
-			return wrap.Output, nil
-		}
+		// IMPORTANT: define runID before node funcs so they can capture it
+		runID := "demo-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+		initial := json.RawMessage(`{"x":1}`)
 
 		nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			p, err := unwrapDemoPayload(input)
-			if err != nil {
+			var p demoPayload
+			if err := json.Unmarshal(input, &p); err != nil {
 				return nil, err
 			}
 
 			time.Sleep(25 * time.Millisecond)
 			p.X++
-			return json.Marshal(p)
+
+			out, err := json.Marshal(p)
+			if err != nil {
+				return nil, err
+			}
+
+			// write artifact (fail the node if artifact store isn't configured)
+			_, _, err = runner.PutArtifact(ctx, out, ArtifactMeta{
+				ContentType:  "application/json",
+				RunID:        runID,
+				WorkflowID:   "wf_demo",
+				NodeID:       "A",
+				Attempt:      1,
+				OriginalName: "A.output.json",
+				Labels:       map[string]string{"kind": "node_output"},
+				Description:  "demo node A output",
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			return out, nil
 		}
 
 		nodeB := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			p, err := unwrapDemoPayload(input)
-			if err != nil {
+			var p demoPayload
+			if err := json.Unmarshal(input, &p); err != nil {
 				return nil, err
 			}
 
 			time.Sleep(40 * time.Millisecond)
 			p.X *= 2
 
-			// create one artifact so `runs artifacts` isn't empty
-			artifactBytes, _ := json.MarshalIndent(map[string]any{
-				"x":  p.X,
-				"ts": time.Now().UTC().Format(time.RFC3339Nano),
-			}, "", "  ")
-
-			_, meta, err := runner.PutArtifactWithContentType(ctx, artifactBytes, "application/json")
+			out, err := json.Marshal(p)
 			if err != nil {
 				return nil, err
 			}
 
-			// return artifact_id in the node output
-			return json.Marshal(map[string]any{
-				"x":           p.X,
-				"artifact_id": meta.ArtifactID,
+			_, _, err = runner.PutArtifact(ctx, out, ArtifactMeta{
+				ContentType:  "application/json",
+				RunID:        runID,
+				WorkflowID:   "wf_demo",
+				NodeID:       "B",
+				Attempt:      1,
+				OriginalName: "B.output.json",
+				Labels:       map[string]string{"kind": "node_output"},
+				Description:  "demo node B output",
 			})
+			if err != nil {
+				return nil, err
+			}
+
+			return out, nil
 		}
 
 		g := WorkflowGraph{
@@ -137,9 +204,6 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				{From: "A", To: "B"},
 			},
 		}
-
-		runID := "demo-" + time.Now().UTC().Format("20060102T150405.000000000Z")
-		initial := json.RawMessage(`{"x":1}`)
 
 		if err := runner.RunDAG(ctx, runID, g, initial); err != nil {
 			http.Error(w, "run failed: "+err.Error(), http.StatusInternalServerError)
