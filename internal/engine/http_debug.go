@@ -54,7 +54,6 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		_ = enc.Encode(snap)
 	})
 
-	// run a tiny 2-node DAG so you can generate runs/events/metrics quickly
 	mux.HandleFunc("/debug/run-demo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -69,9 +68,30 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			X int `json:"x"`
 		}
 
-		nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		// Handles either:
+		//   {"x":1}
+		// or wrapper:
+		//   {"output":{"x":1}}
+		unwrapDemoPayload := func(input json.RawMessage) (demoPayload, error) {
+			// try direct first
 			var p demoPayload
-			if err := json.Unmarshal(input, &p); err != nil {
+			if err := json.Unmarshal(input, &p); err == nil {
+				return p, nil
+			}
+
+			// try wrapper
+			var wrap struct {
+				Output demoPayload `json:"output"`
+			}
+			if err := json.Unmarshal(input, &wrap); err != nil {
+				return demoPayload{}, err
+			}
+			return wrap.Output, nil
+		}
+
+		nodeA := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			p, err := unwrapDemoPayload(input)
+			if err != nil {
 				return nil, err
 			}
 
@@ -81,14 +101,30 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		nodeB := func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-			var p demoPayload
-			if err := json.Unmarshal(input, &p); err != nil {
+			p, err := unwrapDemoPayload(input)
+			if err != nil {
 				return nil, err
 			}
 
 			time.Sleep(40 * time.Millisecond)
 			p.X *= 2
-			return json.Marshal(p)
+
+			// create one artifact so `runs artifacts` isn't empty
+			artifactBytes, _ := json.MarshalIndent(map[string]any{
+				"x":  p.X,
+				"ts": time.Now().UTC().Format(time.RFC3339Nano),
+			}, "", "  ")
+
+			_, meta, err := runner.PutArtifactWithContentType(ctx, artifactBytes, "application/json")
+			if err != nil {
+				return nil, err
+			}
+
+			// return artifact_id in the node output
+			return json.Marshal(map[string]any{
+				"x":           p.X,
+				"artifact_id": meta.ArtifactID,
+			})
 		}
 
 		g := WorkflowGraph{

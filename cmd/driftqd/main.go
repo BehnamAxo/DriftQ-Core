@@ -296,6 +296,7 @@ func main() {
 	// Note: this is v2 runner in-memory for now and will become real persistence later
 	runStore := engine.NewMemoryStore()
 	runner := engine.NewRunner(runStore)
+	runner.SetArtifactStore(engine.NewMemoryArtifactStore())
 	runner.SetLogger(logger)
 
 	// fire due timers in the background (durable delay primitive)

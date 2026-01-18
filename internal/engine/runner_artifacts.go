@@ -72,11 +72,24 @@ func (r *Runner) PutArtifact(ctx context.Context, data []byte, meta ArtifactMeta
 	return s.Put(ctx, data, meta)
 }
 
+// Convenience wrapper for debug/demo endpoints stuff (and CLI-friendly artifacts)
+func (r *Runner) PutArtifactWithContentType(ctx context.Context, data []byte, contentType string) (ArtifactRef, ArtifactMeta, error) {
+	ct := strings.TrimSpace(contentType)
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+
+	return r.PutArtifact(ctx, data, ArtifactMeta{
+		ContentType: ct,
+	})
+}
+
 func (r *Runner) GetArtifact(ctx context.Context, artifactID string) ([]byte, ArtifactMeta, error) {
 	s, err := r.getArtifactStore()
 	if err != nil {
 		return nil, ArtifactMeta{}, err
 	}
+
 	return s.Get(ctx, strings.TrimSpace(artifactID))
 }
 
@@ -85,5 +98,6 @@ func (r *Runner) DeleteArtifact(ctx context.Context, artifactID string) error {
 	if err != nil {
 		return err
 	}
+
 	return s.Delete(ctx, strings.TrimSpace(artifactID))
 }

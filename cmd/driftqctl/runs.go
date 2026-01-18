@@ -58,12 +58,6 @@ type debugRunResp struct {
 	Nodes []nodeStatusRow `json:"nodes"`
 }
 
-type artifactRow struct {
-	NodeID     string
-	Attempt    int
-	ArtifactID string
-}
-
 type artifactMetaSummary struct {
 	ContentType string
 	Sha256      string
