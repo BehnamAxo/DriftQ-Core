@@ -1,12 +1,14 @@
 package broker
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 )
 
-// NewInMemoryBrokerFromWAL builds a broker, then replays whatever is in the WAL so I can restore topics, partitions, messages and consumer offsets on startup
+// NewInMemoryBrokerFromWAL builds a broker, then replays whatever is in the WAL
+// so I can restore topics, partitions, messages and consumer offsets on startup
 func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 	b := NewInMemoryBrokerWithWAL(wal)
 
@@ -25,11 +27,10 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 		case storage.RecordTypeMessage:
 			ts, ok := b.topics[e.Topic]
 			if !ok {
-				// No idea how many partitions this topic "should" have, so I grow the slice as needed based on whatever the WAL tells me
 				ts = &TopicState{
 					partitions: make([][]Message, 0),
-					nextOffset: 0,
 				}
+
 				b.topics[e.Topic] = ts
 			}
 
@@ -37,15 +38,25 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 				ts.partitions = append(ts.partitions, nil)
 			}
 
+			expected := int64(len(ts.partitions[e.Partition]))
+			if e.Offset != expected {
+				// NOTE: This almost certainly means the WAL was written by an older version
+				// where offsets were not per-partition
+				return nil, fmt.Errorf(
+					"wal replay: unexpected offset for topic=%q partition=%d: got=%d expected=%d (WAL likely from older version; reset it)",
+					e.Topic, e.Partition, e.Offset, expected,
+				)
+			}
+
 			m := Message{
 				Key:       e.Key,
 				Partition: e.Partition,
 				Value:     e.Value,
-				Offset:    e.Offset,
+				Offset:    expected, // (same as e.Offset, but tied to invariant)
 				Envelope:  envelopeFromEntry(e),
 			}
 
-			// Restore routing metadata if present.
+			// Restore routing metadata if present
 			if e.RoutingLabel != "" || len(e.RoutingMeta) > 0 {
 				m.Routing = &RoutingMetadata{
 					Label: e.RoutingLabel,
@@ -60,10 +71,6 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 			}
 
 			ts.partitions[e.Partition] = append(ts.partitions[e.Partition], m)
-
-			if e.Offset >= ts.nextOffset {
-				ts.nextOffset = e.Offset + 1
-			}
 
 		case storage.RecordTypeOffset:
 			if _, ok := b.consumerOffsets[e.Topic]; !ok {
@@ -91,6 +98,7 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 			at := retryStateEntry{
 				LastError: e.LastError,
 			}
+
 			if e.LastErrorAt != nil {
 				at.LastErrorAt = *e.LastErrorAt
 			}
@@ -120,7 +128,6 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 			}
 
 			b.idem.mu.Lock()
-			// NOTE: no cleanup here; we want replay to restore durable state as-is
 			k := idempotencyKey{
 				Scope:    IdemScopeConsume,
 				TenantID: e.TenantID,
@@ -132,12 +139,11 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 			switch e.IdempotencyStatus {
 			case IdemStatusCommitted:
 				b.idem.items[k] = IdempotencyStatus{
-					Status:    IdemStatusCommitted,
-					Result:    e.Result,
-					LastError: "",
-					UpdatedAt: updatedAt,
-					Owner:     "",
-					// lease intentionally cleared on replay
+					Status:     IdemStatusCommitted,
+					Result:     e.Result,
+					LastError:  "",
+					UpdatedAt:  updatedAt,
+					Owner:      "",
 					LeaseUntil: time.Time{},
 				}
 
@@ -152,7 +158,7 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 				}
 
 			case IdemStatusPending:
-				// Intentionally ignored: pending leases expire on restart
+				// ignored: pending leases expire on restart
 			default:
 				// ignore unknown statuses
 			}
@@ -167,7 +173,6 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 	for topic, byGroup := range b.consumerOffsets {
 		for group, byPart := range byGroup {
 			for partition, ackedOffset := range byPart {
-				// Only purge if retry state exists
 				if byTopicRS, ok := b.retryState[topic]; ok {
 					if byGroupRS, ok := byTopicRS[group]; ok {
 						if byPartRS, ok := byGroupRS[partition]; ok {
@@ -177,7 +182,6 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 								}
 							}
 
-							// cleanup empties (optional, but keeps memory tidy)
 							if len(byPartRS) == 0 {
 								delete(byGroupRS, partition)
 							}

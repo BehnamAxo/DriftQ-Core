@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/driftq-org/DriftQ-Core/internal/debugtypes"
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 )
 
@@ -55,6 +56,8 @@ type InMemoryBroker struct {
 	retryState map[string]map[string]map[int]map[int64]*retryStateEntry
 
 	metrics MetricsSink
+
+	lag *LagTracker
 }
 
 func (b *InMemoryBroker) SetRouter(r Router) {
@@ -67,6 +70,13 @@ func (b *InMemoryBroker) SetMetricsSink(m MetricsSink) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.metrics = m
+}
+
+func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
+	if b.lag == nil {
+		return nil, nil
+	}
+	return b.lag.Snapshot(group, topic), nil
 }
 
 func NewInMemoryBroker() *InMemoryBroker {
@@ -96,6 +106,7 @@ func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router) *InMemoryBroke
 		maxPartitionBytes: 64 * 1024, // 64KB
 		idem:              NewIdempotencyStoreWithWAL(wal, 10*time.Minute),
 		retryState:        make(map[string]map[string]map[int]map[int64]*retryStateEntry),
+		lag:               NewLagTracker(),
 	}
 }
 
@@ -729,7 +740,6 @@ func (b *InMemoryBroker) createTopicLocked(name string, partitions int) error {
 
 	b.topics[name] = &TopicState{
 		partitions: make([][]Message, partitions),
-		nextOffset: 0,
 	}
 
 	return nil
@@ -760,6 +770,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 		if po < 0 || po >= numPartitions {
 			return errors.New("partition_override out of range")
 		}
+
 		part = po
 	}
 
@@ -805,8 +816,9 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 		}
 	}
 
-	msg.Offset = ts.nextOffset
+	// Kafka-style per-partition offsets: offset == index in that partition’s log
 	msg.Partition = part
+	msg.Offset = int64(len(ts.partitions[part]))
 
 	// WAL append first (if configured)
 	if b.wal != nil {
@@ -861,8 +873,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 		}
 	}
 
-	// Commit to in-memory state
-	ts.nextOffset++
+	// Commit to in-memory state (no ts.nextOffset anymore)
 	ts.partitions[part] = append(ts.partitions[part], msg)
 
 	// Deliver what we can

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -136,7 +137,6 @@ func (s *LocalArtifactStore) Put(ctx context.Context, data []byte, meta Artifact
 		return ArtifactRef{}, ArtifactMeta{}, err
 	}
 
-	// Write blob only if missing (content-addressed)
 	if _, statErr := os.Stat(blobPath); errors.Is(statErr, os.ErrNotExist) {
 		if err := writeFileAtomic(blobPath, data, 0o644, false /* no replace */); err != nil {
 			return ArtifactRef{}, ArtifactMeta{}, err
@@ -332,4 +332,34 @@ func writeFileAtomic(dst string, data []byte, perm os.FileMode, replace bool) er
 		return err
 	}
 	return nil
+}
+
+func (s *MemoryArtifactStore) ListByRun(ctx context.Context, runID string, limit int) ([]ArtifactMeta, error) {
+	_ = ctx
+
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, errors.New("run_id is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ArtifactMeta, 0, 16)
+	for _, m := range s.metas {
+		if m.RunID == runID {
+			out = append(out, m)
+		}
+	}
+
+	// newest first
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+
+	return out, nil
 }

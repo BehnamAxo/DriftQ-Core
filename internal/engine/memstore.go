@@ -32,6 +32,8 @@ type Store interface {
 	GetTimer(runID, nodeID string, attempt int) (Timer, bool)
 	ListTimers(runID string) []Timer
 	ListDueTimers(now time.Time) []Timer
+
+	ListRuns() []string
 }
 
 type nodeKey struct {
@@ -104,6 +106,52 @@ func (s *MemoryStore) GetRun(runID string) (Run, bool) {
 		return Run{}, false
 	}
 	return cloneRun(r), true
+}
+
+func (s *MemoryStore) ListRuns() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := make([]string, 0, len(s.runs))
+	for id := range s.runs {
+		ids = append(ids, id)
+	}
+
+	// newest first: EndedAt > StartedAt > zero
+	sort.Slice(ids, func(i, j int) bool {
+		ri := s.runs[ids[i]]
+		rj := s.runs[ids[j]]
+
+		ti := time.Time{}
+		if ri.EndedAt != nil {
+			ti = (*ri.EndedAt).UTC()
+		} else if ri.StartedAt != nil {
+			ti = (*ri.StartedAt).UTC()
+		}
+
+		tj := time.Time{}
+		if rj.EndedAt != nil {
+			tj = (*rj.EndedAt).UTC()
+		} else if rj.StartedAt != nil {
+			tj = (*rj.StartedAt).UTC()
+		}
+
+		if ti.Equal(tj) {
+			return ids[i] < ids[j]
+		}
+
+		if ti.IsZero() {
+			return false
+		}
+
+		if tj.IsZero() {
+			return true
+		}
+
+		return ti.After(tj)
+	})
+
+	return ids
 }
 
 func (s *MemoryStore) UpsertNodeExecution(n NodeExecution) error {
