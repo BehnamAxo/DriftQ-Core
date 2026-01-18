@@ -72,12 +72,18 @@ type artifactMetaSummary struct {
 
 func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("runs: missing subcommand (use: list|status|step|events|state|diff|cancel|demo)")
+		return fmt.Errorf("runs: missing subcommand (use: list|ls|status|step|events|state|diff|cancel|demo|artifacts|artifact-meta|artifact-get)")
 	}
 
 	switch args[0] {
 	case "artifacts":
 		return runsArtifacts(baseURL, timeout, args[1:])
+
+	case "artifact-meta":
+		return runsArtifactMeta(baseURL, timeout, args[1:])
+
+	case "artifact-get":
+		return runsArtifactGet(baseURL, timeout, args[1:])
 
 	case "cancel":
 		return runsCancel(baseURL, timeout, args[1:])
@@ -107,101 +113,8 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 		return runsStatus(baseURL, timeout, args[1:])
 
 	default:
-		return fmt.Errorf("runs: unknown subcommand %q (use: list|status|step|events|state|diff|cancel|demo)", args[0])
+		return fmt.Errorf("runs: unknown subcommand %q (use: list|status|step|events|state|diff|cancel|demo|artifacts|artifact-meta|artifact-get)", args[0])
 	}
-}
-
-func runsArtifacts(baseURL string, timeout time.Duration, args []string) error {
-	fs := flag.NewFlagSet("runs artifacts", flag.ContinueOnError)
-	runID := fs.String("run-id", "", "run id (required)")
-	nodeID := fs.String("node-id", "", "filter to a single node id (optional)")
-	raw := fs.Bool("raw", false, "print only artifact ids (no meta lookups)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	id := strings.TrimSpace(*runID)
-	if id == "" {
-		return fmt.Errorf("runs artifacts: --run-id is required")
-	}
-	nfilter := strings.TrimSpace(*nodeID)
-
-	root, err := fetchRunState(baseURL, timeout, id)
-	if err != nil {
-		return err
-	}
-
-	nodes, err := decodeNodesAsMaps(root)
-	if err != nil {
-		return err
-	}
-
-	var rows []artifactRow
-	for _, n := range nodes {
-		nid := pickString(n, "node_id", "nodeId", "NodeID")
-		if nfilter != "" && nid != nfilter {
-			continue
-		}
-
-		att := pickInt(n, "attempt", "Attempt")
-		for _, aid := range extractArtifactIDs(n) {
-			rows = append(rows, artifactRow{
-				NodeID:     nid,
-				Attempt:    att,
-				ArtifactID: aid,
-			})
-		}
-	}
-
-	if len(rows) == 0 {
-		fmt.Println("(no artifacts)")
-		return nil
-	}
-
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].NodeID != rows[j].NodeID {
-			return rows[i].NodeID < rows[j].NodeID
-		}
-		if rows[i].Attempt != rows[j].Attempt {
-			return rows[i].Attempt < rows[j].Attempt
-		}
-		return rows[i].ArtifactID < rows[j].ArtifactID
-	})
-
-	// If raw: don’t spam the server with meta calls.
-	if *raw {
-		for _, r := range rows {
-			fmt.Printf("%s\t%d\t%s\n", r.NodeID, r.Attempt, r.ArtifactID)
-		}
-		return nil
-	}
-
-	fmt.Printf("run_id=%s\n", id)
-	fmt.Println("NODE\tATT\tARTIFACT_ID\tCT\tBYTES\tSHA256")
-
-	for _, r := range rows {
-		meta, err := fetchArtifactMeta(baseURL, timeout, r.ArtifactID)
-		if err != nil {
-			fmt.Printf("%s\t%d\t%s\t?\t?\t?\n", r.NodeID, r.Attempt, r.ArtifactID)
-			continue
-		}
-
-		sha := meta.Sha256
-		if len(sha) > 12 {
-			sha = sha[:12] + "…"
-		}
-
-		fmt.Printf("%s\t%d\t%s\t%s\t%d\t%s\n",
-			emptyTo(r.NodeID, "-"),
-			r.Attempt,
-			r.ArtifactID,
-			emptyTo(meta.ContentType, "-"),
-			meta.SizeBytes,
-			emptyTo(sha, "-"),
-		)
-	}
-
-	return nil
 }
 
 func runsDemo(baseURL string, timeout time.Duration, args []string) error {
