@@ -336,12 +336,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		}
 
 		// schedule
-		scheduledAny := false
 		maxSkips := len(ready)
 		skips := 0
 
 		for !stopScheduling && running < maxPar && len(ready) > 0 {
-			if skips >= maxSkips && !scheduledAny {
+			// If everything left in ready is throttled, bail out so we can wait for inflight results
+			// (otherwise we spin forever and never drain resCh to release caps).
+			if skips >= maxSkips {
 				break
 			}
 
@@ -399,7 +400,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				}
 			}
 
-			scheduledAny = true
 			skips = 0
 
 			// count this attempt as "spent"
