@@ -218,7 +218,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		r.clearRunCancel(runID)
 		runCancel()
 	}()
-	// -------------------------------------------------------------------------------
 
 	// Ready queue = nodes with indegree 0 AND not already succeeded
 	var ready []string
@@ -229,10 +228,9 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			}
 		}
 	}
-
 	sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 
-	// FAN-OUT / FAN-IN section: run up to r.maxParallel ready nodes concurrently, and "join" via indegree unlocks
+	// FAN-OUT / FAN-IN
 	type nodeResult struct {
 		nodeID  string
 		attempt int
@@ -255,15 +253,19 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	}
 
 	resCh := make(chan nodeResult, maxPar)
+	usageCh := make(chan usageEvent, maxPar*16) // best-effort
 	running := 0
-	usageCh := make(chan usageEvent, maxPar*16) // best efford
+
+	// ✅ NEW: periodic tick so we don’t block forever while nodes run (wall-clock budget checks, etc.)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
 
 	inflightKey := map[string]string{}     // nodeID -> capKey
 	lastThrottle := map[string]time.Time{} // capKey -> last event time (local suppression)
 	throttleRetry := 25 * time.Millisecond
 
 	stopScheduling := false
-	externalCanceled := false // true if CancelRun already set run.Status=canceled in store
+	externalCanceled := false
 	failed := false
 	waiting := false
 	var failErr error
@@ -289,7 +291,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		run.TerminalMeta = meta
 		_ = r.store.UpdateRun(run)
 
-		// record event + clear reason
 		_, _ = r.store.AppendEvent(RunEvent{
 			RunID:      runID,
 			Type:       EventBudgetExceeded,
@@ -297,7 +298,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			Payload:    meta,
 		})
 
-		// terminal run_finished (don’t let success/other paths also emit one later)
 		fin, _ := json.Marshal(map[string]any{
 			"status":          "failed",
 			"terminal_reason": "budget_exceeded",
@@ -309,14 +309,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			Payload:    fin,
 		})
 
-		// stop scheduling + interrupt inflight
 		stopScheduling = true
 		runCancel()
 	}
 
 	for len(ready) > 0 || running > 0 {
 
-		// v2.7: wall-clock timeout budget
+		// wall-clock timeout budget
 		if !budgetExceeded && effBudget.WallClockTimeoutMS > 0 && run.StartedAt != nil {
 			used := time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
 			if used > effBudget.WallClockTimeoutMS {
@@ -329,26 +328,24 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			}
 		}
 
-		// External cancel (CancelRun) should interrupt inflight and stop scheduling
+		// external cancel
 		if !stopScheduling && isCanceled() {
 			externalCanceled = true
 			stopScheduling = true
-			// interrupt inflight node.Run(ctx)
 			runCancel()
 		}
 
-		// Start as many ready nodes as we can
+		// schedule
 		scheduledAny := false
 		maxSkips := len(ready)
 		skips := 0
 
 		for !stopScheduling && running < maxPar && len(ready) > 0 {
-			// If everything in ready is throttled, bail out and wait a bit (avoid infinite loop / CPU spin stuff)
 			if skips >= maxSkips && !scheduledAny {
 				break
 			}
 
-			// pop next ready node (ONLY ONCE)
+			// pop ONCE
 			nodeID := ready[0]
 			ready = ready[1:]
 
@@ -357,8 +354,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				return ErrGraphInvalid
 			}
 
-			// v2.7: max attempts budget (global across run)
-			// IMPORTANT: check this BEFORE acquiring caps, otherwise you can leak inflight cap slots
+			// max attempts budget (check BEFORE caps)
 			if !budgetExceeded && effBudget.MaxAttempts > 0 && (attemptsUsed+1) > effBudget.MaxAttempts {
 				triggerBudgetExceeded(BudgetExceededPayload{
 					Scope:  BudgetScopeRun,
@@ -366,17 +362,15 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					Limit:  map[string]any{"max_attempts": effBudget.MaxAttempts},
 					Used:   map[string]any{"attempts": attemptsUsed},
 				})
-
 				break
 			}
 
-			// v2.7: concurrency cap by topic (skip during replay cache runs)
+			// concurrency cap by topic (skip during replay cache runs)
 			if cache == nil && node.Topic != "" {
 				cap, scope, key := r.concurrencyCapFor(tenantID, node.Topic)
 				if cap > 0 {
 					acqOK, inflight := r.tryAcquireCap(key, cap)
 					if !acqOK {
-						// put it back and try others
 						ready = append(ready, nodeID)
 						skips++
 
@@ -391,7 +385,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 								Inflight:     inflight,
 								RetryAfterMS: throttleRetry.Milliseconds(),
 							})
-
 							_, _ = r.store.AppendEvent(RunEvent{
 								RunID:      runID,
 								Type:       EventThrottled,
@@ -400,20 +393,16 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 								Payload:    p,
 							})
 						}
-
 						continue
 					}
-
-					// acquired: remember so we can release when node finishes
 					inflightKey[nodeID] = key
 				}
 			}
 
-			// we are actually going to start work (or replay-cache it)
 			scheduledAny = true
 			skips = 0
 
-			// count this attempt as "spent" (note that throttling does NOT consume attempts)
+			// count this attempt as "spent"
 			attemptsUsed++
 			run.BudgetUsage.Attempts = attemptsUsed
 			if run.StartedAt != nil {
@@ -421,7 +410,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			}
 			_ = r.store.UpdateRun(run)
 
-			// Build input
+			// build input
 			var nodeInput json.RawMessage
 			deps := parents[nodeID]
 			if len(deps) == 0 {
@@ -429,37 +418,32 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			} else {
 				sort.Slice(deps, func(i, j int) bool { return nodeIndex[deps[i]] < nodeIndex[deps[j]] })
 				agg := make(map[string]json.RawMessage, len(deps))
-
 				for _, depID := range deps {
 					agg[depID] = cloneRaw(outputs[depID])
 				}
-
 				b, err := json.Marshal(agg)
 				if err != nil {
-					// release cap if we acquired it
 					if key := inflightKey[nodeID]; key != "" {
 						r.releaseCap(key)
 						delete(inflightKey, nodeID)
 					}
-
 					return err
 				}
 				nodeInput = json.RawMessage(b)
 			}
 
-			// increment attempt number per node
+			// attempt number per node
 			attempt := 1
 			if prev := maxAttempt[node.NodeID]; prev > 0 {
 				attempt = prev + 1
 			}
-
 			maxAttempt[node.NodeID] = attempt
+
 			nodeStart := time.Now().UTC()
 
-			// REPLAY CACHE SHORT-CIRCUIT section
+			// replay-cache short-circuit
 			if cache != nil {
 				if entry, ok := cache[node.NodeID]; ok {
-					// synthetic "instant" completion
 					nodeEnd := nodeStart
 					nodeDur := nodeEnd.Sub(nodeStart)
 
@@ -492,19 +476,16 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						Input:      cloneRaw(nodeInput),
 						Output:     out,
 					}
-
 					if err := r.store.UpsertNodeExecution(ne); err != nil {
 						return err
 					}
 
-					// mark done (IMPORTANT)
 					done[node.NodeID] = ne
 
 					payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, attempt, out)
 					if err != nil {
 						return err
 					}
-
 					_, _ = r.store.AppendEvent(RunEvent{
 						RunID:      runID,
 						Type:       EventNodeFinished,
@@ -527,12 +508,11 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						}
 					}
 					sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
-
 					continue
 				}
 			}
 
-			// Normal execution path (no cache hit)
+			// normal execution
 			r.logger.Info("node started",
 				"trace_id", traceID,
 				"run_id", runID,
@@ -549,15 +529,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				StartedAt:  &nodeStart,
 				Input:      cloneRaw(nodeInput),
 			}
-
 			if err := r.store.UpsertNodeExecution(ne); err != nil {
 				r.logger.Error("node upsert start failed", "trace_id", traceID, "run_id", runID, "step_id", node.NodeID, "attempt", attempt, "err", err)
-				// release cap if we acquired it
 				if key := inflightKey[nodeID]; key != "" {
 					r.releaseCap(key)
 					delete(inflightKey, nodeID)
 				}
-
 				return err
 			}
 
@@ -579,17 +556,15 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			go func() {
 				stepCtx := WithAttempt(runCtx, att)
 
-				// v2.7: allow handlers to consult provider rate limits
-				if rl := r.getRateLimiter(); rl != nil {
+				if rl := r.wrapRateLimiter(runID, wfID, n.NodeID, att, tenantID, n.Topic); rl != nil {
 					stepCtx = WithRateLimiter(stepCtx, rl)
 				}
 
-				// v2.7: allow handlers to report token/$ usage (best-effort, non-blocking)
 				stepCtx = WithUsageSink(stepCtx, func(d UsageDelta) {
 					select {
 					case usageCh <- usageEvent{nodeID: n.NodeID, attempt: att, delta: d}:
 					default:
-						// drop to avoid deadlocks if run ends while a goroutine still reports
+						// drop
 					}
 				})
 
@@ -620,45 +595,52 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		}
 
 		// If nothing inflight:
-		// - if stopScheduling => we're done (don't spin forever with ready still populated)
-		// - if ready has items but they're throttled => wait briefly to avoid CPU spin
 		if running == 0 {
 			if stopScheduling {
 				break
 			}
-
 			if len(ready) > 0 {
 				select {
 				case <-runCtx.Done():
+					if isCanceled() {
+						externalCanceled = true
+					}
 					stopScheduling = true
 					runCancel()
-
 				case <-time.After(throttleRetry):
 				}
 			}
 			continue
 		}
 
-		// Wait for either a node result or cancel
+		// Wait for either: usage, result, cancel, or tick (so we don’t block forever)
 		select {
+		case <-tick.C:
+			// ✅ NEW: wake up periodically so the loop can re-check budgets/cancel/etc.
+			continue
+
+		case <-runCtx.Done():
+			if isCanceled() {
+				externalCanceled = true
+			}
+			stopScheduling = true
+			runCancel()
+
 		case ue := <-usageCh:
-			// v2.7: token/$ accounting + budget enforcement (best-effort)
+			// token/$ accounting + budget enforcement (best-effort)
 			if budgetExceeded {
-				break
+				continue
 			}
 
 			if ue.delta.Tokens != 0 {
 				run.BudgetUsage.Tokens += ue.delta.Tokens
 			}
-
 			if ue.delta.Dollars != 0 {
 				run.BudgetUsage.Dollars += ue.delta.Dollars
 			}
-
 			if run.StartedAt != nil {
 				run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
 			}
-
 			_ = r.store.UpdateRun(run)
 
 			if effBudget.MaxTokens > 0 && run.BudgetUsage.Tokens > effBudget.MaxTokens {
@@ -668,8 +650,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					Limit:  map[string]any{"max_tokens": effBudget.MaxTokens},
 					Used:   map[string]any{"tokens": run.BudgetUsage.Tokens},
 				})
-
-				break
+				continue
 			}
 
 			if effBudget.MaxDollars > 0 && run.BudgetUsage.Dollars > effBudget.MaxDollars {
@@ -679,14 +660,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					Limit:  map[string]any{"max_dollars": effBudget.MaxDollars},
 					Used:   map[string]any{"dollars": run.BudgetUsage.Dollars},
 				})
-
-				// break
+				continue
 			}
 
 		case res := <-resCh:
 			running--
 
-			// v2.7: release any acquired cap slot
+			// release any acquired cap slot
 			if key := inflightKey[res.nodeID]; key != "" {
 				r.releaseCap(key)
 				delete(inflightKey, res.nodeID)
@@ -696,7 +676,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			nodeEnd := res.ended
 			nodeDur := nodeEnd.Sub(res.started)
 
-			// v2.7: budget exceeded => treat inflight results as canceled (don’t flip run/node into “failed”)
+			// budget exceeded => treat inflight results as canceled
 			if budgetExceeded {
 				ne := NodeExecution{
 					RunID:      runID,
@@ -713,7 +693,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				continue
 			}
 
-			// If externally canceled, mark node as canceled (don’t fail run)
+			// external cancel
 			if externalCanceled || isCanceled() {
 				ne := NodeExecution{
 					RunID:      runID,
@@ -785,13 +765,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					"reason", de.Reason,
 				)
 
-				// stop scheduling new work, but still drain inflight cleanly
 				waiting = true
 				stopScheduling = true
 				continue
 			}
 			// ---------------------------------------------------
 
+			// failure
 			if res.err != nil {
 				r.metrics.ObserveNode(node.NodeID, false, nodeDur)
 
@@ -842,7 +822,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					Payload: p2,
 				})
 
-				// fail fast: interrupt inflight
 				failed = true
 				failErr = ErrNodeFailed
 				stopScheduling = true
@@ -872,14 +851,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				Input:      cloneRaw(res.input),
 				Output:     cloneRaw(res.output),
 			}
-
 			if err := r.store.UpsertNodeExecution(ne); err != nil {
 				return err
 			}
 
+			// ✅ mark done on normal success
 			done[res.nodeID] = ne
 
-			// Build payload that either inlines output or stores it as an artifact
 			payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, res.attempt, res.output)
 			if err != nil {
 				return err
@@ -896,7 +874,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 			outputs[res.nodeID] = cloneRaw(res.output)
 
-			// unlock children
 			for _, child := range children[res.nodeID] {
 				if _, isDone := done[child]; isDone {
 					continue
@@ -906,27 +883,22 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					ready = append(ready, child)
 				}
 			}
-
 			sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 		}
 	}
 
-	// If we failed, return the failure
 	if failed {
 		return failErr
 	}
 
-	// If CancelRun already set status in store, just return canceled (do not overwrite anything)
 	if externalCanceled || isCanceled() {
 		return ErrRunCanceled
 	}
 
-	// If we entered WAITING (timer scheduled), return nil (resume happens on timer fire)
 	if waiting || run.Status == RunStatusWaiting {
 		return nil
 	}
 
-	// if canceled while last node was running, do NOT overwrite as SUCCEEDED
 	if isCanceled() {
 		return ErrRunCanceled
 	}
