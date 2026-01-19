@@ -22,6 +22,17 @@ type Run struct {
 
 	Spec         json.RawMessage `json:"spec,omitempty"`
 	InitialInput json.RawMessage `json:"initial_input,omitempty"`
+
+	TenantID string `json:"tenant_id,omitempty"`
+
+	// TerminalReason gives a consistent, machine-readable reason for why the run ended
+	// (ex: "budget_exceeded", "canceled", "node_failed").
+	TerminalReason string          `json:"terminal_reason,omitempty"`
+	TerminalMeta   json.RawMessage `json:"terminal_meta,omitempty"`
+
+	// Optional config/telemetry snapshots (v2.7 budgets/throttles)
+	RunBudget   BudgetPolicy `json:"run_budget,omitempty"`
+	BudgetUsage BudgetUsage  `json:"budget_usage,omitempty"`
 }
 
 type RunEvent struct {
@@ -113,6 +124,8 @@ const (
 	EventNodeFinished     RunEventType = "node_finished"
 	EventNodeFailed       RunEventType = "node_failed"
 	EventNodeRetryPlanned RunEventType = "node_retry_planned"
+	EventThrottled        RunEventType = "throttled"
+	EventBudgetExceeded   RunEventType = "budget_exceeded"
 )
 
 func (s RunStatus) Valid() bool {

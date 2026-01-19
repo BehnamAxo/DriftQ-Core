@@ -251,6 +251,9 @@ func (s *MemoryStore) ListEvents(runID string) []RunEvent {
 
 func cloneRun(r Run) Run {
 	out := r
+	out.Spec = cloneRaw(r.Spec)
+	out.InitialInput = cloneRaw(r.InitialInput)
+	out.TerminalMeta = cloneRaw(r.TerminalMeta)
 
 	if r.StartedAt != nil {
 		t := (*r.StartedAt).UTC()

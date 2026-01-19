@@ -24,6 +24,7 @@ type Workflow struct {
 
 type NodeDef struct {
 	NodeID    string
+	Topic     string
 	Run       NodeFunc
 	TimeoutMS int
 }
@@ -43,6 +44,17 @@ type Runner struct {
 	// v2.5 artifacts
 	artifacts           ArtifactStore // optional (nil = inline only)
 	artifactInlineLimit int           // bytes, if output > limit => store as artifact + emit ref
+
+	// v2.7 budgets/throttles
+	defaultRunBudget BudgetPolicy
+	tenantBudgets    map[string]BudgetPolicy
+	rateLimiter      RateLimiter
+
+	// (in-memory for now)
+	throttleMu      sync.Mutex
+	topicCaps       map[string]int            // topic -> cap
+	tenantTopicCaps map[string]map[string]int // tenant -> (topic -> cap)
+	inflightCaps    map[string]int            // capKey -> inflight count
 }
 
 func NewRunner(store Store) *Runner {
@@ -54,6 +66,10 @@ func NewRunner(store Store) *Runner {
 		maxParallel:         1,
 		cancels:             make(map[string]context.CancelFunc),
 		artifactInlineLimit: DefaultArtifactInlineLimit,
+		tenantBudgets:       make(map[string]BudgetPolicy),
+		topicCaps:           make(map[string]int),
+		tenantTopicCaps:     make(map[string]map[string]int),
+		inflightCaps:        make(map[string]int),
 	}
 }
 
