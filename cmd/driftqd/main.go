@@ -231,6 +231,8 @@ func main() {
 	walPath := flag.String("wal", "driftq.wal", "path to WAL file")
 	resetWAL := flag.Bool("reset-wal", false, "reset WAL by moving existing file aside (creates a .bak.<ts> file)")
 
+	engineStore := flag.String("engine-store", "memory", "engine store: memory|file")
+	engineWAL := flag.String("engine-wal", "driftq.engine.wal", "path to engine run/event WAL file (engine-store=file)")
 	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
 	logFormat := flag.String("log-format", "text", "log format: text|json")
 
@@ -293,9 +295,29 @@ func main() {
 
 	s := &server{broker: b}
 
-	// Note: this is v2 runner in-memory for now and will become real persistence later
-	runStore := engine.NewMemoryStore()
+	// v2 runner store (memory or durable file WAL)
+	var runStore engine.Store
+	var closeRunStore func() error
+	switch strings.ToLower(strings.TrimSpace(*engineStore)) {
+	case "file":
+		fs, err := engine.OpenFileStore(*engineWAL)
+		if err != nil {
+			fatal("failed to open engine store", err)
+		}
+
+		runStore = fs
+		closeRunStore = fs.Close
+	default:
+		runStore = engine.NewMemoryStore()
+	}
+
+	if closeRunStore != nil {
+		defer func() { _ = closeRunStore() }()
+	}
+
 	runner := engine.NewRunner(runStore)
+	// Artifacts are kept in-memory for now (Step 1 focuses on durable run/event state)
+	// We can switch artifacts to filesystem once the artifact store interface is finalized for the demo
 	runner.SetArtifactStore(engine.NewMemoryArtifactStore())
 	runner.SetLogger(logger)
 
