@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 )
 
 type ReplayMode string
@@ -15,6 +15,19 @@ const (
 )
 
 func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) error {
+	return r.ReplayFrom(ctx, runID, "", mode)
+}
+
+// ReplayFrom replays (or redrives) a run starting at a specific step.
+//
+// Semantics:
+// - mode=time_travel: reuse any already-succeeded outputs when possible.
+//   If fromStep has already succeeded, we keep it and replay downstream only.
+// - mode=live: force re-execution starting at fromStep.
+//
+// Implementation note: we keep history by marking prior node executions/timers as
+// canceled instead of deleting them. New attempts will have higher attempt numbers.
+func (r *Runner) ReplayFrom(ctx context.Context, runID, fromStep string, mode ReplayMode) error {
 	run, ok := r.store.GetRun(runID)
 	if !ok {
 		return ErrRunNotFound
@@ -40,16 +53,59 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 		initial = r.initialInputFromRun(runID, exec)
 	}
 
+	// Optional: replay from a step by invalidating the downstream suffix.
+	if strings.TrimSpace(fromStep) != "" {
+		fromStep = strings.TrimSpace(fromStep)
+		if !graphHasNode(exec, fromStep) {
+			return fmt.Errorf("replay: unknown from-step %q", fromStep)
+		}
+
+		suffix := downstreamNodes(exec, fromStep)
+
+		// In time-travel mode, if the from-step already has a succeeded attempt,
+		// we keep it and only invalidate downstream nodes.
+		if mode == ReplayTimeTravel && nodeHasSucceededAttempt(r.store.ListNodeExecutions(runID), fromStep) {
+			delete(suffix, fromStep)
+		}
+
+		if err := r.invalidateNodesAndTimers(runID, suffix); err != nil {
+			return err
+		}
+
+		// allow re-running a previously succeeded run
+		if run.Status == RunStatusSucceeded {
+			run.Status = RunStatusQueued
+			run.EndedAt = nil
+			run.TerminalReason = ""
+			run.TerminalMeta = nil
+			_ = r.store.UpdateRun(run)
+		}
+	}
+
 	switch mode {
 	case ReplayTimeTravel:
-		// Build a cache from the run history so we can short-circuit node execution
 		cache := r.buildReplayCacheFromRun(runID)
-
-		// IMPORTANT: use the cache-aware runner; plain runDAG() would discard the cache
 		return r.runDAGWithReplayCache(ctx, runID, exec, initial, run.Spec, cache)
 
 	case ReplayLive:
-		return errors.New("replay live not implemented yet")
+		// Live replay forces execution. If no fromStep is provided, force a full rerun.
+		if strings.TrimSpace(fromStep) == "" {
+			suffix := map[string]struct{}{}
+			for _, n := range exec.Nodes {
+				suffix[n.NodeID] = struct{}{}
+			}
+			if err := r.invalidateNodesAndTimers(runID, suffix); err != nil {
+				return err
+			}
+			if run.Status == RunStatusSucceeded {
+				run.Status = RunStatusQueued
+				run.EndedAt = nil
+				run.TerminalReason = ""
+				run.TerminalMeta = nil
+				_ = r.store.UpdateRun(run)
+			}
+		}
+		return r.runDAGWithReplayCache(ctx, runID, exec, initial, run.Spec, nil)
 
 	default:
 		return fmt.Errorf("unknown replay mode: %q", mode)

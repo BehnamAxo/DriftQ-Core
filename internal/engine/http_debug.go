@@ -392,6 +392,62 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
+	// Body: { "run_id": "...", "from_step": "optional", "mode": "time_travel"|"live" }
+	mux.HandleFunc("/debug/run-replay", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var body struct {
+			RunID    string `json:"run_id"`
+			FromStep string `json:"from_step"`
+			Mode     string `json:"mode"`
+		}
+
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		body.RunID = strings.TrimSpace(body.RunID)
+		body.FromStep = strings.TrimSpace(body.FromStep)
+		body.Mode = strings.TrimSpace(body.Mode)
+		if body.RunID == "" {
+			http.Error(w, "run_id is required", http.StatusBadRequest)
+			return
+		}
+
+		mode := ReplayTimeTravel
+		if body.Mode != "" {
+			mode = ReplayMode(body.Mode)
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := WithTraceID(r.Context(), traceID)
+
+		if err := runner.ReplayFrom(ctx, body.RunID, body.FromStep, mode); err != nil {
+			if errors.Is(err, ErrRunNotFound) {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "replay failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"run_id":    body.RunID,
+			"from_step": body.FromStep,
+			"mode":      string(mode),
+			"trace_id":  traceID,
+		})
+	})
+
 	// Big dump: run + raw node executions + events + timers (for deep debugging)
 	mux.HandleFunc("/debug/run-state", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
