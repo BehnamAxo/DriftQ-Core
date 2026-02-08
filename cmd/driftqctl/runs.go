@@ -112,6 +112,15 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	case "timeline":
 		return runsTimeline(baseURL, timeout, args[1:])
 
+	case "promote":
+		return runsPromote(baseURL, timeout, args[1:])
+
+	case "rollback":
+		return runsRollback(baseURL, timeout, args[1:])
+
+	case "active-index":
+		return runsActiveIndex(baseURL, timeout, args[1:])
+
 	default:
 		return fmt.Errorf("runs: unknown subcommand %q (use: list|status|step|events|state|diff|cancel|demo|artifacts|artifact-meta|artifact-get)", args[0])
 	}
@@ -1255,4 +1264,138 @@ func pickBool(m map[string]any, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+
+func runsActiveIndex(baseURL string, timeout time.Duration, args []string) error {
+	// no flags for now
+	_ = args
+
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/debug/index/active", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs active-index: %s", strings.TrimSpace(string(b)))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return fmt.Errorf("runs active-index: decode json: %w", err)
+	}
+
+	ver := ""
+	if v, ok := root["active_version"].(string); ok {
+		ver = v
+	}
+	if ver == "" {
+		fmt.Println("(no active index version set)")
+		return nil
+	}
+
+	fmt.Printf("active_index_version=%s\n", ver)
+	return nil
+}
+
+func runsPromote(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs promote", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	runID := fs.String("run-id", "", "Run ID to promote from (must be succeeded)")
+	version := fs.String("version", "", "Index version to promote (defaults to run-id)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	if id == "" {
+		return fmt.Errorf("runs promote: --run-id is required")
+	}
+
+	ver := strings.TrimSpace(*version)
+	if ver == "" {
+		ver = id
+	}
+
+	client := &http.Client{Timeout: timeout}
+	url := strings.TrimRight(baseURL, "/") + "/debug/index/promote"
+	body, _ := json.Marshal(map[string]any{"run_id": id, "version": ver})
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs promote: %s", strings.TrimSpace(string(b)))
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return fmt.Errorf("runs promote: decode json: %w", err)
+	}
+
+	active := ver
+	if v, ok := root["active_version"].(string); ok && strings.TrimSpace(v) != "" {
+		active = v
+	}
+
+	fmt.Printf("promoted active_index_version=%s\n", active)
+	fmt.Printf("next: driftqctl runs active-index\n")
+	return nil
+}
+
+func runsRollback(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs rollback", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	to := fs.String("to", "", "Index version to rollback to")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ver := strings.TrimSpace(*to)
+	if ver == "" {
+		return fmt.Errorf("runs rollback: --to is required")
+	}
+
+	client := &http.Client{Timeout: timeout}
+	url := strings.TrimRight(baseURL, "/") + "/debug/index/rollback"
+	body, _ := json.Marshal(map[string]any{"version": ver})
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs rollback: %s", strings.TrimSpace(string(b)))
+	}
+
+	fmt.Printf("rolled back active_index_version=%s\n", ver)
+	fmt.Printf("next: driftqctl runs active-index\n")
+	return nil
 }
