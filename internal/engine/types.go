@@ -54,6 +54,15 @@ type NodeFinishedPayload struct {
 	Output       json.RawMessage `json:"output,omitempty"`
 	ArtifactRef  *ArtifactRef    `json:"artifact_ref,omitempty"`
 	ArtifactMeta *ArtifactMeta   `json:"artifact_meta,omitempty"`
+
+	// Proof-grade replay/timing fields (v2.9)
+	UsedCachedOutput bool       `json:"used_cached_output,omitempty"`
+	CachedAttempt    int        `json:"cached_attempt,omitempty"`
+	QueuedAt         *time.Time `json:"queued_at,omitempty"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	EndedAt          *time.Time `json:"ended_at,omitempty"`
+	QueueMS          int64      `json:"queue_ms,omitempty"`
+	WorkerMS         int64      `json:"worker_ms,omitempty"`
 }
 
 type NodeExecution struct {

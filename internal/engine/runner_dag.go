@@ -486,6 +486,21 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					if err != nil {
 						return err
 					}
+					// Inject proof-grade fields: this node was short-circuited from replay-cache (no worker call).
+					payload, err = InjectNodeFinishedProofFields(payload, NodeFinishedProofFields{
+						UsedCachedOutput: true,
+						CachedAttempt:    entry.Attempt,
+						// Queueing isn't tracked yet; treat queued_at as started_at for now (queue_ms=0).
+						QueuedAt:  &nodeStart,
+						StartedAt: &nodeStart,
+						EndedAt:   &nodeEnd,
+						QueueMS:   0,
+						WorkerMS:  nodeEnd.Sub(nodeStart).Milliseconds(),
+					})
+					if err != nil {
+						return err
+					}
+
 					_, _ = r.store.AppendEvent(RunEvent{
 						RunID:      runID,
 						Type:       EventNodeFinished,
@@ -859,6 +874,19 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			done[res.nodeID] = ne
 
 			payload, err := r.buildNodeFinishedPayload(runCtx, runID, wfID, node.NodeID, res.attempt, res.output)
+			if err != nil {
+				return err
+			}
+			// Inject proof-grade timing fields for finished node.
+			start := res.started
+			payload, err = InjectNodeFinishedProofFields(payload, NodeFinishedProofFields{
+				UsedCachedOutput: false,
+				QueuedAt:         &start, // queueing not tracked yet; queue_ms=0
+				StartedAt:        &start,
+				EndedAt:          &nodeEnd,
+				QueueMS:          0,
+				WorkerMS:         nodeEnd.Sub(start).Milliseconds(),
+			})
 			if err != nil {
 				return err
 			}
