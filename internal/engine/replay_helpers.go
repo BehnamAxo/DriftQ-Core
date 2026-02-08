@@ -42,6 +42,7 @@ func nodeHasSucceededAttempt(nodes []NodeExecution, nodeID string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -58,6 +59,7 @@ func (r *Runner) invalidateNodesAndTimers(runID string, nodeIDs map[string]struc
 		if _, ok := nodeIDs[ne.NodeID]; !ok {
 			continue
 		}
+
 		if ne.Status == NodeStatusCanceled {
 			continue
 		}
@@ -68,6 +70,7 @@ func (r *Runner) invalidateNodesAndTimers(runID string, nodeIDs map[string]struc
 		if ne.EndedAt == nil {
 			ne.EndedAt = &now
 		}
+
 		if err := r.store.UpsertNodeExecution(ne); err != nil {
 			return err
 		}

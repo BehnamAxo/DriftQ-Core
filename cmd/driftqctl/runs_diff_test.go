@@ -98,6 +98,7 @@ func TestRunsDiff_PrintsAttemptDelta(t *testing.T) {
 			"--from", "1",
 			"--to", "2",
 		})
+
 		if err != nil {
 			t.Fatalf("runsDiff returned error: %v", err)
 		}
@@ -107,12 +108,15 @@ func TestRunsDiff_PrintsAttemptDelta(t *testing.T) {
 	if !(strings.Contains(out, "attempt") && strings.Contains(out, "1") && strings.Contains(out, "2")) {
 		t.Fatalf("expected attempt info, got:\n%s", out)
 	}
+
 	if !(strings.Contains(out, "failed") && strings.Contains(out, "succeeded")) {
 		t.Fatalf("expected status delta, got:\n%s", out)
 	}
+
 	if !strings.Contains(out, "boom") {
 		t.Fatalf("expected error mention, got:\n%s", out)
 	}
+
 	if !strings.Contains(out, "ok") {
 		t.Fatalf("expected output mention, got:\n%s", out)
 	}

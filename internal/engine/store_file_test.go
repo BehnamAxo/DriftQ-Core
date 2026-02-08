@@ -15,6 +15,7 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+
 	t.Cleanup(func() { _ = s1.Close() })
 
 	r := Run{RunID: "r1", WorkflowID: "wf1", Status: RunStatusQueued}
@@ -27,13 +28,16 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append event1: %v", err)
 	}
+
 	if e1.Seq != 1 {
 		t.Fatalf("expected seq=1, got %d", e1.Seq)
 	}
+
 	e2, err := s1.AppendEvent(RunEvent{RunID: "r1", Type: EventRunStarted})
 	if err != nil {
 		t.Fatalf("append event2: %v", err)
 	}
+
 	if e2.Seq != 2 {
 		t.Fatalf("expected seq=2, got %d", e2.Seq)
 	}
@@ -61,6 +65,7 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat wal: %v", err)
 	}
+
 	if st.Size() == 0 {
 		t.Fatalf("expected non-empty wal")
 	}
@@ -70,12 +75,14 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
+
 	defer func() { _ = s2.Close() }()
 
 	gotRun, ok := s2.GetRun("r1")
 	if !ok {
 		t.Fatalf("expected run r1")
 	}
+
 	if gotRun.WorkflowID != "wf1" || gotRun.Status != RunStatusQueued {
 		t.Fatalf("unexpected run: %+v", gotRun)
 	}
@@ -92,6 +99,7 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected node execution")
 	}
+
 	if gotNode.Status != NodeStatusRunning {
 		t.Fatalf("unexpected node status: %s", gotNode.Status)
 	}
@@ -100,6 +108,7 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected timer")
 	}
+
 	if gotTimer.Status != TimerScheduled {
 		t.Fatalf("unexpected timer status: %s", gotTimer.Status)
 	}
@@ -109,6 +118,7 @@ func TestFileStore_PersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append event3: %v", err)
 	}
+
 	if e3.Seq != 3 {
 		t.Fatalf("expected seq=3, got %d", e3.Seq)
 	}

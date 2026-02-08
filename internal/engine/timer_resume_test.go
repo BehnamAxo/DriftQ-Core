@@ -23,6 +23,7 @@ func TestFireDueTimersAndResume_ResumesWaitingRun(t *testing.T) {
 		if att <= 1 {
 			return nil, Delay(0, "backoff")
 		}
+
 		return json.RawMessage(`{"ok":true}`), nil
 	})
 
@@ -53,9 +54,11 @@ func TestFireDueTimersAndResume_ResumesWaitingRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FireDueTimersAndResume: %v", err)
 	}
+
 	if fired < 1 {
 		t.Fatalf("expected fired >= 1, got %d", fired)
 	}
+
 	if resumed != 1 {
 		t.Fatalf("expected resumed == 1, got %d", resumed)
 	}
@@ -73,6 +76,7 @@ func TestFireDueTimersAndResume_ResumesWaitingRun(t *testing.T) {
 			foundOk = true
 		}
 	}
+
 	if !foundOk {
 		t.Fatalf("expected a succeeded node execution for embed_chunks")
 	}

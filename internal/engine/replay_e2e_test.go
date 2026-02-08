@@ -213,35 +213,41 @@ func Test_ReplayCache_ShortCircuitsOnFreshRun_AndDownstreamStillWorks(t *testing
 	if got := atomic.LoadInt32(&callsA); got != 1 {
 		t.Fatalf("expected A NOT called again on cached run, callsA=%d", got)
 	}
+
 	if got := atomic.LoadInt32(&callsB); got != 2 {
 		t.Fatalf("expected B called again on cached run, callsB=%d", got)
 	}
 
-// Proof: cached run must emit used_cached_output=true for node A finished event
-events := store.ListEvents(dstRunID)
-found := false
-for _, e := range events {
-	if e.Type == EventNodeFinished && e.NodeID == "A" {
-		var p NodeFinishedPayload
-		if err := json.Unmarshal(e.Payload, &p); err != nil {
-			t.Fatalf("unmarshal node finished payload: %v", err)
+	// Proof: cached run must emit used_cached_output=true for node A finished event
+	events := store.ListEvents(dstRunID)
+	found := false
+	for _, e := range events {
+		if e.Type == EventNodeFinished && e.NodeID == "A" {
+			var p NodeFinishedPayload
+			if err := json.Unmarshal(e.Payload, &p); err != nil {
+				t.Fatalf("unmarshal node finished payload: %v", err)
+			}
+
+			if !p.UsedCachedOutput {
+				t.Fatalf("expected used_cached_output=true on cached node A")
+			}
+
+			if p.CachedAttempt != 1 {
+				t.Fatalf("expected cached_attempt=1 on cached node A, got=%d", p.CachedAttempt)
+			}
+
+			if p.StartedAt == nil || p.EndedAt == nil {
+				t.Fatalf("expected started_at/ended_at on cached node A payload")
+			}
+
+			found = true
+			break
 		}
-		if !p.UsedCachedOutput {
-			t.Fatalf("expected used_cached_output=true on cached node A")
-		}
-		if p.CachedAttempt != 1 {
-			t.Fatalf("expected cached_attempt=1 on cached node A, got=%d", p.CachedAttempt)
-		}
-		if p.StartedAt == nil || p.EndedAt == nil {
-			t.Fatalf("expected started_at/ended_at on cached node A payload")
-		}
-		found = true
-		break
 	}
-}
-if !found {
-	t.Fatalf("expected EventNodeFinished for node A in cached run")
-}
+
+	if !found {
+		t.Fatalf("expected EventNodeFinished for node A in cached run")
+	}
 
 	// Also prove the cached output was artifact-stored (content-addressed)
 	wantID := sha256Hex(aOut)

@@ -25,6 +25,7 @@ func TestInjectNodeFinishedProofFields_PreservesOutputAndAddsFields(t *testing.T
 		QueueMS:          0,
 		WorkerMS:         2000,
 	})
+
 	if err != nil {
 		t.Fatalf("InjectNodeFinishedProofFields: %v", err)
 	}
@@ -37,15 +38,19 @@ func TestInjectNodeFinishedProofFields_PreservesOutputAndAddsFields(t *testing.T
 	if string(got.Output) != string(out) {
 		t.Fatalf("output changed: got=%s want=%s", string(got.Output), string(out))
 	}
+
 	if !got.UsedCachedOutput {
 		t.Fatalf("expected used_cached_output=true")
 	}
+
 	if got.CachedAttempt != 7 {
 		t.Fatalf("cached_attempt: got=%d want=%d", got.CachedAttempt, 7)
 	}
+
 	if got.StartedAt == nil || got.EndedAt == nil {
 		t.Fatalf("expected started_at and ended_at to be set")
 	}
+
 	if got.WorkerMS != 2000 {
 		t.Fatalf("worker_ms: got=%d want=%d", got.WorkerMS, 2000)
 	}

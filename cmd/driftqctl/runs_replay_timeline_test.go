@@ -18,6 +18,7 @@ func TestRunsReplay_POSTsRunReplayAndPrintsNextSteps(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
+
 		if r.URL.Path != "/debug/run-replay" {
 			t.Fatalf("expected /debug/run-replay, got %s", r.URL.Path)
 		}
@@ -53,6 +54,7 @@ func TestRunsReplay_POSTsRunReplayAndPrintsNextSteps(t *testing.T) {
 	if !strings.Contains(out, "replay started run_id=r1 from_step=A mode=live") {
 		t.Fatalf("unexpected output: %s", out)
 	}
+
 	if !strings.Contains(out, "next: driftqctl runs timeline --run-id r1") {
 		t.Fatalf("missing next timeline hint: %s", out)
 	}

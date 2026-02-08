@@ -8,9 +8,9 @@ import (
 )
 
 // FireDueTimersAndResume:
-//  1) finds all due timers (scheduled && fire_at <= now),
-//  2) fires them (marks fired + appends TimerFired events),
-//  3) resumes any WAITING runs impacted by those timers.
+//  1. finds all due timers (scheduled && fire_at <= now),
+//  2. fires them (marks fired + appends TimerFired events),
+//  3. resumes any WAITING runs impacted by those timers.
 //
 // This turns Delay() + timers into a real "backoff retry" mechanism: timers fire -> runs continue.
 func (r *Runner) FireDueTimersAndResume(ctx context.Context, now time.Time) (fired int, resumed int, err error) {
@@ -31,6 +31,7 @@ func (r *Runner) FireDueTimersAndResume(ctx context.Context, now time.Time) (fir
 	if err != nil {
 		return fired, 0, err
 	}
+
 	if fired == 0 {
 		return 0, 0, nil
 	}
@@ -43,6 +44,7 @@ func (r *Runner) FireDueTimersAndResume(ctx context.Context, now time.Time) (fir
 			r.logger.Error("timers: resume failed", "run_id", runID, "err", rerr)
 			continue
 		}
+
 		if ok {
 			resumed++
 		}

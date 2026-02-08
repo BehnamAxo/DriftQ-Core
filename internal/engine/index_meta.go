@@ -19,6 +19,7 @@ func PromoteIndexVersion(s Store, runID string, version string) (string, error) 
 	if runID == "" {
 		return "", fmt.Errorf("promote: run_id required")
 	}
+
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = runID
@@ -28,6 +29,7 @@ func PromoteIndexVersion(s Store, runID string, version string) (string, error) 
 	if !ok {
 		return "", ErrRunNotFound
 	}
+
 	if run.Status != RunStatusSucceeded {
 		return "", fmt.Errorf("promote: run %s status=%s (need %s)", runID, run.Status, RunStatusSucceeded)
 	}
@@ -44,5 +46,6 @@ func RollbackIndexVersion(s Store, version string) error {
 	if version == "" {
 		return fmt.Errorf("rollback: version required")
 	}
+
 	return s.PutKV(MetaKeyActiveIndexVersion, version)
 }

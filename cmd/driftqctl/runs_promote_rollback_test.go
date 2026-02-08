@@ -15,9 +15,11 @@ func TestRunsActiveIndex_PrintsValue(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Fatalf("expected GET, got %s", r.Method)
 		}
+
 		if r.URL.Path != "/debug/index/active" {
 			t.Fatalf("expected /debug/index/active, got %s", r.URL.Path)
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"active_version":"v1"}`))
 	}))
@@ -28,6 +30,7 @@ func TestRunsActiveIndex_PrintsValue(t *testing.T) {
 			t.Fatalf("cmdRuns active-index: %v", err)
 		}
 	})
+
 	if !strings.Contains(out, "active_index_version=v1") {
 		t.Fatalf("unexpected output: %s", out)
 	}
@@ -38,9 +41,11 @@ func TestRunsPromote_POSTsAndPrintsNext(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
+
 		if r.URL.Path != "/debug/index/promote" {
 			t.Fatalf("expected /debug/index/promote, got %s", r.URL.Path)
 		}
+
 		b, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 
@@ -48,6 +53,7 @@ func TestRunsPromote_POSTsAndPrintsNext(t *testing.T) {
 		if err := json.Unmarshal(b, &req); err != nil {
 			t.Fatalf("bad json: %v body=%s", err, string(b))
 		}
+
 		if req["run_id"] != "r1" || req["version"] != "r1" {
 			t.Fatalf("unexpected req: %+v", req)
 		}
@@ -69,6 +75,7 @@ func TestRunsPromote_POSTsAndPrintsNext(t *testing.T) {
 	if !strings.Contains(out, "promoted active_index_version=r1") {
 		t.Fatalf("unexpected output: %s", out)
 	}
+
 	if !strings.Contains(out, "next: driftqctl runs active-index") {
 		t.Fatalf("missing next hint: %s", out)
 	}
@@ -79,9 +86,11 @@ func TestRunsRollback_POSTsAndPrintsNext(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
+
 		if r.URL.Path != "/debug/index/rollback" {
 			t.Fatalf("expected /debug/index/rollback, got %s", r.URL.Path)
 		}
+
 		b, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 
@@ -89,6 +98,7 @@ func TestRunsRollback_POSTsAndPrintsNext(t *testing.T) {
 		if err := json.Unmarshal(b, &req); err != nil {
 			t.Fatalf("bad json: %v body=%s", err, string(b))
 		}
+
 		if req["version"] != "v0" {
 			t.Fatalf("unexpected req: %+v", req)
 		}
@@ -110,6 +120,7 @@ func TestRunsRollback_POSTsAndPrintsNext(t *testing.T) {
 	if !strings.Contains(out, "rolled back active_index_version=v0") {
 		t.Fatalf("unexpected output: %s", out)
 	}
+
 	if !strings.Contains(out, "next: driftqctl runs active-index") {
 		t.Fatalf("missing next hint: %s", out)
 	}

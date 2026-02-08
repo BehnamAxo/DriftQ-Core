@@ -44,13 +44,16 @@ func TestReplayFrom_TimeTravel_DoesNotReexecuteSucceededFromStep(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected run to fail")
 	}
+
 	if !errors.Is(err, ErrNodeFailed) {
 		// The runner wraps some failures; ErrNodeFailed is the stable sentinel.
 		t.Fatalf("expected ErrNodeFailed, got: %v", err)
 	}
+
 	if aCalls != 1 {
 		t.Fatalf("expected A to run once, got %d", aCalls)
 	}
+
 	if bCalls != 1 {
 		t.Fatalf("expected B to run once, got %d", bCalls)
 	}
@@ -63,6 +66,7 @@ func TestReplayFrom_TimeTravel_DoesNotReexecuteSucceededFromStep(t *testing.T) {
 	if aCalls != 1 {
 		t.Fatalf("expected A not to rerun in time-travel, got %d", aCalls)
 	}
+
 	if bCalls != 2 {
 		t.Fatalf("expected B to rerun once, got %d", bCalls)
 	}
@@ -75,6 +79,7 @@ func TestReplayFrom_TimeTravel_DoesNotReexecuteSucceededFromStep(t *testing.T) {
 			b2OK = true
 		}
 	}
+
 	if !b2OK {
 		t.Fatalf("expected B attempt 2 to succeed")
 	}
@@ -122,9 +127,11 @@ func TestReplayFrom_Live_ReexecutesFromStep(t *testing.T) {
 	if err := runner.ReplayFrom(context.Background(), "r1", "A", ReplayLive); err != nil {
 		t.Fatalf("replay failed: %v", err)
 	}
+
 	if aCalls != 2 {
 		t.Fatalf("expected A to rerun in live mode, got %d", aCalls)
 	}
+
 	if bCalls != 2 {
 		t.Fatalf("expected B to rerun in live mode, got %d", bCalls)
 	}
@@ -137,6 +144,7 @@ func TestReplayFrom_Live_ReexecutesFromStep(t *testing.T) {
 			a1Canceled = true
 		}
 	}
+
 	if !a1Canceled {
 		t.Fatalf("expected A attempt 1 to be marked canceled on live replay")
 	}

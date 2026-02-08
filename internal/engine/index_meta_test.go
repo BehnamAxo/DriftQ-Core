@@ -27,9 +27,11 @@ func TestIndexVersion_PromoteRequiresSucceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("promote: %v", err)
 	}
+
 	if ver != "r1" {
 		t.Fatalf("expected default version=r1, got %q", ver)
 	}
+
 	got, ok := GetActiveIndexVersion(s)
 	if !ok || got != "r1" {
 		t.Fatalf("expected active=r1, got %q ok=%v", got, ok)
@@ -38,6 +40,7 @@ func TestIndexVersion_PromoteRequiresSucceeded(t *testing.T) {
 	if err := RollbackIndexVersion(s, "v0"); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
+
 	got, _ = GetActiveIndexVersion(s)
 	if got != "v0" {
 		t.Fatalf("expected active=v0, got %q", got)
@@ -52,9 +55,11 @@ func TestFileStore_KVPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileStore: %v", err)
 	}
+
 	if err := s1.PutKV(MetaKeyActiveIndexVersion, "v123"); err != nil {
 		t.Fatalf("PutKV: %v", err)
 	}
+
 	if err := s1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -64,6 +69,7 @@ func TestFileStore_KVPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileStore (reopen): %v", err)
 	}
+
 	defer func() { _ = s2.Close() }()
 
 	got, ok := s2.GetKV(MetaKeyActiveIndexVersion)

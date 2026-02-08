@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 	"sort"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,7 +30,7 @@ type FileStore struct {
 	events  map[string][]RunEvent
 	nextSeq map[string]int64
 	timers  map[string]Timer
-	kv     map[string]string
+	kv      map[string]string
 
 	wal *engineWAL
 }
@@ -57,7 +57,6 @@ type kvPayload struct {
 	Value string `json:"value"`
 }
 
-
 // OpenFileStore opens/creates a WAL file at path and replays it to rebuild state
 func OpenFileStore(path string) (*FileStore, error) {
 	wal, err := openEngineWAL(path)
@@ -71,7 +70,7 @@ func OpenFileStore(path string) (*FileStore, error) {
 		events:  make(map[string][]RunEvent),
 		nextSeq: make(map[string]int64),
 		timers:  make(map[string]Timer),
-		kv:     make(map[string]string),
+		kv:      make(map[string]string),
 		wal:     wal,
 	}
 
@@ -207,21 +206,23 @@ func (s *FileStore) applyRecord(rec walRecord) error {
 		s.timers[timerKey(t.RunID, t.NodeID, t.Attempt)] = cloneTimer(t)
 		return nil
 
+	case opPutKV:
+		var kv kvPayload
+		if err := json.Unmarshal(rec.Value, &kv); err != nil {
+			return fmt.Errorf("replay put_kv: %w", err)
+		}
 
-case opPutKV:
-	var kv kvPayload
-	if err := json.Unmarshal(rec.Value, &kv); err != nil {
-		return fmt.Errorf("replay put_kv: %w", err)
-	}
-	k := strings.TrimSpace(kv.Key)
-	if k == "" {
-		return fmt.Errorf("replay put_kv: key required")
-	}
-	if s.kv == nil {
-		s.kv = make(map[string]string)
-	}
-	s.kv[k] = kv.Value
-	return nil
+		k := strings.TrimSpace(kv.Key)
+		if k == "" {
+			return fmt.Errorf("replay put_kv: key required")
+		}
+
+		if s.kv == nil {
+			s.kv = make(map[string]string)
+		}
+
+		s.kv[k] = kv.Value
+		return nil
 
 	default:
 		return fmt.Errorf("unknown wal op: %q", rec.Op)
@@ -430,6 +431,7 @@ func (s *FileStore) ListEvents(runID string) []RunEvent {
 	for _, e := range evs {
 		out = append(out, cloneRunEvent(e))
 	}
+
 	return out
 }
 
@@ -508,6 +510,7 @@ func (s *FileStore) ListDueTimers(now time.Time) []Timer {
 		if t.Status != TimerScheduled {
 			continue
 		}
+
 		if !t.FireAt.After(now) {
 			out = append(out, cloneTimer(t))
 		}
@@ -611,25 +614,27 @@ func (w *engineWAL) Close() error {
 	return w.f.Close()
 }
 
-
 // PutKV stores a metadata key/value and persists it to the WAL.
 func (s *FileStore) PutKV(key, value string) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return fmt.Errorf("PutKV: key required")
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.kv == nil {
 		s.kv = make(map[string]string)
 	}
+
 	s.kv[key] = value
 
 	if s.wal == nil {
 		return nil
 	}
+
 	p := kvPayload{Key: key, Value: value}
-return s.wal.Append(opPutKV, p)
+	return s.wal.Append(opPutKV, p)
 }
 
 // GetKV retrieves a metadata value by key.
@@ -638,11 +643,14 @@ func (s *FileStore) GetKV(key string) (string, bool) {
 	if key == "" {
 		return "", false
 	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	if s.kv == nil {
 		return "", false
 	}
+
 	v, ok := s.kv[key]
 	return v, ok
 }
