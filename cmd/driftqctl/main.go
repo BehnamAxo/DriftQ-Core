@@ -71,6 +71,13 @@ func usage() {
 		runs state --run-id ID [--raw]
 				Dump full run state (GET /debug/run-state)
 
+
+runs replay --run-id ID --from-step STEP [--mode time-travel|live]
+		Replay/redrive a run from a step (POST /debug/run-replay)
+
+runs timeline --run-id ID
+		Print timing/cache proof fields from events (GET /debug/run-state)
+
 		runs step --run-id ID --node-id N [--attempt K] [--raw]
 				Inspect node executions (GET /debug/run-state)
 
@@ -92,6 +99,8 @@ func usage() {
 		driftqctl --base-url http://localhost:8080 runs list --limit 20
 		driftqctl --base-url http://localhost:8080 runs status --run-id demo-20260101T000000Z
 		driftqctl --base-url http://localhost:8080 runs artifacts --run-id demo-20260101T000000Z
+		driftqctl --base-url http://localhost:8080 runs replay --run-id demo-20260101T000000Z --from-step embed_chunks --mode time-travel
+		driftqctl --base-url http://localhost:8080 runs timeline --run-id demo-20260101T000000Z
 		driftqctl --base-url http://localhost:8080 runs cancel --run-id demo-20260101T000000Z --reason "stop it"
 	`)
 }

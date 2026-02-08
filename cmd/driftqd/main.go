@@ -231,6 +231,10 @@ func main() {
 	walPath := flag.String("wal", "driftq.wal", "path to WAL file")
 	resetWAL := flag.Bool("reset-wal", false, "reset WAL by moving existing file aside (creates a .bak.<ts> file)")
 
+	engineStore := flag.String("engine-store", "memory", "engine store: memory|file")
+	engineWAL := flag.String("engine-wal", "driftq.engine.wal", "path to engine run/event WAL file (engine-store=file)")
+	artifactsDir := flag.String("artifacts-dir", "driftq.artifacts", "artifact store dir (empty = in-memory)")
+
 	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
 	logFormat := flag.String("log-format", "text", "log format: text|json")
 
@@ -293,10 +297,38 @@ func main() {
 
 	s := &server{broker: b}
 
-	// Note: this is v2 runner in-memory for now and will become real persistence later
-	runStore := engine.NewMemoryStore()
+	// v2 runner store (memory or durable file WAL)
+	var runStore engine.Store
+	var closeRunStore func() error
+	switch strings.ToLower(strings.TrimSpace(*engineStore)) {
+	case "file":
+		fs, err := engine.OpenFileStore(*engineWAL)
+		if err != nil {
+			fatal("failed to open engine store", err)
+		}
+
+		runStore = fs
+		closeRunStore = fs.Close
+	default:
+		runStore = engine.NewMemoryStore()
+	}
+
+	if closeRunStore != nil {
+		defer func() { _ = closeRunStore() }()
+	}
+
 	runner := engine.NewRunner(runStore)
-	runner.SetArtifactStore(engine.NewMemoryArtifactStore())
+
+	// Artifact store: filesystem by default so demo outputs survive restarts.
+	if strings.TrimSpace(*artifactsDir) != "" {
+		as, err := engine.NewLocalArtifactStore(*artifactsDir)
+		if err != nil {
+			fatal("failed to init artifact store", err)
+		}
+		runner.SetArtifactStore(as)
+	} else {
+		runner.SetArtifactStore(engine.NewMemoryArtifactStore())
+	}
 	runner.SetLogger(logger)
 
 	// fire due timers in the background (durable delay primitive)
@@ -309,13 +341,14 @@ func main() {
 			case <-appCtx.Done():
 				return
 			case t := <-ticker.C:
-				n, err := runner.FireDueTimers(t.UTC())
+				fired, resumed, err := runner.FireDueTimersAndResume(appCtx, t.UTC())
 				if err != nil {
 					logger.Error("timers: fire due timers failed", "err", err)
 					continue
 				}
-				if n > 0 {
-					logger.Info("timers: fired", "count", n)
+
+				if fired > 0 || resumed > 0 {
+					logger.Info("timers: fired/resumed", "fired", fired, "resumed", resumed)
 				}
 			}
 		}

@@ -180,39 +180,73 @@ func TestCompileExecutableFromStoredSpec_NoRegistry(t *testing.T) {
 	}
 }
 
-func TestReplay_Live_NotImplemented(t *testing.T) {
+func TestReplay_Live_FullRerun_OverridesPriorSuccess(t *testing.T) {
 	store := NewMemoryStore()
 	r := NewRunner(store)
 
 	runID := "run-replay-live"
 	wfID := "wf-replay-live"
 
+	calls := 0
 	g := WorkflowGraph{
 		ID: wfID,
 		Nodes: []NodeDef{
-			{NodeID: "A", Run: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) { return in, nil }},
+			{
+				NodeID: "A",
+				Run: func(ctx context.Context, in json.RawMessage) (json.RawMessage, error) {
+					calls++
+					return in, nil
+				},
+			},
 		},
 	}
 	r.rememberGraph(wfID, g)
 
+	initial := json.RawMessage(`{"hello":"world"}`)
 	if err := store.CreateRun(Run{
-		RunID:      runID,
-		WorkflowID: wfID,
-		Status:     RunStatusFailed,
-		Spec:       json.RawMessage(`{"fake":"spec"}`),
+		RunID:        runID,
+		WorkflowID:   wfID,
+		Status:       RunStatusSucceeded, // prove live replay can re-run a succeeded run
+		Spec:         json.RawMessage(`{"fake":"spec"}`),
+		InitialInput: cloneRaw(initial),
 	}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
-	err := r.Replay(context.Background(), runID, ReplayLive)
-	if err == nil {
-		t.Fatalf("expected error, got nil")
+	// Seed a previous successful node execution attempt so live replay has something to invalidate.
+	now := time.Now().UTC()
+	if err := store.UpsertNodeExecution(NodeExecution{
+		RunID:      runID,
+		WorkflowID: wfID,
+		NodeID:     "A",
+		Attempt:    1,
+		Status:     NodeStatusSucceeded,
+		StartedAt:  &now,
+		EndedAt:    &now,
+		Input:      cloneRaw(initial),
+	}); err != nil {
+		t.Fatalf("UpsertNodeExecution(prev): %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := r.Replay(context.Background(), runID, ReplayLive); err != nil {
+		t.Fatalf("Replay(Live): %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected handler to execute once on live replay, got %d", calls)
+	}
+
+	execs := store.ListNodeExecutions(runID)
+	_ = findNodeAttempt(t, execs, "A", 2) // should create a new attempt
+	run2, ok := store.GetRun(runID)
+	if !ok {
+		t.Fatalf("GetRun: missing run")
+	}
+	if run2.Status != RunStatusSucceeded {
+		t.Fatalf("expected run to succeed after live replay, got %s", run2.Status)
 	}
 }
+
 
 func findNodeAttempt(t *testing.T, execs []NodeExecution, nodeID string, attempt int) NodeExecution {
 	t.Helper()

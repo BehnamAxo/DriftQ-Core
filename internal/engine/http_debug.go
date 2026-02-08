@@ -392,6 +392,62 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
+	// Body: { "run_id": "...", "from_step": "optional", "mode": "time_travel"|"live" }
+	mux.HandleFunc("/debug/run-replay", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var body struct {
+			RunID    string `json:"run_id"`
+			FromStep string `json:"from_step"`
+			Mode     string `json:"mode"`
+		}
+
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		body.RunID = strings.TrimSpace(body.RunID)
+		body.FromStep = strings.TrimSpace(body.FromStep)
+		body.Mode = strings.TrimSpace(body.Mode)
+		if body.RunID == "" {
+			http.Error(w, "run_id is required", http.StatusBadRequest)
+			return
+		}
+
+		mode := ReplayTimeTravel
+		if body.Mode != "" {
+			mode = ReplayMode(body.Mode)
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := WithTraceID(r.Context(), traceID)
+
+		if err := runner.ReplayFrom(ctx, body.RunID, body.FromStep, mode); err != nil {
+			if errors.Is(err, ErrRunNotFound) {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "replay failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"run_id":    body.RunID,
+			"from_step": body.FromStep,
+			"mode":      string(mode),
+			"trace_id":  traceID,
+		})
+	})
+
 	// Big dump: run + raw node executions + events + timers (for deep debugging)
 	mux.HandleFunc("/debug/run-state", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -589,6 +645,98 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"note":       "use the real /v1/topics endpoint via driftqctl; this is just a helper",
 		})
 	})
+
+
+mux.HandleFunc("/debug/index/active", func(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ver, ok := GetActiveIndexVersion(runner.store)
+	resp := map[string]any{
+		"ok":             true,
+		"active_version": "",
+	}
+	if ok {
+		resp["active_version"] = ver
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+})
+
+mux.HandleFunc("/debug/index/promote", func(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// support query params OR JSON body
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+
+	if runID == "" {
+		body, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if len(body) > 0 {
+			var req struct {
+				RunID   string `json:"run_id"`
+				Version string `json:"version"`
+			}
+			_ = json.Unmarshal(body, &req)
+			runID = strings.TrimSpace(req.RunID)
+			version = strings.TrimSpace(req.Version)
+		}
+	}
+
+	if runID == "" {
+		http.Error(w, "run_id required", http.StatusBadRequest)
+		return
+	}
+
+	ver, err := PromoteIndexVersion(runner.store, runID, version)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp := map[string]any{"ok": true, "active_version": ver}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+})
+
+mux.HandleFunc("/debug/index/rollback", func(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version == "" {
+		body, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if len(body) > 0 {
+			var req struct {
+				Version string `json:"version"`
+			}
+			_ = json.Unmarshal(body, &req)
+			version = strings.TrimSpace(req.Version)
+		}
+	}
+
+	if err := RollbackIndexVersion(runner.store, version); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp := map[string]any{"ok": true, "active_version": version}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+})
 }
 
 // This is broker-only and it mounts debug-only topic inspection routes

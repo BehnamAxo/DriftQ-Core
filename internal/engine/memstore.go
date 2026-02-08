@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,11 @@ type Store interface {
 	ListDueTimers(now time.Time) []Timer
 
 	ListRuns() []string
+
+
+	// KV metadata
+	PutKV(key, value string) error
+	GetKV(key string) (string, bool)
 }
 
 type nodeKey struct {
@@ -49,6 +55,8 @@ type MemoryStore struct {
 	events  map[string][]RunEvent
 	nextSeq map[string]int64
 	timers  map[string]Timer
+
+	kv     map[string]string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -58,6 +66,7 @@ func NewMemoryStore() *MemoryStore {
 		events:  make(map[string][]RunEvent),
 		nextSeq: make(map[string]int64),
 		timers:  make(map[string]Timer),
+		kv:     make(map[string]string),
 	}
 }
 
@@ -403,4 +412,35 @@ func (s *MemoryStore) ListDueTimers(now time.Time) []Timer {
 	})
 
 	return out
+}
+
+
+// PutKV stores a durable metadata key/value (in-memory for MemoryStore).
+func (s *MemoryStore) PutKV(key, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("PutKV: key required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.kv == nil {
+		s.kv = make(map[string]string)
+	}
+	s.kv[key] = value
+	return nil
+}
+
+// GetKV retrieves a metadata value by key.
+func (s *MemoryStore) GetKV(key string) (string, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.kv == nil {
+		return "", false
+	}
+	v, ok := s.kv[key]
+	return v, ok
 }
