@@ -1,201 +1,136 @@
-# DriftQ-Core
+# DriftQ-Core 🚀
 
-DriftQ-Core is the **v1 MVP** of DriftQ: a small, WAL-backed message broker built in Go.
+**DriftQ-Core** is a durable message broker (v1) that also contains the **DriftQ v2 foundations**: a replayable workflow runtime with a persistent run/event log, deterministic DAG scheduling, and debugging primitives.
 
-It’s intentionally minimal: the goal is a clean foundation for higher-level features (routing/policies, schedulers, etc.), with a simple HTTP API you can hit with `curl`.
+- **v1 (stable):** broker API under `/v1/*` (produce/consume/ack/nack, topics, leases).
+- **v2 foundations (evolving):** workflow runtime exposed via `/debug/*` and `driftqctl runs ...` (replay, timelines, diffs, rollback primitives).
 
-## What you get (MVP)
+If you only want the broker, you can ignore v2. If you want "Temporal-like" durability + replay, v2 is where this is going. 🙂
 
-- Topics + partitions
-- Producer API with basic envelope fields (tenant/run/step/idempotency key, retry policy)
-- Consumer groups with **owner + lease** semantics
-- `/ack` and `/nack`
-- Retry + **DLQ** (`dlq.<topic>`)
-- Prometheus `/metrics` (basic observability)
+---
 
-## Run with Docker (recommended)
+## Highlights ✨
 
-This is the easiest way to run DriftQ-Core without installing Go.
+### v1 — Broker (stable)
+- Topics / partitions
+- `produce`, streaming `consume` (NDJSON), `ack` / `nack`
+- Consumer leases (`lease_ms`)
+- Idempotency keys (at-least-once with dedupe)
+- WAL-backed durability
 
-### Option A: Pull the published image from GHCR (recommended)
+### v2 foundations — Replayable workflow runtime (evolving)
+- **Run contract** + **append-only run/event log** (inspectable execution history)
+- **Deterministic DAG engine** (step dependencies, fan-out/fan-in, retries)
+- **Replay controls**
+  - **time-travel replay**: reuse recorded outputs/artifacts (don’t re-run expensive steps)
+  - **live replay**: re-execute from a chosen step
+- **Durable delay primitive** (timers + resume loop after restart)
+- **Artifact store** + **replay cache** (store big outputs, reuse on replay)
+- **Debug endpoints** for inspection/control (run state, timelines, diffs, replay)
+- **Minimal rollback primitive** via an "active index" pointer (promote/rollback)
 
-Pin a version so runs are reproducible (recommended).
+---
 
-**mac/linux**
+## Quickstart (Docker)
+
+**Recommended (pinned tag):**
 ```bash
-export DRIFTQ_VERSION="1.0.0"
-docker pull ghcr.io/driftq-org/driftq-core:$DRIFTQ_VERSION
-docker run --rm -p 8080:8080 -v driftq-data:/data ghcr.io/driftq-org/driftq-core:$DRIFTQ_VERSION
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
 ```
 
-**windows powershell**
-```powershell
-$env:DRIFTQ_VERSION="1.0.0"
-docker pull ghcr.io/driftq-org/driftq-core:$env:DRIFTQ_VERSION
-docker run --rm -p 8080:8080 -v driftq-data:/data ghcr.io/driftq-org/driftq-core:$env:DRIFTQ_VERSION
-```
-
-Useful tags:
-
-- `ghcr.io/driftq-org/driftq-core:1.0.0` (recommended: reproducible)
-- `ghcr.io/driftq-org/driftq-core:latest` (tracks `main` — convenient, but can break unexpectedly)
-- `ghcr.io/driftq-org/driftq-core:sha-<...>` (exact build)
-
-Stop it: `Ctrl+C` (or `docker stop <container>` if you ran detached).
-
-⚠️ If you want to **wipe data / reset WAL**, remove the volume:
-
+**Development / tracks `main`:**
 ```bash
-docker volume rm driftq-data
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:latest
 ```
 
-### Option B: Run with Docker Compose (WAL persists)
-
-If you cloned this repo, you can run:
-
-**mac/linux**
+Then hit:
 ```bash
-export DRIFTQ_VERSION="1.0.0"
-docker compose up
+curl http://127.0.0.1:8080/v1/healthz
 ```
 
-**windows powershell**
-```powershell
-$env:DRIFTQ_VERSION="1.0.0"
-docker compose up
-```
+> Tip: In production, pin the image tag (reproducible deploys). `latest` is for dev.
 
-- DriftQ listens on `http://localhost:8080`
-- WAL is stored in a named Docker volume mounted at `/data` inside the container.
+---
 
-Stop it:
+## driftqctl (CLI) 🧰
 
+From this repo:
 ```bash
-docker compose down
+go build -o driftqctl ./cmd/driftqctl
+./driftqctl --help
 ```
 
-⚠️ If you want to **wipe data / reset WAL**, remove the volume:
-
+Example (v1 broker):
 ```bash
-docker compose down -v
+./driftqctl topics list --base-url http://127.0.0.1:8080
 ```
 
-If your `docker-compose.yml` still references a local image/build, here is the minimal GHCR-based version (defaults to `1.0.0` if `DRIFTQ_VERSION` is not set):
-
-```yaml
-services:
-  driftqd:
-    image: ghcr.io/driftq-org/driftq-core:${DRIFTQ_VERSION:-1.0.0}
-    ports:
-      - "8080:8080"
-    volumes:
-      - driftq-data:/data
-
-volumes:
-  driftq-data:
-```
-
-### Option C: Build the image locally (dev)
-
-**mac/linux**
+Example (v2 foundations):
 ```bash
-docker build -t driftq-core:local \
-  --build-arg VERSION=dev \
-  --build-arg COMMIT="$(git rev-parse --short HEAD)" \
-  .
-```
-
-**windows powershell**
-```powershell
-docker build -t driftq-core:local `
-  --build-arg VERSION=dev `
-  --build-arg COMMIT=$(git rev-parse --short HEAD) `
-  .
-```
-
-Run it:
-
-```bash
-docker run --rm -p 8080:8080 -v driftq-data:/data driftq-core:local
-```
-
-## Run locally (Go)
-
-```bash
-go run ./cmd/driftqd -log-format=text -log-level=info -reset-wal
-```
-
-By default DriftQ listens on `:8080`. You can change it:
-
-```bash
-go run ./cmd/driftqd -addr :8080 -log-format=text -log-level=info
-```
-
-## Quickstart (HTTP)
-
-Create a topic:
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/topics?name=t&partitions=1"
-```
-
-Produce a message:
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/produce?topic=t&value=hello"
-```
-
-Consume (streams **NDJSON**, one JSON object per line):
-
-```bash
-# mac/linux
-curl -N "http://localhost:8080/v1/consume?topic=t&group=g&owner=o&lease_ms=5000"
-
-# windows powershell
-curl.exe --no-buffer "http://localhost:8080/v1/consume?topic=t&group=g&owner=o&lease_ms=5000"
-```
-
-Ack:
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/ack?topic=t&group=g&owner=o&partition=0&offset=0"
-```
-
-Nack:
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/nack?topic=t&group=g&owner=o&partition=0&offset=0&error=failed"
-```
-
-## Observability
-
-### Metrics endpoint
-
-```bash
-curl -s "http://localhost:8080/metrics" | head
-```
-
-### Metrics currently exported
-
-- `inflight_messages{topic,group,partition}` (gauge)
-- `consumer_lag{topic,group,partition}` (gauge)
-- `dlq_messages_total{topic,reason}` (counter)
-- `produce_rejected_total{reason}` (counter)
-
-Example:
-
-```bash
-curl -s "http://localhost:8080/metrics" | findstr inflight_messages
-curl -s "http://localhost:8080/metrics" | findstr consumer_lag
+./driftqctl runs list --base-url http://127.0.0.1:8080
+./driftqctl runs timeline --base-url http://127.0.0.1:8080 --run-id <RUN_ID>
+./driftqctl runs replay --base-url http://127.0.0.1:8080 --run-id <RUN_ID> --from-step <STEP_ID> --mode time_travel
 ```
 
 ## Docs
 
-- HTTP API reference: `docs/v1/README.md`
-- Architecture notes: `docs/architecture.md`
+- **v1 broker docs:** `docs/v1/README.md`
+- **v2 foundations docs:** `docs/v2/README.md` (new)
 
-## Tests
 
+## Starter templates & demos
+
+For copy/paste starter repos and runnable demos, see **DriftQ-Starters**:
+
+- GitHub: [driftq-org/DriftQ-Starters](https://github.com/driftq-org/DriftQ-Starters)
+
+
+## API Surface
+
+### v1 (stable)
+All stable broker endpoints are under `/v1/*`.
+
+Start here: `docs/v1/README.md`
+
+### v2 foundations (debug / evolving)
+These endpoints are currently under `/debug/*` and are meant for development, demos, and iteration (they will evolve).
+
+Start here: `docs/v2/README.md`
+
+---
+
+## Development
+
+Run from source:
 ```bash
-go test ./...
+go run ./cmd/driftqd -data-dir ./driftq_data
 ```
+
+Run tests:
+```bash
+go test ./... -count=1
+```
+
+## Compatibility note (WAL) ⚠️
+
+WAL is **forward-compatible only**: once you write WAL entries with newer ops, you can’t safely downgrade to an older binary that doesn’t understand them.
+
+
+## Roadmap
+- Message Queue MVP (Completed✅)
+- Replayable Workflow Runtime (Completed✅)
+- Multi-Agent Runtime & Real-Time AI
+- DriftQ Cloud
+
+## Repo layout (high level)
+
+- `cmd/driftqd` — server
+- `cmd/driftqctl` — CLI client
+- `internal/broker` — v1 broker core
+- `internal/engine` — v2 foundations (run store, DAG runner, replay, artifacts, timers, debug endpoints)
+- `docs/` — documentation (v1 + v2)
+
+
+## License
+
+See `LICENSE`.
