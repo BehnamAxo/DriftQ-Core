@@ -106,6 +106,12 @@ func cmdRuns(baseURL string, timeout time.Duration, args []string) error {
 	case "show", "get":
 		return runsStatus(baseURL, timeout, args[1:])
 
+	case "replay":
+		return runsReplay(baseURL, timeout, args[1:])
+
+	case "timeline":
+		return runsTimeline(baseURL, timeout, args[1:])
+
 	default:
 		return fmt.Errorf("runs: unknown subcommand %q (use: list|status|step|events|state|diff|cancel|demo|artifacts|artifact-meta|artifact-get)", args[0])
 	}
@@ -1030,4 +1036,223 @@ func extractArtifactIDs(node map[string]any) []string {
 	}
 
 	return out
+}
+
+func runsReplay(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs replay", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+	fromStep := fs.String("from-step", "", "step/node id to restart from (required)")
+	mode := fs.String("mode", "time-travel", "replay mode: time-travel|live")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	step := strings.TrimSpace(*fromStep)
+	m := strings.ToLower(strings.TrimSpace(*mode))
+	if id == "" {
+		return fmt.Errorf("runs replay: --run-id is required")
+	}
+	if step == "" {
+		return fmt.Errorf("runs replay: --from-step is required")
+	}
+	if m == "" {
+		m = "time-travel"
+	}
+	switch m {
+	case "time-travel", "timetravel", "tt":
+		m = "time-travel"
+	case "live":
+		// ok
+	default:
+		return fmt.Errorf("runs replay: invalid --mode %q (use: time-travel|live)", *mode)
+	}
+
+	bodyObj := map[string]any{
+		"run_id":    id,
+		"from_step": step,
+		"mode":      m,
+	}
+
+	b, err := json.Marshal(bodyObj)
+	if err != nil {
+		return fmt.Errorf("runs replay: marshal body: %w", err)
+	}
+
+	u := strings.TrimRight(baseURL, "/") + "/debug/run-replay"
+
+	client := http.DefaultClient
+	if timeout > 0 {
+		client = &http.Client{Timeout: timeout}
+	}
+
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("runs replay failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
+	}
+
+	// Best-effort parse for nicer output.
+	var out map[string]any
+	_ = json.Unmarshal(rb, &out)
+
+	newID := id
+	if v, ok := out["run_id"].(string); ok && strings.TrimSpace(v) != "" {
+		newID = strings.TrimSpace(v)
+	}
+
+	fmt.Printf("replay started run_id=%s from_step=%s mode=%s\n", newID, step, m)
+	fmt.Printf("next: driftqctl runs status --run-id %s\n", newID)
+	fmt.Printf("next: driftqctl runs timeline --run-id %s\n", newID)
+
+	return nil
+}
+
+type timelineRow struct {
+	StepID        string
+	Attempt       int64
+	UsedCached    bool
+	CachedAttempt int64
+	QueuedAt      string
+	StartedAt     string
+	EndedAt       string
+	QueueMS       int64
+	WorkerMS      int64
+}
+
+func runsTimeline(baseURL string, timeout time.Duration, args []string) error {
+	fs := flag.NewFlagSet("runs timeline", flag.ContinueOnError)
+	runID := fs.String("run-id", "", "run id (required)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	id := strings.TrimSpace(*runID)
+	if id == "" {
+		return fmt.Errorf("runs timeline: --run-id is required")
+	}
+
+	root, err := fetchRunState(baseURL, timeout, id)
+	if err != nil {
+		return err
+	}
+
+eventsAny := root.Events
+var events []any
+switch v := eventsAny.(type) {
+case []any:
+	events = v
+case nil:
+	// keep empty
+default:
+	// Some servers might wrap events under an object; try common shapes.
+	if m, ok := v.(map[string]any); ok {
+		if arr, ok := m["events"].([]any); ok {
+			events = arr
+		} else if arr, ok := m["items"].([]any); ok {
+			events = arr
+		}
+	}
+}
+if len(events) == 0 {
+	return fmt.Errorf("runs timeline: no events available for run %q", id)
+}
+
+	rows := make([]timelineRow, 0, 32)
+	for _, ev := range events {
+		em, ok := ev.(map[string]any)
+		if !ok {
+			continue
+		}
+		typeS := strings.ToLower(pickString(em, "type", "event_type", "kind"))
+		if typeS == "" {
+			continue
+		}
+		if !strings.Contains(typeS, "node_finished") && !strings.Contains(typeS, "nodefinished") {
+			continue
+		}
+
+		step := pickString(em, "node_id", "step_id", "node", "step")
+		attempt := pickInt64(em, "attempt", "try", "n")
+		payload, _ := em["payload"].(map[string]any)
+
+		row := timelineRow{
+			StepID:        step,
+			Attempt:       attempt,
+			UsedCached:    pickBool(payload, "used_cached_output", "used_cached", "cached"),
+			CachedAttempt: pickInt64(payload, "cached_attempt", "cache_attempt"),
+			QueuedAt:      shortTime(pickString(payload, "queued_at")),
+			StartedAt:     shortTime(pickString(payload, "started_at")),
+			EndedAt:       shortTime(pickString(payload, "ended_at")),
+			QueueMS:       pickInt64(payload, "queue_ms"),
+			WorkerMS:      pickInt64(payload, "worker_ms"),
+		}
+		rows = append(rows, row)
+	}
+
+	if len(rows) == 0 {
+		return fmt.Errorf("runs timeline: couldn't find node_finished events for run %q", id)
+	}
+
+	// Sort by attempt then step id for stable output.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Attempt != rows[j].Attempt {
+			return rows[i].Attempt < rows[j].Attempt
+		}
+		if rows[i].StepID != rows[j].StepID {
+			return rows[i].StepID < rows[j].StepID
+		}
+		return rows[i].WorkerMS < rows[j].WorkerMS
+	})
+
+	fmt.Printf("attempt\tstep\tcached\tcache_attempt\tqueue_ms\tworker_ms\tqueued_at\tstarted_at\tended_at\n")
+	for _, r := range rows {
+		fmt.Printf("%d\t%s\t%t\t%d\t%d\t%d\t%s\t%s\t%s\n",
+			r.Attempt,
+			emptyTo(r.StepID, "-"),
+			r.UsedCached,
+			r.CachedAttempt,
+			r.QueueMS,
+			r.WorkerMS,
+			emptyTo(r.QueuedAt, "-"),
+			emptyTo(r.StartedAt, "-"),
+			emptyTo(r.EndedAt, "-"),
+		)
+	}
+
+	return nil
+}
+
+func pickBool(m map[string]any, keys ...string) bool {
+	if m == nil {
+		return false
+	}
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch t := v.(type) {
+			case bool:
+				return t
+			case string:
+				s := strings.ToLower(strings.TrimSpace(t))
+				return s == "true" || s == "1" || s == "yes" || s == "y"
+			case float64:
+				return t != 0
+			}
+		}
+	}
+	return false
 }
