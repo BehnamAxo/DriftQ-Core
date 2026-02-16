@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
@@ -55,4 +56,67 @@ func (r *Runner) FireDueTimers(now time.Time) (int, error) {
 	}
 
 	return firedCount, nil
+}
+
+// StartTimerLoop polls for due timers and fires them.
+// After firing, it best-effort resumes runs that are in "waiting" state
+// (using remembered graphs)
+func (r *Runner) StartTimerLoop(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	go func() {
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now().UTC()
+
+				// capture which runs are due BEFORE we fire (FireDueTimers only returns count)
+				due := r.store.ListDueTimers(now)
+
+				fired, err := r.FireDueTimers(now)
+				if err != nil || fired == 0 {
+					continue
+				}
+
+				// Resume waiting runs (best-effort)
+				seen := map[string]struct{}{}
+				for _, tm := range due {
+					if tm.RunID == "" {
+						continue
+					}
+					if _, ok := seen[tm.RunID]; ok {
+						continue
+					}
+					seen[tm.RunID] = struct{}{}
+
+					run, ok := r.store.GetRun(tm.RunID)
+					if !ok {
+						continue
+					}
+					if run.Status != RunStatusWaiting {
+						continue
+					}
+
+					r.mu.RLock()
+					g, ok := r.graphs[run.WorkflowID]
+					r.mu.RUnlock()
+					if !ok {
+						// tests call runner.rememberGraph(...), so this should exist there
+						continue
+					}
+
+					go func(runID string, graph WorkflowGraph) {
+						_ = r.RunDAG(context.Background(), runID, graph, json.RawMessage(`{}`))
+					}(tm.RunID, g)
+				}
+			}
+		}
+	}()
 }
