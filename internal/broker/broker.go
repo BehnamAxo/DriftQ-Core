@@ -12,6 +12,75 @@ import (
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 )
 
+// Broker Options (functional options)
+type BrokerOption func(*InMemoryBroker)
+
+func applyBrokerOptions(b *InMemoryBroker, opts []BrokerOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(b)
+		}
+	}
+}
+
+func WithMaxPartitionBytes(n int) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if n < 0 {
+			n = 0
+		}
+		b.maxPartitionBytes = n
+	}
+}
+
+// Optional but useful
+func WithMaxPartitionMsgs(n int) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if n < 0 {
+			n = 0
+		}
+		b.maxPartitionMsgs = n
+	}
+}
+
+func WithMaxInFlight(n int) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if n < 0 {
+			n = 0
+		}
+		b.maxInFlight = n
+	}
+}
+
+func WithAckTimeout(d time.Duration) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if d <= 0 {
+			return
+		}
+		b.ackTimeout = d
+	}
+}
+
+func WithRedeliverTick(d time.Duration) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if d <= 0 {
+			return
+		}
+		b.redeliverTick = d
+	}
+}
+
+func WithRouter(r Router) BrokerOption {
+	return func(b *InMemoryBroker) {
+		b.router = r
+	}
+}
+
+func WithMetricsSink(m MetricsSink) BrokerOption {
+	return func(b *InMemoryBroker) {
+		b.metrics = m
+	}
+}
+
 // TODO: Move to types
 type consumerStream struct {
 	Owner string
@@ -79,18 +148,19 @@ func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic st
 	return b.lag.Snapshot(group, topic), nil
 }
 
-func NewInMemoryBroker() *InMemoryBroker {
-	return NewInMemoryBrokerWithWALAndRouter(nil, nil)
+// NewInMemoryBroker constructs a broker with defaults, then applies any options.
+func NewInMemoryBroker(opts ...BrokerOption) *InMemoryBroker {
+	return NewInMemoryBrokerWithWALAndRouter(nil, nil, opts...)
 }
 
 // Creates a broker that uses the given WAL but NO router
-func NewInMemoryBrokerWithWAL(wal storage.WAL) *InMemoryBroker {
-	return NewInMemoryBrokerWithWALAndRouter(wal, nil)
+func NewInMemoryBrokerWithWAL(wal storage.WAL, opts ...BrokerOption) *InMemoryBroker {
+	return NewInMemoryBrokerWithWALAndRouter(wal, nil, opts...)
 }
 
 // This now lets me plug in both durability and a brain, so passing nil for either is fine (pure in-memory/no routing)
-func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router) *InMemoryBroker {
-	return &InMemoryBroker{
+func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...BrokerOption) *InMemoryBroker {
+	b := &InMemoryBroker{
 		topics:            make(map[string]*TopicState),
 		consumerOffsets:   make(map[string]map[string]map[int]int64),
 		consumerChans:     make(map[string]map[string][]consumerStream),
@@ -104,10 +174,17 @@ func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router) *InMemoryBroke
 		redeliverTick:     250 * time.Millisecond,
 		maxPartitionMsgs:  100,
 		maxPartitionBytes: 64 * 1024, // 64KB
-		idem:              NewIdempotencyStoreWithWAL(wal, 10*time.Minute),
 		retryState:        make(map[string]map[string]map[int]map[int64]*retryStateEntry),
 		lag:               NewLagTracker(),
 	}
+
+	// default idempotency store (depends on WAL)
+	b.idem = NewIdempotencyStoreWithWAL(wal, 10*time.Minute)
+
+	// apply options last so they override defaults (including router/metrics/maxPartitionBytes/etc.)
+	applyBrokerOptions(b, opts)
+
+	return b
 }
 
 func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions int) error {
