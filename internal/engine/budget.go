@@ -170,3 +170,9 @@ func minPosInt(vals ...int) int {
 
 	return out
 }
+
+func WithDefaultBudget(p BudgetPolicy) RunnerOption {
+	return func(r *Runner) {
+		r.defaultRunBudget = p
+	}
+}
