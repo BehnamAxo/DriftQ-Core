@@ -35,3 +35,5 @@ go.work.sum
 driftq.wal
 *.wal
 *.wal.bak*
+
+.vscode/
