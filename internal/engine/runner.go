@@ -57,8 +57,25 @@ type Runner struct {
 	inflightCaps    map[string]int            // capKey -> inflight count
 }
 
-func NewRunner(store Store) *Runner {
-	return &Runner{
+type RunnerOption func(*Runner)
+
+func WithArtifactStore(s ArtifactStore) RunnerOption {
+	return func(r *Runner) {
+		r.artifacts = s
+	}
+}
+
+func WithArtifactInlineLimit(n int) RunnerOption {
+	return func(r *Runner) {
+		if n < 0 {
+			n = 0
+		}
+		r.artifactInlineLimit = n
+	}
+}
+
+func NewRunner(store Store, opts ...RunnerOption) *Runner {
+	r := &Runner{
 		store:               store,
 		metrics:             NewEngineMetrics(),
 		logger:              slog.Default(),
@@ -71,6 +88,14 @@ func NewRunner(store Store) *Runner {
 		tenantTopicCaps:     make(map[string]map[string]int),
 		inflightCaps:        make(map[string]int),
 	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+
+	return r
 }
 
 func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, initialInput json.RawMessage) error {
