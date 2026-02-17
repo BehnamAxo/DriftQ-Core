@@ -201,6 +201,10 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if _, ok := b.topics[name]; ok {
+		return fmt.Errorf("%w: %s", ErrTopicExists, name)
+	}
+
 	return b.createTopicLocked(name, partitions)
 }
 

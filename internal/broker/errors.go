@@ -8,6 +8,7 @@ import (
 var ErrBackpressure = errors.New("backpressure: partition is full")
 var ErrProducerOverloaded = errors.New("producer overload")
 var ErrNotOwner = errors.New("not owner")
+var ErrTopicExists = errors.New("topic already exists")
 
 type ProducerOverloadError struct {
 	Reason     string
