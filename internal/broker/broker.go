@@ -979,7 +979,10 @@ func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, own
 	}
 
 	if lease <= 0 {
-		return nil, errors.New("lease must be > 0")
+		lease = b.ackTimeout
+		if lease <= 0 {
+			lease = 2 * time.Second
+		}
 	}
 
 	out := make(chan Message)
