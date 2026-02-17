@@ -330,7 +330,7 @@ func (b *InMemoryBroker) Consume(ctx context.Context, topic, group, owner string
 	}
 
 	groupChans := b.consumerChans[topic]
-	st := consumerStream{Owner: owner, Lease: 2 * time.Second, Ch: out, Q: q}
+	st := consumerStream{Owner: owner, Lease: 0, Ch: out, Q: q}
 	groupChans[group] = append(groupChans[group], st)
 	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
