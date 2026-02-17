@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -85,7 +86,8 @@ func WithMetricsSink(m MetricsSink) BrokerOption {
 type consumerStream struct {
 	Owner string
 	Lease time.Duration
-	Ch    chan Message
+	Ch    chan Message // returned to the caller
+	Q     chan Message // internal per-consumer FIFO to preserve ordering
 }
 
 // TODO: Move to types
@@ -304,87 +306,95 @@ func (b *InMemoryBroker) Produce(ctx context.Context, topic string, msg Message)
 
 // Consume registers a streaming consumer channel for (topic, group, owner).
 func (b *InMemoryBroker) Consume(ctx context.Context, topic, group, owner string) (<-chan Message, error) {
-	topic = strings.TrimSpace(topic)
-	group = strings.TrimSpace(group)
-	owner = strings.TrimSpace(owner)
-
-	if topic == "" {
-		return nil, errors.New("topic cannot be empty")
-	}
-
-	if group == "" {
-		return nil, errors.New("group cannot be empty (MVP requirement)")
+	if topic == "" || group == "" {
+		return nil, errors.New("topic and group are required")
 	}
 
 	if owner == "" {
-		return nil, errors.New("owner cannot be empty (MVP requirement)")
+		return nil, errors.New("owner is required")
 	}
 
 	out := make(chan Message)
+	q := make(chan Message, 1024)
 
-	// Register this consumer channel for streaming, and kick backlog dispatch
-	// through dispatchLocked() so inFlight entries are created (required for redelivery).
 	b.mu.Lock()
-	if _, exists := b.topics[topic]; !exists {
+	if _, ok := b.topics[topic]; !ok {
 		b.mu.Unlock()
-		return nil, errors.New("topic does not exist")
+		close(q)
+		close(out)
+		return nil, fmt.Errorf("topic not found: %s", topic)
 	}
 
-	groupChans, ok := b.consumerChans[topic]
-	if !ok {
-		groupChans = make(map[string][]consumerStream)
-		b.consumerChans[topic] = groupChans
+	if b.consumerChans[topic] == nil {
+		b.consumerChans[topic] = make(map[string][]consumerStream)
 	}
 
-	// If this is the FIRST consumer for this group, kick backlog dispatch
-	kick := len(groupChans[group]) == 0
-
-	groupChans[group] = append(groupChans[group], consumerStream{
-		Owner: owner,
-		Lease: 2 * time.Second,
-		Ch:    out,
-	})
-
-	if kick {
-		b.dispatchLocked(topic)
-	}
+	groupChans := b.consumerChans[topic]
+	st := consumerStream{Owner: owner, Lease: 2 * time.Second, Ch: out, Q: q}
+	groupChans[group] = append(groupChans[group], st)
+	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
 
-	// Wait for ctx cancel; messages are pushed by dispatchLocked/Produce/redelivery loop
+	// Single writer to `out` to preserve ordering. The broker enqueues into `q`
 	go func() {
-		defer func() {
-			// Unregister this consumer channel
-			b.mu.Lock()
-			if groupChans, ok := b.consumerChans[topic]; ok {
-				streams := groupChans[group]
-				for i, st := range streams {
-					if st.Ch == out {
-						groupChans[group] = append(streams[:i], streams[i+1:]...)
-						break
-					}
+		defer close(out)
+		for {
+			select {
+			case m, ok := <-q:
+				if !ok {
+					return
 				}
-
-				// If no consumers left for this group, delete the group entry
-				if len(groupChans[group]) == 0 {
-					delete(groupChans, group)
+				select {
+				case out <- m:
+				case <-ctx.Done():
+					return
 				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-				// Keep rrCursor sane
-				if cursors, ok := b.rrCursor[topic]; ok {
-					if _, ok := groupChans[group]; !ok {
-						delete(cursors, group)
-					} else if cur, ok := cursors[group]; ok && cur >= len(groupChans[group]) {
-						cursors[group] = cur % len(groupChans[group])
-					}
+	// When consumer disconnects, unregister it and stop its pump
+	go func() {
+		<-ctx.Done()
+
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		if groupChans, ok := b.consumerChans[topic]; ok {
+			streams := groupChans[group]
+			for i, st := range streams {
+				if st.Ch == out {
+					close(st.Q)
+					streams[i] = streams[len(streams)-1]
+					streams = streams[:len(streams)-1]
+					break
 				}
 			}
-			b.mu.Unlock()
 
-			close(out)
-		}()
-
-		<-ctx.Done()
+			if len(streams) == 0 {
+				delete(groupChans, group)
+				// Clean up cursor state too
+				if b.rrCursor[topic] != nil {
+					delete(b.rrCursor[topic], group)
+					if len(b.rrCursor[topic]) == 0 {
+						delete(b.rrCursor, topic)
+					}
+				}
+			} else {
+				groupChans[group] = streams
+			}
+			if len(groupChans) == 0 {
+				delete(b.consumerChans, topic)
+			}
+		}
 	}()
+
+	// Dispatch any pending messages now that a consumer is registered.
+	b.mu.Lock()
+	b.dispatchLocked(topic)
+	b.mu.Unlock()
 
 	return out, nil
 }
@@ -960,84 +970,98 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 }
 
 func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, owner string, lease time.Duration) (<-chan Message, error) {
-	topic = strings.TrimSpace(topic)
-	group = strings.TrimSpace(group)
-	owner = strings.TrimSpace(owner)
-
-	if topic == "" {
-		return nil, errors.New("topic cannot be empty")
-	}
-
-	if group == "" {
-		return nil, errors.New("group cannot be empty (MVP requirement)")
+	if topic == "" || group == "" {
+		return nil, errors.New("topic and group are required")
 	}
 
 	if owner == "" {
-		return nil, errors.New("owner cannot be empty (MVP requirement)")
+		return nil, errors.New("owner is required")
 	}
 
 	if lease <= 0 {
-		lease = 2 * time.Second
+		return nil, errors.New("lease must be > 0")
 	}
 
 	out := make(chan Message)
+	q := make(chan Message, 1024)
 
 	b.mu.Lock()
-	if _, exists := b.topics[topic]; !exists {
+	if _, ok := b.topics[topic]; !ok {
 		b.mu.Unlock()
-		return nil, errors.New("topic does not exist")
+		close(q)
+		close(out)
+		return nil, fmt.Errorf("topic not found: %s", topic)
 	}
 
-	groupChans, ok := b.consumerChans[topic]
-	if !ok {
-		groupChans = make(map[string][]consumerStream)
-		b.consumerChans[topic] = groupChans
+	if b.consumerChans[topic] == nil {
+		b.consumerChans[topic] = make(map[string][]consumerStream)
 	}
 
-	kick := len(groupChans[group]) == 0
-
-	groupChans[group] = append(groupChans[group], consumerStream{
-		Owner: owner,
-		Lease: lease,
-		Ch:    out,
-	})
-
-	if kick {
-		b.dispatchLocked(topic)
-	}
+	groupChans := b.consumerChans[topic]
+	st := consumerStream{Owner: owner, Lease: lease, Ch: out, Q: q}
+	groupChans[group] = append(groupChans[group], st)
+	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
 
+	// Single writer to `out` to preserve ordering. The broker enqueues into `q`.
 	go func() {
-		defer func() {
-			b.mu.Lock()
-			if groupChans, ok := b.consumerChans[topic]; ok {
-				streams := groupChans[group]
-				for i, st := range streams {
-					if st.Ch == out {
-						groupChans[group] = append(streams[:i], streams[i+1:]...)
-						break
-					}
+		defer close(out)
+		for {
+			select {
+			case m, ok := <-q:
+				if !ok {
+					return
 				}
-
-				if len(groupChans[group]) == 0 {
-					delete(groupChans, group)
+				select {
+				case out <- m:
+				case <-ctx.Done():
+					return
 				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-				if cursors, ok := b.rrCursor[topic]; ok {
-					if _, ok := groupChans[group]; !ok {
-						delete(cursors, group)
-					} else if cur, ok := cursors[group]; ok && cur >= len(groupChans[group]) {
-						cursors[group] = cur % len(groupChans[group])
-					}
+	// Unregister consumer on context cancellation and stop its pump.
+	go func() {
+		<-ctx.Done()
+
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		if groupChans, ok := b.consumerChans[topic]; ok {
+			streams := groupChans[group]
+			for i, st := range streams {
+				if st.Ch == out {
+					close(st.Q)
+					streams[i] = streams[len(streams)-1]
+					streams = streams[:len(streams)-1]
+					break
 				}
 			}
-			b.mu.Unlock()
 
-			close(out)
-		}()
-
-		<-ctx.Done()
+			if len(streams) == 0 {
+				delete(groupChans, group)
+				if b.rrCursor[topic] != nil {
+					delete(b.rrCursor[topic], group)
+					if len(b.rrCursor[topic]) == 0 {
+						delete(b.rrCursor, topic)
+					}
+				}
+			} else {
+				groupChans[group] = streams
+			}
+			if len(groupChans) == 0 {
+				delete(b.consumerChans, topic)
+			}
+		}
 	}()
+
+	// Dispatch any pending messages now that a consumer is registered.
+	b.mu.Lock()
+	b.dispatchLocked(topic)
+	b.mu.Unlock()
 
 	return out, nil
 }

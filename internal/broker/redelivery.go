@@ -285,10 +285,12 @@ func (b *InMemoryBroker) redeliverExpiredLocked() {
 					m.LastError = e.LastError
 					e.Msg = m
 
-					go func(ch chan Message, m Message) {
-						defer func() { _ = recover() }()
-						ch <- m
-					}(cs.Ch, m)
+					select {
+					case cs.Q <- m:
+						// queued
+					default:
+						// If the consumer queue is full, we WILL retry on the next redelivery tick
+					}
 				}
 			}
 		}

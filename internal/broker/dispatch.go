@@ -256,10 +256,16 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 
 				nextByPart[p]++
 
-				go func(ch chan Message, m Message) {
-					defer func() { _ = recover() }()
-					ch <- m
-				}(cs.Ch, send)
+				// Enqueue to the per-consumer FIFO to preserve ordering
+				select {
+				case cs.Q <- send:
+					// delivered to consumer queue
+				default:
+					// Consumer buffer is full; undo and try again later
+					delete(inflight, m.Offset)
+					nextByPart[p]--
+					return
+				}
 			}
 		}
 	}
