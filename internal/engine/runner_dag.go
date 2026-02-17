@@ -573,6 +573,11 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			go func() {
 				stepCtx := WithAttempt(runCtx, att)
 
+				// Make the runner's artifact store available to node handlers. This is what ArtifactStoreFrom(ctx) reads
+				if r.artifacts != nil {
+					stepCtx = WithArtifactStoreContext(stepCtx, r.artifacts)
+				}
+
 				if rl := r.wrapRateLimiter(runID, wfID, n.NodeID, att, tenantID, n.Topic); rl != nil {
 					stepCtx = WithRateLimiter(stepCtx, rl)
 				}
