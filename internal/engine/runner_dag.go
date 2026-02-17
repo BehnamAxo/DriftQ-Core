@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"sort"
 	"time"
 )
@@ -589,7 +591,24 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					execCtx, cancelFn = context.WithTimeout(stepCtx, time.Duration(n.TimeoutMS)*time.Millisecond)
 				}
 
-				out, err := n.Run(execCtx, cloneRaw(inp))
+				out, err := func() (out json.RawMessage, err error) {
+					defer func() {
+						if rec := recover(); rec != nil {
+							r.logger.Error("node panicked",
+								"trace_id", traceID,
+								"run_id", runID,
+								"step_id", n.NodeID,
+								"attempt", att,
+								"panic", rec,
+								"stack", string(debug.Stack()),
+							)
+							err = fmt.Errorf("handler panic: %v", rec)
+							out = nil
+						}
+					}()
+
+					return n.Run(execCtx, cloneRaw(inp))
+				}()
 
 				cancelFn()
 
