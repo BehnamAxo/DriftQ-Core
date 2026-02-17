@@ -167,15 +167,15 @@ func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...Broker
 		consumerOffsets:   make(map[string]map[string]map[int]int64),
 		consumerChans:     make(map[string]map[string][]consumerStream),
 		rrCursor:          make(map[string]map[string]int),
-		maxInFlight:       2, // for testing, later can raise if needed!
+		maxInFlight:       2, // 2 default, tune via flags
 		inFlight:          make(map[string]map[string]map[int]map[int64]*inflightEntry),
 		nextIndex:         make(map[string]map[string]map[int]int),
 		wal:               wal,
 		router:            r,
 		ackTimeout:        2 * time.Second,
 		redeliverTick:     250 * time.Millisecond,
-		maxPartitionMsgs:  100,
-		maxPartitionBytes: 64 * 1024, // 64KB
+		maxPartitionMsgs:  100,             // 100 default, tune via flags
+		maxPartitionBytes: 4 * 1024 * 1024, // 4MB default, tune via flags
 		retryState:        make(map[string]map[string]map[int]map[int64]*retryStateEntry),
 		lag:               NewLagTracker(),
 	}
@@ -1076,3 +1076,9 @@ func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, own
 func (b *InMemoryBroker) WALEnabled() bool {
 	return b.wal != nil
 }
+
+func (b *InMemoryBroker) MaxPartitionBytes() int { return b.maxPartitionBytes }
+
+func (b *InMemoryBroker) MaxPartitionMsgs() int { return b.maxPartitionMsgs }
+
+func (b *InMemoryBroker) MaxInFlight() int { return b.maxInFlight }

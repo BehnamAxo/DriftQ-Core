@@ -9,8 +9,8 @@ import (
 
 // NewInMemoryBrokerFromWAL builds a broker, then replays whatever is in the WAL
 // so I can restore topics, partitions, messages and consumer offsets on startup
-func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
-	b := NewInMemoryBrokerWithWAL(wal)
+func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryBroker, error) {
+	b := NewInMemoryBrokerWithWAL(wal, opts...)
 
 	if wal == nil {
 		return b, nil
