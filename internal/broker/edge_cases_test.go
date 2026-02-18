@@ -373,11 +373,12 @@ func TestEdgeCase_ConsumerDisconnectsMidStream(t *testing.T) {
 	}()
 
 	// Consume a few then disconnect
+consumeLoop:
 	for i := 0; i < 5; i++ {
 		select {
 		case <-ch:
 		case <-time.After(time.Second):
-			break
+			break consumeLoop
 		}
 	}
 
