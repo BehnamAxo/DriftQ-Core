@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -12,11 +13,81 @@ import (
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 )
 
+// Broker Options (functional options)
+type BrokerOption func(*InMemoryBroker)
+
+func applyBrokerOptions(b *InMemoryBroker, opts []BrokerOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(b)
+		}
+	}
+}
+
+func WithMaxPartitionBytes(n int) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if n < 0 {
+			n = 0
+		}
+		b.maxPartitionBytes = n
+	}
+}
+
+// Optional but useful
+func WithMaxPartitionMsgs(n int) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if n < 0 {
+			n = 0
+		}
+		b.maxPartitionMsgs = n
+	}
+}
+
+func WithMaxInFlight(n int) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if n < 0 {
+			n = 0
+		}
+		b.maxInFlight = n
+	}
+}
+
+func WithAckTimeout(d time.Duration) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if d <= 0 {
+			return
+		}
+		b.ackTimeout = d
+	}
+}
+
+func WithRedeliverTick(d time.Duration) BrokerOption {
+	return func(b *InMemoryBroker) {
+		if d <= 0 {
+			return
+		}
+		b.redeliverTick = d
+	}
+}
+
+func WithRouter(r Router) BrokerOption {
+	return func(b *InMemoryBroker) {
+		b.router = r
+	}
+}
+
+func WithMetricsSink(m MetricsSink) BrokerOption {
+	return func(b *InMemoryBroker) {
+		b.metrics = m
+	}
+}
+
 // TODO: Move to types
 type consumerStream struct {
 	Owner string
 	Lease time.Duration
-	Ch    chan Message
+	Ch    chan Message // returned to the caller
+	Q     chan Message // internal per-consumer FIFO to preserve ordering
 }
 
 // TODO: Move to types
@@ -79,35 +150,43 @@ func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic st
 	return b.lag.Snapshot(group, topic), nil
 }
 
-func NewInMemoryBroker() *InMemoryBroker {
-	return NewInMemoryBrokerWithWALAndRouter(nil, nil)
+// NewInMemoryBroker constructs a broker with defaults, then applies any options.
+func NewInMemoryBroker(opts ...BrokerOption) *InMemoryBroker {
+	return NewInMemoryBrokerWithWALAndRouter(nil, nil, opts...)
 }
 
 // Creates a broker that uses the given WAL but NO router
-func NewInMemoryBrokerWithWAL(wal storage.WAL) *InMemoryBroker {
-	return NewInMemoryBrokerWithWALAndRouter(wal, nil)
+func NewInMemoryBrokerWithWAL(wal storage.WAL, opts ...BrokerOption) *InMemoryBroker {
+	return NewInMemoryBrokerWithWALAndRouter(wal, nil, opts...)
 }
 
 // This now lets me plug in both durability and a brain, so passing nil for either is fine (pure in-memory/no routing)
-func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router) *InMemoryBroker {
-	return &InMemoryBroker{
+func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...BrokerOption) *InMemoryBroker {
+	b := &InMemoryBroker{
 		topics:            make(map[string]*TopicState),
 		consumerOffsets:   make(map[string]map[string]map[int]int64),
 		consumerChans:     make(map[string]map[string][]consumerStream),
 		rrCursor:          make(map[string]map[string]int),
-		maxInFlight:       2, // for testing, later can raise if needed!
+		maxInFlight:       2, // 2 default, tune via flags
 		inFlight:          make(map[string]map[string]map[int]map[int64]*inflightEntry),
 		nextIndex:         make(map[string]map[string]map[int]int),
 		wal:               wal,
 		router:            r,
 		ackTimeout:        2 * time.Second,
 		redeliverTick:     250 * time.Millisecond,
-		maxPartitionMsgs:  100,
-		maxPartitionBytes: 64 * 1024, // 64KB
-		idem:              NewIdempotencyStoreWithWAL(wal, 10*time.Minute),
+		maxPartitionMsgs:  100,             // 100 default, tune via flags
+		maxPartitionBytes: 4 * 1024 * 1024, // 4MB default, tune via flags
 		retryState:        make(map[string]map[string]map[int]map[int64]*retryStateEntry),
 		lag:               NewLagTracker(),
 	}
+
+	// default idempotency store (depends on WAL)
+	b.idem = NewIdempotencyStoreWithWAL(wal, 10*time.Minute)
+
+	// apply options last so they override defaults (including router/metrics/maxPartitionBytes/etc.)
+	applyBrokerOptions(b, opts)
+
+	return b
 }
 
 func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions int) error {
@@ -122,7 +201,30 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.createTopicLocked(name, partitions)
+	if _, ok := b.topics[name]; ok {
+		return fmt.Errorf("%w: %s", ErrTopicExists, name)
+	}
+
+	// Create in memory first
+	if err := b.createTopicLocked(name, partitions); err != nil {
+		return err
+	}
+
+	// Persist topic metadata so topics with zero messages still exist after restart (this was a bug)
+	// Convention: for RecordTypeTopic, Entry.Partition stores the partition count
+	if b.wal != nil {
+		if err := b.wal.Append(storage.Entry{
+			Type:      storage.RecordTypeTopic,
+			Topic:     name,
+			Partition: partitions,
+		}); err != nil {
+			// Best-effort rollback so caller does NOT think the topic is durable when it is NOT
+			delete(b.topics, name)
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ListTopics returns the list of topic names (sorted for stability).
@@ -227,87 +329,95 @@ func (b *InMemoryBroker) Produce(ctx context.Context, topic string, msg Message)
 
 // Consume registers a streaming consumer channel for (topic, group, owner).
 func (b *InMemoryBroker) Consume(ctx context.Context, topic, group, owner string) (<-chan Message, error) {
-	topic = strings.TrimSpace(topic)
-	group = strings.TrimSpace(group)
-	owner = strings.TrimSpace(owner)
-
-	if topic == "" {
-		return nil, errors.New("topic cannot be empty")
-	}
-
-	if group == "" {
-		return nil, errors.New("group cannot be empty (MVP requirement)")
+	if topic == "" || group == "" {
+		return nil, errors.New("topic and group are required")
 	}
 
 	if owner == "" {
-		return nil, errors.New("owner cannot be empty (MVP requirement)")
+		return nil, errors.New("owner is required")
 	}
 
 	out := make(chan Message)
+	q := make(chan Message, 1024)
 
-	// Register this consumer channel for streaming, and kick backlog dispatch
-	// through dispatchLocked() so inFlight entries are created (required for redelivery).
 	b.mu.Lock()
-	if _, exists := b.topics[topic]; !exists {
+	if _, ok := b.topics[topic]; !ok {
 		b.mu.Unlock()
-		return nil, errors.New("topic does not exist")
+		close(q)
+		close(out)
+		return nil, fmt.Errorf("topic not found: %s", topic)
 	}
 
-	groupChans, ok := b.consumerChans[topic]
-	if !ok {
-		groupChans = make(map[string][]consumerStream)
-		b.consumerChans[topic] = groupChans
+	if b.consumerChans[topic] == nil {
+		b.consumerChans[topic] = make(map[string][]consumerStream)
 	}
 
-	// If this is the FIRST consumer for this group, kick backlog dispatch
-	kick := len(groupChans[group]) == 0
-
-	groupChans[group] = append(groupChans[group], consumerStream{
-		Owner: owner,
-		Lease: 2 * time.Second,
-		Ch:    out,
-	})
-
-	if kick {
-		b.dispatchLocked(topic)
-	}
+	groupChans := b.consumerChans[topic]
+	st := consumerStream{Owner: owner, Lease: 0, Ch: out, Q: q}
+	groupChans[group] = append(groupChans[group], st)
+	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
 
-	// Wait for ctx cancel; messages are pushed by dispatchLocked/Produce/redelivery loop
+	// Single writer to `out` to preserve ordering. The broker enqueues into `q`
 	go func() {
-		defer func() {
-			// Unregister this consumer channel
-			b.mu.Lock()
-			if groupChans, ok := b.consumerChans[topic]; ok {
-				streams := groupChans[group]
-				for i, st := range streams {
-					if st.Ch == out {
-						groupChans[group] = append(streams[:i], streams[i+1:]...)
-						break
-					}
+		defer close(out)
+		for {
+			select {
+			case m, ok := <-q:
+				if !ok {
+					return
 				}
-
-				// If no consumers left for this group, delete the group entry
-				if len(groupChans[group]) == 0 {
-					delete(groupChans, group)
+				select {
+				case out <- m:
+				case <-ctx.Done():
+					return
 				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-				// Keep rrCursor sane
-				if cursors, ok := b.rrCursor[topic]; ok {
-					if _, ok := groupChans[group]; !ok {
-						delete(cursors, group)
-					} else if cur, ok := cursors[group]; ok && cur >= len(groupChans[group]) {
-						cursors[group] = cur % len(groupChans[group])
-					}
+	// When consumer disconnects, unregister it and stop its pump
+	go func() {
+		<-ctx.Done()
+
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		if groupChans, ok := b.consumerChans[topic]; ok {
+			streams := groupChans[group]
+			for i, st := range streams {
+				if st.Ch == out {
+					close(st.Q)
+					streams[i] = streams[len(streams)-1]
+					streams = streams[:len(streams)-1]
+					break
 				}
 			}
-			b.mu.Unlock()
 
-			close(out)
-		}()
-
-		<-ctx.Done()
+			if len(streams) == 0 {
+				delete(groupChans, group)
+				// Clean up cursor state too
+				if b.rrCursor[topic] != nil {
+					delete(b.rrCursor[topic], group)
+					if len(b.rrCursor[topic]) == 0 {
+						delete(b.rrCursor, topic)
+					}
+				}
+			} else {
+				groupChans[group] = streams
+			}
+			if len(groupChans) == 0 {
+				delete(b.consumerChans, topic)
+			}
+		}
 	}()
+
+	// Dispatch any pending messages now that a consumer is registered.
+	b.mu.Lock()
+	b.dispatchLocked(topic)
+	b.mu.Unlock()
 
 	return out, nil
 }
@@ -883,84 +993,101 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 }
 
 func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, owner string, lease time.Duration) (<-chan Message, error) {
-	topic = strings.TrimSpace(topic)
-	group = strings.TrimSpace(group)
-	owner = strings.TrimSpace(owner)
-
-	if topic == "" {
-		return nil, errors.New("topic cannot be empty")
-	}
-
-	if group == "" {
-		return nil, errors.New("group cannot be empty (MVP requirement)")
+	if topic == "" || group == "" {
+		return nil, errors.New("topic and group are required")
 	}
 
 	if owner == "" {
-		return nil, errors.New("owner cannot be empty (MVP requirement)")
+		return nil, errors.New("owner is required")
 	}
 
 	if lease <= 0 {
-		lease = 2 * time.Second
+		lease = b.ackTimeout
+		if lease <= 0 {
+			lease = 2 * time.Second
+		}
 	}
 
 	out := make(chan Message)
+	q := make(chan Message, 1024)
 
 	b.mu.Lock()
-	if _, exists := b.topics[topic]; !exists {
+	if _, ok := b.topics[topic]; !ok {
 		b.mu.Unlock()
-		return nil, errors.New("topic does not exist")
+		close(q)
+		close(out)
+		return nil, fmt.Errorf("topic not found: %s", topic)
 	}
 
-	groupChans, ok := b.consumerChans[topic]
-	if !ok {
-		groupChans = make(map[string][]consumerStream)
-		b.consumerChans[topic] = groupChans
+	if b.consumerChans[topic] == nil {
+		b.consumerChans[topic] = make(map[string][]consumerStream)
 	}
 
-	kick := len(groupChans[group]) == 0
-
-	groupChans[group] = append(groupChans[group], consumerStream{
-		Owner: owner,
-		Lease: lease,
-		Ch:    out,
-	})
-
-	if kick {
-		b.dispatchLocked(topic)
-	}
+	groupChans := b.consumerChans[topic]
+	st := consumerStream{Owner: owner, Lease: lease, Ch: out, Q: q}
+	groupChans[group] = append(groupChans[group], st)
+	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
 
+	// Single writer to `out` to preserve ordering. The broker enqueues into `q`.
 	go func() {
-		defer func() {
-			b.mu.Lock()
-			if groupChans, ok := b.consumerChans[topic]; ok {
-				streams := groupChans[group]
-				for i, st := range streams {
-					if st.Ch == out {
-						groupChans[group] = append(streams[:i], streams[i+1:]...)
-						break
-					}
+		defer close(out)
+		for {
+			select {
+			case m, ok := <-q:
+				if !ok {
+					return
 				}
-
-				if len(groupChans[group]) == 0 {
-					delete(groupChans, group)
+				select {
+				case out <- m:
+				case <-ctx.Done():
+					return
 				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-				if cursors, ok := b.rrCursor[topic]; ok {
-					if _, ok := groupChans[group]; !ok {
-						delete(cursors, group)
-					} else if cur, ok := cursors[group]; ok && cur >= len(groupChans[group]) {
-						cursors[group] = cur % len(groupChans[group])
-					}
+	// Unregister consumer on context cancellation and stop its pump.
+	go func() {
+		<-ctx.Done()
+
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		if groupChans, ok := b.consumerChans[topic]; ok {
+			streams := groupChans[group]
+			for i, st := range streams {
+				if st.Ch == out {
+					close(st.Q)
+					streams[i] = streams[len(streams)-1]
+					streams = streams[:len(streams)-1]
+					break
 				}
 			}
-			b.mu.Unlock()
 
-			close(out)
-		}()
-
-		<-ctx.Done()
+			if len(streams) == 0 {
+				delete(groupChans, group)
+				if b.rrCursor[topic] != nil {
+					delete(b.rrCursor[topic], group)
+					if len(b.rrCursor[topic]) == 0 {
+						delete(b.rrCursor, topic)
+					}
+				}
+			} else {
+				groupChans[group] = streams
+			}
+			if len(groupChans) == 0 {
+				delete(b.consumerChans, topic)
+			}
+		}
 	}()
+
+	// Dispatch any pending messages now that a consumer is registered.
+	b.mu.Lock()
+	b.dispatchLocked(topic)
+	b.mu.Unlock()
 
 	return out, nil
 }
@@ -968,3 +1095,9 @@ func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, own
 func (b *InMemoryBroker) WALEnabled() bool {
 	return b.wal != nil
 }
+
+func (b *InMemoryBroker) MaxPartitionBytes() int { return b.maxPartitionBytes }
+
+func (b *InMemoryBroker) MaxPartitionMsgs() int { return b.maxPartitionMsgs }
+
+func (b *InMemoryBroker) MaxInFlight() int { return b.maxInFlight }

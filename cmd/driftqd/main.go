@@ -238,6 +238,10 @@ func main() {
 	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
 	logFormat := flag.String("log-format", "text", "log format: text|json")
 
+	maxPartitionBytes := flag.Int("max-partition-bytes", 0, "Max bytes buffered per partition (0 = broker default)")
+	maxPartitionMsgs := flag.Int("max-partition-msgs", 0, "Max messages buffered per partition (0 = broker default)")
+	maxInFlight := flag.Int("max-inflight", 0, "Max in-flight per (topic,group,partition) (0 = broker default)")
+
 	flag.Parse()
 
 	logger := configureLogger(*logLevel, *logFormat)
@@ -261,10 +265,29 @@ func main() {
 	}
 	defer wal.Close()
 
-	b, err := broker.NewInMemoryBrokerFromWAL(wal)
+	var brokerOpts []broker.BrokerOption
+	if *maxPartitionBytes > 0 {
+		brokerOpts = append(brokerOpts, broker.WithMaxPartitionBytes(*maxPartitionBytes))
+	}
+
+	if *maxPartitionMsgs > 0 {
+		brokerOpts = append(brokerOpts, broker.WithMaxPartitionMsgs(*maxPartitionMsgs))
+	}
+
+	if *maxInFlight > 0 {
+		brokerOpts = append(brokerOpts, broker.WithMaxInFlight(*maxInFlight))
+	}
+
+	b, err := broker.NewInMemoryBrokerFromWAL(wal, brokerOpts...)
 	if err != nil {
 		fatal("failed to replay WAL", err)
 	}
+
+	slog.Info("broker config",
+		"max_partition_bytes", b.MaxPartitionBytes(),
+		"max_partition_msgs", b.MaxPartitionMsgs(),
+		"max_inflight", b.MaxInFlight(),
+	)
 
 	produceRejected := prometheus.NewCounterVec(
 		prometheus.CounterOpts{

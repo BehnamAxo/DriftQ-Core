@@ -20,6 +20,14 @@ type WorkflowGraph struct {
 func (g *WorkflowGraph) Validate() error {
 	nodeSet := map[string]bool{}
 	for _, n := range g.Nodes {
+		if n.NodeID == "" {
+			return errors.New("node has empty id")
+		}
+
+		if nodeSet[n.NodeID] {
+			return errors.New("duplicate node id: " + n.NodeID)
+		}
+
 		nodeSet[n.NodeID] = true
 	}
 

@@ -31,9 +31,6 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 
 		for p := range ts.partitions {
 			inflight := b.ensureInFlight(topic, group, p)
-			if b.maxInFlight > 0 && len(inflight) >= b.maxInFlight {
-				continue
-			}
 
 			// Resume after last ack if we haven't initialized next index yet
 			if _, ok := nextByPart[p]; !ok {
@@ -54,10 +51,6 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 			}
 
 			for nextByPart[p] < len(ts.partitions[p]) {
-				if b.maxInFlight > 0 && len(inflight) >= b.maxInFlight {
-					break
-				}
-
 				// IMPORTANT: don't advance nextByPart until we either
 				// (a) skip/advance, or (b) successfully stage delivery
 				m := ts.partitions[p][nextByPart[p]]
@@ -76,13 +69,11 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 							b.consumerOffsets[topic][group] = make(map[int]int64)
 						}
 
-						// IMPORTANT: missing offset should behave like -1 (so offset 0 can advance)
 						cur, ok := b.consumerOffsets[topic][group][p]
 						if !ok {
 							cur = -1
 						}
 
-						// Only advance if moving forward
 						if m.Offset > cur {
 							if b.wal != nil {
 								if err := b.wal.Append(storage.Entry{
@@ -95,7 +86,6 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 									return
 								}
 							}
-
 							b.consumerOffsets[topic][group][p] = m.Offset
 						}
 
@@ -112,8 +102,6 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 					continue
 				}
 
-				// pick one consumer in the group (round-robin), BUT if this message has an idempotency key,
-				// we must successfully BeginLease for the chosen owner before delivering.
 				start := b.rrCursor[topic][group] % len(chans)
 
 				var (
@@ -123,19 +111,23 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 					alreadyOK bool
 				)
 
-				// default lease for this delivery attempt
 				leaseDefault := b.ackTimeout
 				if leaseDefault <= 0 {
 					leaseDefault = 2 * time.Second
 				}
 
 				hasIdem := b.idem != nil && m.Envelope != nil && m.Envelope.IdempotencyKey != ""
+
 				if !hasIdem {
 					csIndex = start
 					cs = chans[csIndex]
 					b.rrCursor[topic][group] = (csIndex + 1) % len(chans)
+
 					lease = cs.Lease
-					if lease <= 0 {
+					// VERY IMPORTANT:
+					//   lease == 0  => simple Consume(): no acks, auto-commit
+					//   lease < 0   => use default lease
+					if lease < 0 {
 						lease = leaseDefault
 					}
 				} else {
@@ -143,19 +135,27 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 					idk := m.Envelope.IdempotencyKey
 
 					var beginErr error
+					simpleFallback := -1
 
 					for tries := 0; tries < len(chans); tries++ {
 						i := (start + tries) % len(chans)
 						cand := chans[i]
 
 						candLease := cand.Lease
-						if candLease <= 0 {
+						if candLease < 0 {
 							candLease = leaseDefault
+						}
+
+						// If candLease == 0, this is simple Consume() mode; it can't participate in consume-scope leasing. Remember as fallback.
+						if candLease == 0 {
+							if simpleFallback == -1 {
+								simpleFallback = i
+							}
+							continue
 						}
 
 						alreadyDone, _, err := b.idem.ConsumeBeginLease(tenantID, topic, group, idk, cand.Owner, candLease)
 						if err == nil {
-							// success: reserve this key for this owner
 							csIndex = i
 							cs = cand
 							lease = candLease
@@ -172,7 +172,6 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 						break
 					}
 
-					// if begin failed with a real error, don't skip the message; try again later
 					if beginErr != nil {
 						rs := b.ensureRetryState(topic, group, p)
 						rs[m.Offset] = &retryStateEntry{
@@ -194,7 +193,17 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 						break
 					}
 
-					// if all candidates were lease-held, don't advance nextByPart (don't lose the message)
+					// If all candidates were lease-held (or none lease-capable), allow simple fallback
+					// (no consume-scope leasing semantics in this mode).
+					if csIndex == -1 && simpleFallback != -1 {
+						csIndex = simpleFallback
+						cs = chans[csIndex]
+						lease = 0
+						alreadyOK = false
+						b.rrCursor[topic][group] = (csIndex + 1) % len(chans)
+					}
+
+					// if still no candidate, don't advance nextByPart (don't lose message)
 					if csIndex == -1 {
 						break
 					}
@@ -240,6 +249,58 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 					lastErr = st.LastError
 				}
 
+				// ✅ SIMPLE MODE: no inflight, no acks, auto-commit offsets once enqueued
+				if lease == 0 {
+					send := m
+					send.Attempts = 1
+					send.LastError = lastErr
+
+					// Enqueue to the per-consumer FIFO to preserve ordering
+					select {
+					case cs.Q <- send:
+						// commit offset immediately
+						if _, ok := b.consumerOffsets[topic]; !ok {
+							b.consumerOffsets[topic] = make(map[string]map[int]int64)
+						}
+						if _, ok := b.consumerOffsets[topic][group]; !ok {
+							b.consumerOffsets[topic][group] = make(map[int]int64)
+						}
+
+						cur, ok := b.consumerOffsets[topic][group][p]
+						if !ok {
+							cur = -1
+						}
+
+						if m.Offset > cur {
+							if b.wal != nil {
+								if err := b.wal.Append(storage.Entry{
+									Type:      storage.RecordTypeOffset,
+									Topic:     topic,
+									Group:     group,
+									Partition: p,
+									Offset:    m.Offset,
+								}); err != nil {
+									return
+								}
+							}
+							b.consumerOffsets[topic][group][p] = m.Offset
+						}
+
+						b.purgeRetryStateLocked(topic, group, p, m.Offset)
+
+						nextByPart[p]++
+						continue
+					default:
+						// consumer queue full; try later
+						return
+					}
+				}
+
+				// ACK/LEASE MODE: enforce maxInFlight only here
+				if b.maxInFlight > 0 && len(inflight) >= b.maxInFlight {
+					break
+				}
+
 				e := &inflightEntry{
 					Msg:       m,
 					SentAt:    time.Now(),
@@ -249,17 +310,22 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 				}
 				inflight[m.Offset] = e
 
-				// Build message to send (Attempts and LastError come from inflight entry)
 				send := m
 				send.Attempts = e.Attempts
 				send.LastError = e.LastError
 
 				nextByPart[p]++
 
-				go func(ch chan Message, m Message) {
-					defer func() { _ = recover() }()
-					ch <- m
-				}(cs.Ch, send)
+				// Enqueue to the per-consumer FIFO to preserve ordering
+				select {
+				case cs.Q <- send:
+					// staged
+				default:
+					// undo and try again later
+					delete(inflight, m.Offset)
+					nextByPart[p]--
+					return
+				}
 			}
 		}
 	}

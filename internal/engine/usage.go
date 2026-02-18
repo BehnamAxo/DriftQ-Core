@@ -18,6 +18,15 @@ func WithUsageSink(ctx context.Context, sink UsageSink) context.Context {
 	return context.WithValue(ctx, usageSinkKey{}, sink)
 }
 
+func UsageSinkFrom(ctx context.Context) UsageSink {
+	v := ctx.Value(usageSinkKey{})
+	if v == nil {
+		return nil
+	}
+	sink, _ := v.(UsageSink)
+	return sink
+}
+
 func ReportUsage(ctx context.Context, tokens int64, dollars float64) {
 	v := ctx.Value(usageSinkKey{})
 	sink, ok := v.(UsageSink)

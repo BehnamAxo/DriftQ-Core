@@ -9,8 +9,8 @@ import (
 
 // NewInMemoryBrokerFromWAL builds a broker, then replays whatever is in the WAL
 // so I can restore topics, partitions, messages and consumer offsets on startup
-func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
-	b := NewInMemoryBrokerWithWAL(wal)
+func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryBroker, error) {
+	b := NewInMemoryBrokerWithWAL(wal, opts...)
 
 	if wal == nil {
 		return b, nil
@@ -24,6 +24,23 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL) (*InMemoryBroker, error) {
 	// Rebuild in-memory state from the log
 	for _, e := range entries {
 		switch e.Type {
+
+		case storage.RecordTypeTopic:
+			// Restore topics even if they had zero messages produced. Convention: for RecordTypeTopic, Entry.Partition stores the partition COUNT
+			if e.Topic == "" || e.Partition <= 0 {
+				continue
+			}
+
+			if ts, ok := b.topics[e.Topic]; !ok {
+				// Fresh topic from metadata
+				_ = b.createTopicLocked(e.Topic, e.Partition)
+			} else {
+				// Topic already exists (maybe created implicitly from message replay) so ensure it has at least e.Partition partitions.
+				for len(ts.partitions) < e.Partition {
+					ts.partitions = append(ts.partitions, nil)
+				}
+			}
+
 		case storage.RecordTypeMessage:
 			ts, ok := b.topics[e.Topic]
 			if !ok {
