@@ -1,0 +1,412 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestDriftqdMainHelperProcess(t *testing.T) {
+	if os.Getenv("DRIFTQD_MAIN_HELPER") != "1" {
+		t.Skip("helper process")
+	}
+
+	sep := -1
+	for i, a := range os.Args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+
+	if sep < 0 || sep+1 >= len(os.Args) {
+		os.Exit(2)
+	}
+
+	os.Args = append([]string{os.Args[0]}, os.Args[sep+1:]...)
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+	main()
+	os.Exit(0)
+}
+
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+type driftqdProc struct {
+	cmd     *exec.Cmd
+	baseURL string
+	logs    *safeBuffer
+}
+
+func (p *driftqdProc) stop() {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return
+	}
+
+	_ = p.cmd.Process.Kill()
+	_, _ = p.cmd.Process.Wait()
+}
+
+func pickFreeAddr(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	return ln.Addr().String()
+}
+
+func lastFlagValue(args []string, name string, fallback string) string {
+	for i := len(args) - 2; i >= 0; i-- {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return fallback
+}
+
+func startDriftqdProc(t *testing.T, extraArgs ...string) *driftqdProc {
+	t.Helper()
+
+	addr := pickFreeAddr(t)
+	defaultWAL := filepath.Join(t.TempDir(), "driftq.broker.wal")
+
+	allArgs := append([]string{"-addr", addr, "-wal", defaultWAL}, extraArgs...)
+	finalAddr := lastFlagValue(allArgs, "-addr", addr)
+	if strings.HasPrefix(finalAddr, ":") {
+		finalAddr = "127.0.0.1" + finalAddr
+	}
+
+	logs := &safeBuffer{}
+	cmdArgs := []string{"-test.run=^TestDriftqdMainHelperProcess$", "--"}
+	cmdArgs = append(cmdArgs, allArgs...)
+
+	cmd := exec.Command(os.Args[0], cmdArgs...)
+	cmd.Env = append(os.Environ(), "DRIFTQD_MAIN_HELPER=1")
+	cmd.Stdout = logs
+	cmd.Stderr = logs
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start driftqd helper: %v", err)
+	}
+
+	p := &driftqdProc{
+		cmd:     cmd,
+		baseURL: "http://" + finalAddr,
+		logs:    logs,
+	}
+
+	t.Cleanup(func() { p.stop() })
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(p.baseURL + "/v1/healthz")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return p
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	p.stop()
+	t.Fatalf("driftqd did not become healthy at %s\nlogs:\n%s", p.baseURL, p.logs.String())
+	return nil
+}
+
+func postURL(t *testing.T, rawURL string) (int, []byte, http.Header) {
+	t.Helper()
+
+	resp, err := http.Post(rawURL, "", nil)
+	if err != nil {
+		t.Fatalf("POST %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, resp.Header
+}
+
+func mustCreateTopic(t *testing.T, baseURL, topic string, partitions int) {
+	t.Helper()
+
+	u := fmt.Sprintf("%s/v1/topics?name=%s&partitions=%d", baseURL, topic, partitions)
+	status, body, _ := postURL(t, u)
+	if status != http.StatusCreated {
+		t.Fatalf("create topic status=%d body=%s", status, string(body))
+	}
+}
+
+func mustProduceStatus(t *testing.T, baseURL, topic, value string, want int) (int, string) {
+	t.Helper()
+
+	u := fmt.Sprintf("%s/v1/produce?topic=%s&value=%s", baseURL, topic, value)
+	status, body, _ := postURL(t, u)
+	if status != want {
+		t.Fatalf("produce status=%d want=%d body=%s", status, want, string(body))
+	}
+	return status, string(body)
+}
+
+func TestMainFlags_ResetWAL_CreatesBackupAndNewWAL(t *testing.T) {
+	tmp := t.TempDir()
+	walPath := filepath.Join(tmp, "broker.wal")
+
+	if err := os.WriteFile(walPath, []byte("old-wal"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_ = startDriftqdProc(t, "-wal", walPath, "-reset-wal")
+
+	matches, err := filepath.Glob(walPath + ".bak.*")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 wal backup, got %d (%v)", len(matches), matches)
+	}
+
+	bakBytes, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("ReadFile backup: %v", err)
+	}
+
+	if string(bakBytes) != "old-wal" {
+		t.Fatalf("backup content mismatch: got %q", string(bakBytes))
+	}
+
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("new wal should exist at %s: %v", walPath, err)
+	}
+}
+
+func TestMainFlags_EngineStoreFile_EngineWAL_ArtifactsDir(t *testing.T) {
+	tmp := t.TempDir()
+	engineWAL := filepath.Join(tmp, "engine.wal")
+	artifactsDir := filepath.Join(tmp, "artifacts")
+
+	_ = startDriftqdProc(t,
+		"-engine-store", "file",
+		"-engine-wal", engineWAL,
+		"-artifacts-dir", artifactsDir,
+	)
+
+	if st, err := os.Stat(engineWAL); err != nil || st.IsDir() {
+		t.Fatalf("engine WAL file missing at %s (err=%v)", engineWAL, err)
+	}
+
+	if st, err := os.Stat(artifactsDir); err != nil || !st.IsDir() {
+		t.Fatalf("artifacts dir missing at %s (err=%v)", artifactsDir, err)
+	}
+}
+
+func TestMainFlags_LogFormatJSON_AndLogLevelError(t *testing.T) {
+	t.Run("json format emits structured logs", func(t *testing.T) {
+		p := startDriftqdProc(t, "-log-format", "json", "-log-level", "info")
+
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			out := p.logs.String()
+			if strings.Contains(out, `"service":"driftqd"`) && strings.Contains(out, `"msg":"broker starting"`) {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		t.Fatalf("did not observe expected json startup logs\nlogs:\n%s", p.logs.String())
+	})
+
+	t.Run("error level suppresses info logs", func(t *testing.T) {
+		p := startDriftqdProc(t, "-log-format", "json", "-log-level", "error")
+
+		// Give it a short moment to emit anything it wants.
+		time.Sleep(200 * time.Millisecond)
+
+		out := p.logs.String()
+		if strings.Contains(out, `"msg":"broker starting"`) {
+			t.Fatalf("unexpected info log at error level\nlogs:\n%s", out)
+		}
+	})
+}
+
+func TestMainFlags_MaxPartitionMsgs_Enforced(t *testing.T) {
+	p := startDriftqdProc(t, "-max-partition-msgs", "2")
+
+	mustCreateTopic(t, p.baseURL, "msg-limit", 1)
+	mustProduceStatus(t, p.baseURL, "msg-limit", "a", http.StatusOK)
+	mustProduceStatus(t, p.baseURL, "msg-limit", "b", http.StatusOK)
+
+	status, body := mustProduceStatus(t, p.baseURL, "msg-limit", "c", http.StatusTooManyRequests)
+	if status != http.StatusTooManyRequests || !strings.Contains(body, "RESOURCE_EXHAUSTED") {
+		t.Fatalf("expected RESOURCE_EXHAUSTED 429, got status=%d body=%s", status, body)
+	}
+}
+
+func TestMainFlags_MaxPartitionBytes_Enforced(t *testing.T) {
+	p := startDriftqdProc(t, "-max-partition-bytes", "10")
+
+	mustCreateTopic(t, p.baseURL, "byte-limit", 1)
+	mustProduceStatus(t, p.baseURL, "byte-limit", "12345", http.StatusOK)
+
+	status, body := mustProduceStatus(t, p.baseURL, "byte-limit", "67890", http.StatusTooManyRequests)
+	if status != http.StatusTooManyRequests || !strings.Contains(body, "RESOURCE_EXHAUSTED") {
+		t.Fatalf("expected RESOURCE_EXHAUSTED 429, got status=%d body=%s", status, body)
+	}
+}
+
+func TestMainFlags_MaxInFlight_EnforcedUntilAck(t *testing.T) {
+	p := startDriftqdProc(t, "-max-inflight", "1")
+	mustCreateTopic(t, p.baseURL, "if-limit", 1)
+
+	mustProduceStatus(t, p.baseURL, "if-limit", "m1", http.StatusOK)
+	mustProduceStatus(t, p.baseURL, "if-limit", "m2", http.StatusOK)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	consumeURL := p.baseURL + "/v1/consume?topic=if-limit&group=g1&owner=o1&lease_ms=5000"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, consumeURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest consume: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/consume: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("consume status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	type consumeItem struct {
+		Partition int   `json:"partition"`
+		Offset    int64 `json:"offset"`
+		Value     string
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	if !sc.Scan() {
+		if err := sc.Err(); err != nil {
+			t.Fatalf("scan first: %v", err)
+		}
+		t.Fatal("expected first message")
+	}
+
+	var first consumeItem
+	if err := json.Unmarshal(sc.Bytes(), &first); err != nil {
+		t.Fatalf("unmarshal first: %v line=%s", err, string(sc.Bytes()))
+	}
+
+	if first.Value != "m1" {
+		t.Fatalf("expected first value m1, got %q", first.Value)
+	}
+
+	type scanRes struct {
+		line string
+		err  error
+		ok   bool
+	}
+
+	readCh := make(chan scanRes, 1)
+	go func() {
+		if sc.Scan() {
+			readCh <- scanRes{line: sc.Text(), ok: true}
+			return
+		}
+		readCh <- scanRes{err: sc.Err(), ok: false}
+	}()
+
+	select {
+	case r := <-readCh:
+		if r.ok {
+			t.Fatalf("received second message before ack (max-inflight broken): %s", r.line)
+		}
+		if r.err != nil {
+			t.Fatalf("scan second before ack err: %v", r.err)
+		}
+		t.Fatal("stream ended before ack")
+	case <-time.After(300 * time.Millisecond):
+		// expected: second message should be blocked until ack
+	}
+
+	ackURL := fmt.Sprintf("%s/v1/ack?topic=if-limit&group=g1&owner=o1&partition=%d&offset=%d", p.baseURL, first.Partition, first.Offset)
+	status, body, _ := postURL(t, ackURL)
+	if status != http.StatusNoContent {
+		t.Fatalf("ack status=%d body=%s", status, string(body))
+	}
+
+	select {
+	case r := <-readCh:
+		if !r.ok {
+			t.Fatalf("expected second message after ack, err=%v", r.err)
+		}
+
+		var second consumeItem
+		if err := json.Unmarshal([]byte(r.line), &second); err != nil {
+			t.Fatalf("unmarshal second: %v line=%s", err, r.line)
+		}
+
+		if second.Value != "m2" {
+			t.Fatalf("expected second value m2, got %q", second.Value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second message after ack")
+	}
+}
+
+func TestMainFlags_Addr_UsesRequestedBindAddress(t *testing.T) {
+	addr := pickFreeAddr(t)
+	p := startDriftqdProc(t, "-addr", addr)
+
+	resp, err := http.Get("http://" + addr + "/v1/healthz")
+	if err != nil {
+		t.Fatalf("health at requested addr: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	if p.baseURL != "http://"+addr {
+		t.Fatalf("baseURL mismatch: got %s want %s", p.baseURL, "http://"+addr)
+	}
+}
