@@ -205,7 +205,26 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 		return fmt.Errorf("%w: %s", ErrTopicExists, name)
 	}
 
-	return b.createTopicLocked(name, partitions)
+	// Create in memory first
+	if err := b.createTopicLocked(name, partitions); err != nil {
+		return err
+	}
+
+	// Persist topic metadata so topics with zero messages still exist after restart (this was a bug)
+	// Convention: for RecordTypeTopic, Entry.Partition stores the partition count
+	if b.wal != nil {
+		if err := b.wal.Append(storage.Entry{
+			Type:      storage.RecordTypeTopic,
+			Topic:     name,
+			Partition: partitions,
+		}); err != nil {
+			// Best-effort rollback so caller does NOT think the topic is durable when it is NOT
+			delete(b.topics, name)
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ListTopics returns the list of topic names (sorted for stability).
