@@ -521,7 +521,7 @@ func TestNack_SchedulesRetry(t *testing.T) {
 }
 
 // Lease Expiry & Redelivery Tests
-func TestConsume_LeaseExpiryTriggersRedelivery(t *testing.T) {
+func TestConsumeWithLease_Expiry_RedeliversMessage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
