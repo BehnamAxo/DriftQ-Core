@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,6 +137,10 @@ func startTestServer(t *testing.T) *testServer {
 			http.Error(w, "streaming not supported", http.StatusInternalServerError)
 			return
 		}
+
+		// Send headers immediately so the client connects even if no messages arrive yet
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
 
 		encoder := json.NewEncoder(w)
 		timeout := time.After(10 * time.Second)
@@ -348,7 +353,6 @@ func TestIntegration_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/topics: %v", err)
 	}
-
 	resp.Body.Close()
 
 	// Produce with same idempotency key twice
@@ -356,7 +360,6 @@ func TestIntegration_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/produce first: %v", err)
 	}
-
 	resp.Body.Close()
 
 	resp, err = http.Post(srv.URL+"/v1/produce?topic=idem-test&value=second&idem_key=unique123", "", nil)
@@ -365,33 +368,67 @@ func TestIntegration_Idempotency(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Consume - should only get one message
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	// Consume first message
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/consume?topic=idem-test&group=g1&owner=o1", nil)
+	req1, err := http.NewRequestWithContext(ctx1, http.MethodGet, srv.URL+"/v1/consume?topic=idem-test&group=g1&owner=o1", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
 
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req1)
 	if err != nil {
 		t.Fatalf("GET /v1/consume: %v", err)
 	}
-	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
-	count := 0
-	for scanner.Scan() {
-		count++
+	if !scanner.Scan() {
+		resp.Body.Close()
+		t.Fatal("no message received")
 	}
 
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scanner: %v", err)
+	var msg map[string]any
+	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		resp.Body.Close()
+		t.Fatalf("unmarshal: %v", err)
+	}
+	resp.Body.Close()
+
+	partition := int(msg["partition"].(float64))
+	offset := int64(msg["offset"].(float64))
+
+	// Ack it so the group offset advances (now we can detect a second message if it exists)
+	ackURL := fmt.Sprintf("%s/v1/ack?topic=idem-test&group=g1&partition=%d&offset=%d", srv.URL, partition, offset)
+	ackResp, err := http.Post(ackURL, "", nil)
+	if err != nil {
+		t.Fatalf("POST /v1/ack: %v", err)
+	}
+	ackResp.Body.Close()
+
+	// Consume again: should NOT receive a second message (idempotency should have prevented it)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+
+	req2, err := http.NewRequestWithContext(ctx2, http.MethodGet, srv.URL+"/v1/consume?topic=idem-test&group=g1&owner=o1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest2: %v", err)
 	}
 
-	if count > 1 {
-		t.Fatalf("expected 1 message due to idempotency, got %d", count)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("GET /v1/consume (2): %v", err)
+	}
+	defer resp2.Body.Close()
+
+	scanner2 := bufio.NewScanner(resp2.Body)
+	if scanner2.Scan() {
+		t.Fatalf("expected no second message due to idempotency, but got one: %s", string(scanner2.Bytes()))
+	}
+
+	// Deadline exceeded here is OK: it means we waited briefly and no message arrived
+	if err := scanner2.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("scanner2: %v", err)
 	}
 }
 
