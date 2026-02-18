@@ -102,9 +102,13 @@ func TestChaos_ConcurrentProduceConsumeAck(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	cancel()
 
-	t.Logf("Produced: %d, Consumed: %d, Acked: %d", produced, consumed, acked)
+	p := atomic.LoadInt32(&produced)
+	c := atomic.LoadInt32(&consumed)
+	a := atomic.LoadInt32(&acked)
 
-	if produced == 0 {
+	t.Logf("Produced: %d, Consumed: %d, Acked: %d", p, c, a)
+
+	if p == 0 {
 		t.Fatal("no messages produced")
 	}
 }
@@ -154,7 +158,11 @@ func TestChaos_RedeliveryUnderLoad(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	cancel()
 
-	t.Logf("Acked: %d, Nacked: %d, Ignored: %d", acked, nacked, ignored)
+	a := atomic.LoadInt32(&acked)
+	n := atomic.LoadInt32(&nacked)
+	ig := atomic.LoadInt32(&ignored)
+
+	t.Logf("Acked: %d, Nacked: %d, Ignored: %d", a, n, ig)
 }
 
 func TestChaos_ConsumerGroupRebalance(t *testing.T) {
@@ -233,7 +241,7 @@ func TestChaos_ConsumerGroupRebalance(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	cancel()
 
-	t.Logf("Total consumed across rebalances: %d", totalConsumed)
+	t.Logf("Total consumed across rebalances: %d", atomic.LoadInt32(&totalConsumed))
 }
 
 func TestChaos_HighContentionOnSinglePartition(t *testing.T) {
@@ -268,9 +276,12 @@ func TestChaos_HighContentionOnSinglePartition(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Produced: %d, Errors: %d", produced, errors)
+	p := atomic.LoadInt32(&produced)
+	e := atomic.LoadInt32(&errors)
 
-	if produced == 0 {
+	t.Logf("Produced: %d, Errors: %d", p, e)
+
+	if p == 0 {
 		t.Fatal("no messages produced under contention")
 	}
 }
@@ -317,7 +328,7 @@ func TestChaos_BurstFollowedByQuiet(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	cancel()
 
-	t.Logf("Consumed after burst patterns: %d", consumed)
+	t.Logf("Consumed after burst patterns: %d", atomic.LoadInt32(&consumed))
 }
 
 func TestChaos_IdempotencyUnderConcurrentDuplicates(t *testing.T) {
@@ -366,7 +377,7 @@ Loop:
 		}
 	}
 
-	t.Logf("Succeeded: %d, Actual messages: %d", succeeded, count)
+	t.Logf("Succeeded: %d, Actual messages: %d", atomic.LoadInt32(&succeeded), count)
 
 	if count > 1 {
 		t.Fatalf("idempotency violated: %d duplicates", count)
@@ -397,7 +408,9 @@ func TestChaos_RapidCreateTopics(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Created: %d, Errors (expected some duplicates): %d", created, errors)
+	c := atomic.LoadInt32(&created)
+	e := atomic.LoadInt32(&errors)
+	t.Logf("Created: %d, Errors (expected some duplicates): %d", c, e)
 
 	topics, _ := b.ListTopics(ctx)
 	if len(topics) == 0 {
