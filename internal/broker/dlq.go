@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,11 @@ func (b *InMemoryBroker) publishToDLQLocked(ctx context.Context, topic string, m
 		return fmt.Errorf("source topic cannot be empty")
 	}
 
+	// If the message is already on a DLQ topic, keep it there
+	if strings.HasPrefix(topic, "dlq.") {
+		return nil
+	}
+
 	dlqTopic := dlqTopicName(topic)
 
 	// Ensure DLQ topic exists (same partition count as source topic if possible)
@@ -23,6 +29,7 @@ func (b *InMemoryBroker) publishToDLQLocked(ctx context.Context, topic string, m
 		if ts, ok := b.topics[topic]; ok && ts != nil && len(ts.partitions) > 0 {
 			partitions = len(ts.partitions)
 		}
+
 		if err := b.createTopicLocked(dlqTopic, partitions); err != nil {
 			return err
 		}
