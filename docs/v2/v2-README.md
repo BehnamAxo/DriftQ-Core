@@ -9,6 +9,8 @@ This folder documents the **v2 workflow runtime foundations** that currently liv
 
 - **Durable runs**: a run has durable state + an **append-only event log** (inspectable execution history)
 - **Deterministic DAG scheduling**: node dependencies, fan-out/fan-in, retries, attempts
+  - Validates against duplicate and empty node IDs at parse time
+  - Cycle detection via DFS before execution begins
 - **Replay**
   - **time_travel** replay: reuse recorded outputs/artifacts
   - **live** replay: re-execute from a chosen step
@@ -18,6 +20,7 @@ This folder documents the **v2 workflow runtime foundations** that currently liv
 - **Cancel propagation**: cancel runs and propagate through the DAG
 - **Rollback primitive (minimal but real)**: "active index" pointer with **promote** + **rollback**
 - **Debug tooling**: inspect run state, timelines, and attempt diffs
+- **Handler panic recovery**: panicking step handlers are caught and surfaced as node failures (the server does not crash)
 
 
 ## Core concepts
@@ -30,7 +33,7 @@ A **run** is one execution of a workflow.
 
 ### Node (step)
 A node is a step in a DAG:
-- `id` — node identifier in the spec (e.g. `"A"`, `"embed_chunks"`)
+- `id` — node identifier in the spec (e.g. `"A"`, `"embed_chunks"`) — must be non-empty and unique within the spec
 - `topic` — handler name (registered in the server's handler registry)
 - `deps` — prerequisite node IDs
 
@@ -44,11 +47,61 @@ Runs produce events such as:
 The event log is what makes replay + debugging sane.
 
 
+## Server configuration
+
+The v2 engine is configured via server flags on `driftqd`. These control where run state and artifacts are stored:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--engine-store` | `memory` | Engine store backend: `memory` (dev) or `file` (durable) |
+| `--engine-wal` | `driftq.engine.wal` | Path to engine WAL file (only used when `--engine-store=file`) |
+| `--artifacts-dir` | `driftq.artifacts` | Artifact store directory (empty string = in-memory only) |
+| `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `--log-format` | `text` | Log format: `text` or `json` |
+
+**Storage modes:**
+
+| Mode | `--engine-store` | `--artifacts-dir` | Durability | Use case |
+|------|-----------------|-------------------|------------|----------|
+| Ephemeral | `memory` | (empty) | None — all state lost on restart | Quick demos, unit tests |
+| Default | `memory` | `driftq.artifacts` | Artifacts on disk, runs in memory | Development (artifacts survive, runs don't) |
+| Fully durable | `file` | `driftq.artifacts` | Runs + events + artifacts all on disk | Production, long-running workflows |
+
+**Examples:**
+
+```bash
+# Default (in-memory runs, filesystem artifacts)
+go run ./cmd/driftqd
+
+# Fully durable (recommended for anything beyond demos)
+go run ./cmd/driftqd --engine-store file --engine-wal ./data/engine.wal --artifacts-dir ./data/artifacts
+
+# Debug logging for engine troubleshooting
+go run ./cmd/driftqd --engine-store file --log-level debug
+
+# JSON structured logging (production / log aggregation)
+go run ./cmd/driftqd --log-format json
+
+# Ephemeral everything (CI, throwaway tests)
+go run ./cmd/driftqd --engine-store memory --artifacts-dir ""
+```
+
+
 ## Quickstart
 
 Run DriftQ-Core (pinned tag recommended):
 ```bash
 docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
+```
+
+For durable engine storage in Docker:
+```bash
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0 \
+  -addr :8080 \
+  -wal /data/driftq.wal \
+  -engine-store file \
+  -engine-wal /data/engine.wal \
+  -artifacts-dir /data/artifacts
 ```
 
 Then use the CLI:
@@ -90,10 +143,16 @@ Request body:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Node identifier |
+| `id` | string | Node identifier (must be non-empty and unique within the spec) |
 | `topic` | string | Handler name |
 | `deps` | array | Prerequisite node IDs (optional) |
 | `retry` | object | Retry policy (optional) |
+
+**Validation rules:**
+- Node `id` must not be empty
+- Node `id` values must be unique within the spec (duplicates are rejected)
+- The dependency graph must be acyclic (cycles are detected and rejected)
+- All node IDs referenced in `deps` must exist in the spec
 
 The server ships with a small set of **demo handlers** registered:
 - `noop` — does nothing
@@ -212,6 +271,10 @@ This compares attempt metadata (status, error, duration) and output payload.
 ## Artifacts
 
 Artifacts are how you store large outputs outside the event log (and later reuse them on replay).
+
+The artifact store backend is controlled by the `--artifacts-dir` server flag:
+- **Filesystem** (default: `driftq.artifacts`): Artifacts stored as content-addressed blobs (`blobs/<sha256>`) with JSON metadata (`meta/<artifact_id>.json`). Survives restarts.
+- **In-memory** (`--artifacts-dir ""`): Artifacts lost on restart. Use for CI or throwaway tests.
 
 ### GET `/debug/run-artifacts?run_id=<RUN_ID>`
 
@@ -352,11 +415,37 @@ These endpoints provide broker debugging capabilities:
 | GET | `/debug/topics/lag` | Consumer lag info |
 
 
+## Testing
+
+**Unit tests:**
+```bash
+go test ./... -count=1
+```
+
+**Integration tests** (end-to-end against a real HTTP server):
+```bash
+# Basic run
+go test -tags=integration ./... -count=1
+
+# Race detection + shuffled ordering (recommended)
+go test -tags=integration ./... -race -count=1 -shuffle=on
+
+# Stress: multiple iterations with race detector
+go test -tags=integration ./... -race -count=5 -shuffle=on
+```
+
+**Using gotestsum** (nicer output):
+```bash
+go run gotest.tools/gotestsum@latest --format pkgname -- -count=1 -tags=integration ./...
+```
+
+
 ## Stability & safety notes ⚠️
 
 - `/debug/*` is **not a stable public API** yet. It's intentionally fast to evolve.
 - Pin Docker tags in production (use `1.2.0`, not `latest`).
 - WAL is forward-compatible only: don't downgrade binaries after writing newer ops.
+- Handler panics are recovered and reported as node failures — they do not crash the server.
 
 
 ## What's next (directionally)
