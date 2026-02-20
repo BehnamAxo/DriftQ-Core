@@ -7,7 +7,41 @@
 
 If you only want the broker, you can ignore v2. If you want "Temporal-like" durability + replay, v2 is where this is going. 🙂
 
----
+
+## Why DriftQ-Core?
+
+### The problem
+
+Building reliable backend systems today means choosing between two painful options:
+
+**Option A: Managed infrastructure overkill.** You need a message queue, so you spin up Kafka (plus ZooKeeper or KRaft), or RabbitMQ (plus Erlang cluster management), or pay for SQS/Pub-Sub. You need durable workflows, so you add Temporal (plus a Cassandra or PostgreSQL cluster). Suddenly your "simple pipeline" requires 4+ services, a Kubernetes cluster, and a platform team to keep it all running. Most of the time, your actual workload is a few hundred messages per second — nowhere near justifying this complexity.
+
+**Option B: Roll your own.** You wire up Redis lists, cron jobs, and Postgres-as-a-queue hacks. It works until it doesn't: messages get lost during deploys, retry logic is scattered across 15 files, debugging a failed pipeline means grepping through logs from three different services, and "replay that failed job from step 3" is a fantasy.
+
+Neither option is great when you're a small team shipping fast, or when you're building AI agent pipelines where the real complexity is in the logic — not the plumbing.
+
+### What DriftQ-Core does differently
+
+**Single binary. Zero external dependencies.** DriftQ-Core is one Go binary that gives you both a Kafka-style message broker and a Temporal-style workflow runtime. No ZooKeeper. No etcd. No Redis. No separate database. You run one process, it writes to one WAL file, and you're done. `docker run` and you have durable messaging + workflow orchestration in seconds.
+
+**Built for the workloads most teams actually have.** Not every project needs to process a million messages per second. Most teams need reliable delivery for a few hundred to a few thousand messages per second, with proper retries, dead-letter queues, and the ability to see what went wrong when something breaks. DriftQ-Core is built for exactly that sweet spot — where you need real durability guarantees without the operational tax of distributed infrastructure.
+
+**Designed for AI and agent workflows from day one.** The v2 runtime isn't a generic workflow engine that happens to work for AI — it was built with AI pipelines in mind. Budget controls track tokens and dollars across a run so a runaway agent can't burn through your OpenAI bill. Concurrency throttles prevent "500 parallel embedding calls" accidents. Replay lets you re-run a pipeline from step 3 without re-calling the expensive LLM steps that already succeeded. Artifacts store large intermediate outputs (embeddings, generated documents) without bloating your event log.
+
+**Debuggable by default.** Every run produces an append-only event log. Every step records its input, output, timing, and attempt number. You can inspect a failed run, diff two attempts of the same step, time-travel replay to reproduce issues, and see exactly where your budget was spent — all through the CLI or HTTP API. No more "what happened to that job?" mysteries.
+
+### Who is this for?
+
+- **Small teams building AI/LLM pipelines** who need durable execution without managing Temporal + Kafka + PostgreSQL
+- **Backend developers** who want a lightweight message broker with proper retry semantics, DLQ routing, and consumer groups — without running a Kafka cluster
+- **Solo developers and startups** who need production-grade messaging and workflow orchestration that runs on a single $5/month VPS
+- **Anyone tired of gluing together 5 services** to get reliable message processing with retry and observability
+
+### What DriftQ-Core is NOT
+
+- It's not a distributed system (yet). It runs as a single process with file-based durability. If you need multi-node replication and horizontal scaling today, use Kafka + Temporal.
+- It's not a general-purpose database. The WAL is append-only and optimized for message/event storage, not arbitrary queries.
+- It's not trying to replace Kafka at 10 million messages per second. It's built for the 99% of workloads that don't need that scale.
 
 ## Highlights ✨
 
@@ -38,7 +72,6 @@ If you only want the broker, you can ignore v2. If you want "Temporal-like" dura
 - **Minimal rollback primitive** via an "active index" pointer (promote/rollback)
 - **Handler panic recovery** (panicking handlers do not crash the server)
 
----
 
 ## Quickstart (Docker)
 
@@ -77,8 +110,6 @@ docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core
   -log-level info \
   -log-format json
 ```
-
----
 
 ## driftqctl (CLI) 🧰
 
@@ -127,8 +158,6 @@ go build -o driftqctl ./cmd/driftqctl
 ./driftqctl --base-url http://127.0.0.1:8080 runs demo
 ```
 
----
-
 ## API Surface
 
 ### v1 (stable)
@@ -175,7 +204,6 @@ These endpoints are under `/debug/*` and are meant for development, demos, and i
 
 Full reference: `docs/v2/v2-README.md`
 
----
 
 ## Development
 
@@ -290,13 +318,10 @@ go build -o driftqctl ./cmd/driftqctl
 go build -ldflags "-X main.buildVersion=1.2.0 -X main.buildCommit=$(git rev-parse --short HEAD)" -o driftqd ./cmd/driftqd
 ```
 
----
-
 ## Compatibility note (WAL) ⚠️
 
 WAL is **forward-compatible only**: once you write WAL entries with newer ops, you can't safely downgrade to an older binary that doesn't understand them.
 
----
 
 ## Roadmap
 
@@ -305,7 +330,6 @@ WAL is **forward-compatible only**: once you write WAL entries with newer ops, y
 - Multi-Agent Runtime & Real-Time AI
 - DriftQ Cloud
 
----
 
 ## Repo layout
 
@@ -338,14 +362,12 @@ For copy/paste starter repos and runnable demos, see **DriftQ-Starters**:
 
 - GitHub: [driftq-org/DriftQ-Starters](https://github.com/driftq-org/DriftQ-Starters)
 
----
 
 ## Docs
 
 - **v1 broker docs:** `docs/v1/v1-README.md`
 - **v2 foundations docs:** `docs/v2/v2-README.md`
 
----
 
 ## License
 
