@@ -399,7 +399,6 @@ DriftQ-Core/
 │   └── httpapi/          # HTTP types and helpers
 ├── scripts/
 │   ├── loadtest.sh       # Load testing script (uses hey)
-│   └── demo_v1.ps1       # PowerShell demo script
 ├── docs/
 │   ├── v1/               # Broker documentation
 │   └── v2/               # Workflow runtime documentation
