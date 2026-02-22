@@ -32,6 +32,13 @@ If you only want the broker, you can ignore v2. If you want "Temporal-like" dura
 
 ## Why DriftQ-Core?
 
+- **One binary, no external deps** (no Kafka/Temporal/DB cluster required)
+- **Right-sized reliability**: leases, retries, DLQ, idempotency
+- **Replay + debugging primitives** via v2 foundations
+
+<details>
+  <summary><strong>Read the full explanation</strong></summary>
+
 ### The problem
 
 Building reliable backend systems today means choosing between two painful options:
@@ -64,6 +71,8 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - It's not a distributed system (yet). It runs as a single process with file-based durability. If you need multi-node replication and horizontal scaling today, use Kafka + Temporal.
 - It's not a general-purpose database. The WAL is append-only and optimized for message/event storage, not arbitrary queries.
 - It's not trying to replace Kafka at 10 million messages per second. It's built for the 99% of workloads that don't need that scale.
+
+</details>
 
 <a id="highlights-"></a>
 
