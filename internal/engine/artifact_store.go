@@ -11,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -200,6 +202,7 @@ func (s *LocalArtifactStore) Delete(ctx context.Context, artifactID string) erro
 	if err != nil {
 		return err
 	}
+
 	metaPath, err := s.metaPath(artifactID)
 	if err != nil {
 		return err
@@ -209,6 +212,73 @@ func (s *LocalArtifactStore) Delete(ctx context.Context, artifactID string) erro
 	_ = os.Remove(metaPath)
 	_ = os.Remove(blobPath)
 	return nil
+}
+
+func (s *LocalArtifactStore) ListByRun(ctx context.Context, runID string, limit int) ([]ArtifactMeta, error) {
+	// Best-effort listing by scanning meta files. This is primarily for debugging / CLI usage
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, errors.New("run_id is required")
+	}
+
+	metaRoot := filepath.Join(s.root, "meta")
+	if _, err := os.Stat(metaRoot); errors.Is(err, os.ErrNotExist) {
+		return []ArtifactMeta{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	out := make([]ArtifactMeta, 0, 32)
+	err := filepath.WalkDir(metaRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		mb, err := os.ReadFile(path)
+		if err != nil {
+			// best-effort: skip unreadable files
+			return nil
+		}
+
+		var meta ArtifactMeta
+		if err := json.Unmarshal(mb, &meta); err != nil {
+			// best-effort: skip corrupted meta
+			return nil
+		}
+
+		if meta.RunID == runID {
+			out = append(out, meta)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// newest first
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+
+	return out, nil
 }
 
 type PruneStats struct {
@@ -312,26 +382,74 @@ func writeFileAtomic(dst string, data []byte, perm os.FileMode, replace bool) er
 		return err
 	}
 
-	if err := os.Chmod(tmpName, perm); err != nil {
+	// chmod is best-effort on Windows and on Unix we want it
+	if err := os.Chmod(tmpName, perm); err != nil && runtime.GOOS != "windows" {
 		cleanup()
 		return err
 	}
 
-	if replace {
-		_ = os.Remove(dst) // ignore errors
-	} else {
-		// If not replacing and dst already exists, just drop temp file.
+	// If not replacing and dst already exists, just drop the temp file.
+	if !replace {
 		if _, err := os.Stat(dst); err == nil {
 			_ = os.Remove(tmpName)
 			return nil
 		}
 	}
 
-	if err := os.Rename(tmpName, dst); err != nil {
-		_ = os.Remove(tmpName)
-		return err
+	// Rename with retries on Windows. Under concurrency, antivirus/indexers can briefly lock files/directories, causing "Access is denied" / sharing violations.
+	attempts := 1
+	if runtime.GOOS == "windows" {
+		attempts = 12
 	}
-	return nil
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		// On Windows, os.Rename does not replace existing files.
+		if replace && runtime.GOOS == "windows" {
+			_ = os.Remove(dst) // best-effort (may fail if another process has it open)
+		}
+
+		if err := os.Rename(tmpName, dst); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		if runtime.GOOS != "windows" || !isRetryableWindowsRenameErr(lastErr) {
+			break
+		}
+
+		// simple backoff: 5ms,10ms,...60ms
+		sleep := time.Duration(5*(i+1)) * time.Millisecond
+		time.Sleep(sleep)
+	}
+
+	_ = os.Remove(tmpName)
+	return lastErr
+}
+
+func isRetryableWindowsRenameErr(err error) bool {
+	// Windows-specific transient errors:
+	// - ERROR_ACCESS_DENIED (5)
+	// - ERROR_SHARING_VIOLATION (32)
+	// - ERROR_LOCK_VIOLATION (33)
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		if errno, ok := le.Err.(syscall.Errno); ok {
+			switch errno {
+			case syscall.Errno(5), syscall.Errno(32), syscall.Errno(33):
+				return true
+			}
+		}
+	}
+
+	// Fallback: string match (covers cases where the underlying errno isn't exposed as syscall.Errno)
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "access is denied") || strings.Contains(s, "sharing violation") || strings.Contains(s, "used by another process") {
+		return true
+	}
+
+	return false
 }
 
 func (s *MemoryArtifactStore) ListByRun(ctx context.Context, runID string, limit int) ([]ArtifactMeta, error) {

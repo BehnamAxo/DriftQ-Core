@@ -288,23 +288,77 @@ go run gotest.tools/gotestsum@latest --format pkgname -- -count=1 -tags=integrat
 
 ### Load testing
 
-A load test script is included at `scripts/loadtest.sh`. It uses [hey](https://github.com/rakyll/hey) to measure produce throughput, burst handling, and sustained load:
+A load test script is included at `scripts/loadtest.sh`. It uses [hey](https://github.com/rakyll/hey) to measure produce latency/throughput, burst handling, and sustained load:
+
+Start the server first (any OS):
 
 ```bash
-# Start the server first
-go run ./cmd/driftqd &
+go run ./cmd/driftqd -addr 127.0.0.1:8080
+```
 
+Linux/macOS:
+
+```bash
 # Run load tests (defaults: 100 req/s for 60s)
-./scripts/loadtest.sh
+BASE_URL=http://127.0.0.1:8080 ./scripts/loadtest.sh
 
 # Custom rate and duration
-RATE=500 DURATION=120 ./scripts/loadtest.sh
+BASE_URL=http://127.0.0.1:8080 RATE=500 DURATION=120 ./scripts/loadtest.sh
 
 # Against a remote server
 BASE_URL=http://remote:8080 ./scripts/loadtest.sh
 ```
 
-The load test covers: produce throughput, burst testing (500 concurrent), sustained low-rate load, health check throughput, and concurrent workflow demo execution.
+Burst tuning:
+
+```bash
+# Default burst: 200 concurrent, 5000 requests
+BASE_URL=http://127.0.0.1:8080 ./scripts/loadtest.sh
+
+# Customize burst
+BASE_URL=http://127.0.0.1:8080 BURST_C=300 BURST_N=8000 ./scripts/loadtest.sh
+
+# Optional extreme burst (500 concurrent)
+BASE_URL=http://127.0.0.1:8080 EXTREME_BURST=1 ./scripts/loadtest.sh
+```
+
+Windows (PowerShell + Git Bash):
+
+```powershell
+# Resolve Git Bash path (works for Program Files and Program Files (x86))
+$gitBash = Join-Path $env:ProgramFiles "Git\\bin\\bash.exe"
+if (-not (Test-Path $gitBash) -and ${env:ProgramFiles(x86)}) {
+  $gitBash = Join-Path ${env:ProgramFiles(x86)} "Git\\bin\\bash.exe"
+}
+if (-not (Test-Path $gitBash)) {
+  throw "Git Bash not found. Install Git for Windows or update this path."
+}
+
+# Run load tests (defaults: 100 req/s for 60s)
+& $gitBash -lc "BASE_URL=http://127.0.0.1:8080 ./scripts/loadtest.sh"
+
+# Custom rate and duration
+& $gitBash -lc "BASE_URL=http://127.0.0.1:8080 RATE=500 DURATION=120 ./scripts/loadtest.sh"
+
+# Customize burst / optional extreme mode
+& $gitBash -lc "BASE_URL=http://127.0.0.1:8080 BURST_C=300 BURST_N=8000 ./scripts/loadtest.sh"
+& $gitBash -lc "BASE_URL=http://127.0.0.1:8080 EXTREME_BURST=1 ./scripts/loadtest.sh"
+```
+
+Windows (WSL shell):
+
+```bash
+# From repo root inside WSL
+BASE_URL=http://127.0.0.1:8080 ./scripts/loadtest.sh
+```
+
+The load test covers:
+- Produce endpoint latency under a fixed request count (throughput-ish smoke test)
+- Burst test (defaults to **200 concurrent / 5000 requests**, cross-platform)
+  - Optional extreme burst (**500 concurrent**) by setting `EXTREME_BURST=1`
+- Sustained load (50 req/s for 30s)
+- Health check throughput
+- Concurrent workflow demo execution + completion polling
 
 ### Build binaries
 
@@ -345,7 +399,6 @@ DriftQ-Core/
 │   └── httpapi/          # HTTP types and helpers
 ├── scripts/
 │   ├── loadtest.sh       # Load testing script (uses hey)
-│   └── demo_v1.ps1       # PowerShell demo script
 ├── docs/
 │   ├── v1/               # Broker documentation
 │   └── v2/               # Workflow runtime documentation

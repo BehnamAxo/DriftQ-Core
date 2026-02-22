@@ -36,4 +36,8 @@ driftq.wal
 *.wal
 *.wal.bak*
 
+# DriftQ runtime artifacts / local logs
+driftq.artifacts/
+loadtest.log
+
 .vscode/
