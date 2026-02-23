@@ -60,6 +60,52 @@ func TestRunsReplay_POSTsRunReplayAndPrintsNextSteps(t *testing.T) {
 	}
 }
 
+func TestRunsReplay_TimeTravelModeMapsToAPIValue(t *testing.T) {
+	// NOTE: do NOT run in parallel: captureStdout swaps os.Stdout globally (defined in runs_diff_test.go).
+	// t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+
+		if r.URL.Path != "/debug/run-replay" {
+			t.Fatalf("expected /debug/run-replay, got %s", r.URL.Path)
+		}
+
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+
+		var req map[string]any
+		if err := json.Unmarshal(b, &req); err != nil {
+			t.Fatalf("bad json body: %v body=%s", err, string(b))
+		}
+
+		if req["run_id"] != "r1" || req["from_step"] != "A" || req["mode"] != "time_travel" {
+			t.Fatalf("unexpected req: %+v", req)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"run_id":"r1"}`))
+	}))
+	defer srv.Close()
+
+	out := captureStdout(t, func() {
+		if err := cmdRuns(srv.URL, 2*time.Second, []string{
+			"replay",
+			"--run-id", "r1",
+			"--from-step", "A",
+			"--mode", "time-travel",
+		}); err != nil {
+			t.Fatalf("cmdRuns replay: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "replay started run_id=r1 from_step=A mode=time_travel") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
 func TestRunsTimeline_PrintsProofFields(t *testing.T) {
 	// NOTE: do NOT run in parallel: captureStdout swaps os.Stdout globally (defined in runs_diff_test.go).
 	// t.Parallel()
