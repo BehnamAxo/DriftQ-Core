@@ -1,14 +1,43 @@
 # DriftQ-Core 🚀
 
-**DriftQ-Core** is a durable message broker (v1) that also contains the **DriftQ v2 foundations**: a replayable workflow runtime with a persistent run/event log, deterministic DAG scheduling, and debugging primitives.
+**DriftQ-Core** is a durable message broker (v1) that also contains the **DriftQ v2 foundations**: a replayable workflow runtime with a run/event log (persistent when `-engine-store file` is enabled), deterministic DAG scheduling, and debugging primitives.
 
 - **v1 (stable):** broker API under `/v1/*` (produce/consume/ack/nack, topics, leases).
 - **v2 foundations (evolving):** workflow runtime exposed via `/debug/*` and `driftqctl runs ...` (replay, timelines, diffs, rollback primitives).
 
 If you only want the broker, you can ignore v2. If you want "Temporal-like" durability + replay, v2 is where this is going. 🙂
 
+<a id="toc"></a>
+
+## Table of contents
+
+- [Why DriftQ-Core?](#why-driftq-core)
+- [Highlights](#highlights-)
+- [Quickstart (Docker)](#quickstart-docker)
+  - [Do this next: broker "Hello World"](#broker-hello-world)
+  - [Optional: v2 demo in 60 seconds](#v2-demo-60s)
+  - [Common gotchas](#common-gotchas)
+- [driftqctl (CLI)](#driftqctl-cli-)
+- [API Surface](#api-surface)
+- [Development](#development)
+- [Compatibility note (WAL) ⚠️](#compatibility-note-wal-️)
+- [Roadmap](#roadmap)
+- [Repo layout](#repo-layout)
+- [Starter templates & demos](#starter-templates--demos)
+- [Docs](#docs)
+- [License](#license)
+
+
+<a id="why-driftq-core"></a>
 
 ## Why DriftQ-Core?
+
+- **One binary, no external deps** (no Kafka/Temporal/DB cluster required)
+- **Right-sized reliability**: leases, retries, DLQ, idempotency
+- **Replay + debugging primitives** via v2 foundations
+
+<details>
+  <summary><strong>Read the full explanation</strong></summary>
 
 ### The problem
 
@@ -43,7 +72,11 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - It's not a general-purpose database. The WAL is append-only and optimized for message/event storage, not arbitrary queries.
 - It's not trying to replace Kafka at 10 million messages per second. It's built for the 99% of workloads that don't need that scale.
 
-## Highlights ✨
+</details>
+
+<a id="highlights-"></a>
+
+## Highlights
 
 ### v1 — Broker (stable)
 - Topics / partitions (Kafka-style offsets)
@@ -73,6 +106,8 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - **Handler panic recovery** (panicking handlers do not crash the server)
 
 
+<a id="quickstart-docker"></a>
+
 ## Quickstart (Docker)
 
 **Recommended (pinned tag):**
@@ -90,12 +125,25 @@ Then hit:
 curl http://127.0.0.1:8080/v1/healthz
 ```
 
+Windows PowerShell:
+```powershell
+curl.exe http://127.0.0.1:8080/v1/healthz
+```
+
+
 > Tip: In production, pin the image tag (reproducible deploys). `latest` is for dev.
 
 **Using docker-compose:**
 ```bash
 docker-compose up -d
 ```
+
+> **Important:** this repo’s `docker-compose.yml` references the image `driftq-core:local`. Build it once first:
+> ```bash
+> docker build -t driftq-core:local .
+> ```
+> Then run either `docker compose up -d` or `docker-compose up -d`.
+
 
 **Docker with custom flags:**
 ```bash
@@ -111,7 +159,155 @@ docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core
   -log-format json
 ```
 
-## driftqctl (CLI) 🧰
+<a id="broker-hello-world"></a>
+
+## Do this next: end-to-end broker "Hello World" (topics → produce → consume → ack)
+
+This is the missing "what now?" after you see `{"status":"ok"}` from `/v1/healthz`.
+
+> TL;DR: create a topic → produce → stream-consume → ack using the same `{topic, group, owner}`.
+
+### 1) Create a topic
+
+macOS/Linux:
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/topics?name=demo&partitions=1"
+```
+
+Windows PowerShell (**use `curl.exe`** — PowerShell aliases `curl` to `Invoke-WebRequest`):
+```powershell
+curl.exe -i -X POST "http://127.0.0.1:8080/v1/topics?name=demo&partitions=1"
+```
+
+List topics:
+```bash
+curl http://127.0.0.1:8080/v1/topics
+```
+
+### 2) Produce a message
+
+Basic:
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/produce?topic=demo&value=hello"
+```
+
+Produce with retry policy (so you can observe retries/DLQ behavior later):
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/produce?topic=demo&value=hello-retry&retry_max_attempts=3&retry_backoff_ms=500"
+```
+
+### 3) Consume as a streaming client (NDJSON)
+
+Open a **second terminal**.
+
+macOS/Linux (**important: `-N` disables output buffering**):
+```bash
+curl -N "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=5000"
+```
+
+Windows PowerShell (**important: `--no-buffer`**):
+```powershell
+curl.exe --no-buffer "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=5000"
+```
+
+You’ll see one JSON object per line, like:
+```json
+{"partition":0,"offset":0,"attempts":1,"key":"","value":"hello","last_error":""}
+```
+
+### 4) Ack the message you processed
+
+Use the `partition` + `offset` from the consume line (example below uses 0/0):
+
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/ack?topic=demo&group=g1&owner=c1&partition=0&offset=0"
+```
+
+**Important:** ack/nack must come from the same `owner` that consumed the message. If you use the wrong `owner`, you’ll get `409 Conflict`.
+
+### 5) (Optional) Prove redelivery + retries + DLQ
+
+- Consume a message **but do not ack it**.
+- Wait for the lease to expire (e.g. `lease_ms=5000` → wait ~5 seconds).
+- You should see it re-delivered with `attempts` incrementing.
+
+If the message has a retry policy and exceeds `retry_max_attempts`, it routes to:
+- `dlq.<original_topic>` (example: `dlq.demo`)
+
+Create the DLQ topic and consume it:
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/topics?name=dlq.demo&partitions=1"
+curl -N "http://127.0.0.1:8080/v1/consume?topic=dlq.demo&group=dlq&owner=dlq1&lease_ms=5000"
+```
+
+### 6) Metrics (Prometheus)
+
+```bash
+curl http://127.0.0.1:8080/metrics
+```
+
+Look for metrics like:
+- `inflight_messages{group,topic,partition}`
+- `consumer_lag{group,topic,partition}`
+- `dlq_messages_total{topic,reason}`
+- `produce_rejected_total{reason}`
+
+
+<a id="v2-demo-60s"></a>
+
+## Optional: v2 demo in 60 seconds (replayable workflow foundations)
+
+If you’re curious about the "v2 foundations", this is the fastest way to see them.
+
+1) Build the CLI:
+```bash
+go build -o driftqctl ./cmd/driftqctl
+```
+
+Windows:
+```powershell
+go build -o driftqctl.exe ./cmd/driftqctl
+```
+
+2) Run the built-in demo workflow:
+```bash
+./driftqctl --base-url http://127.0.0.1:8080 runs demo
+```
+
+3) Inspect:
+```bash
+./driftqctl --base-url http://127.0.0.1:8080 runs list --limit 20
+./driftqctl --base-url http://127.0.0.1:8080 runs timeline --run-id <RUN_ID>
+./driftqctl --base-url http://127.0.0.1:8080 runs artifacts --run-id <RUN_ID>
+```
+
+> Note: the `/debug/run-replay` endpoint expects `"mode": "time_travel"` or `"live"` in JSON. `driftqctl runs replay --mode time-travel` maps to `"time_travel"` for you.
+
+
+<a id="common-gotchas"></a>
+
+## Common gotchas (first-time users)
+
+- **PowerShell `curl` isn’t curl.** Use `curl.exe ...` (or use `Invoke-WebRequest` explicitly).
+- **`/v1/consume` is a stream.** It stays open and prints one JSON line per message.
+- **`topic`, `group`, and `owner` are required for `/v1/consume`.** (Owner matters because ack/nack are ownership-scoped.)
+- **docker-compose requires a local image first.** This repo’s `docker-compose.yml` references `driftq-core:local`, so do:
+  ```bash
+  docker build -t driftq-core:local .
+  docker compose up -d
+  ```
+  (If you prefer legacy syntax, `docker-compose up -d` still works.)
+- **Reset / clean slate:**
+  - Docker volume cleanup:
+    ```bash
+    docker volume rm driftq_data
+    ```
+  - From source: `go run ./cmd/driftqd --reset-wal`
+
+
+<a id="driftqctl-cli-"></a>
+
+## driftqctl (CLI)
 
 Build from source:
 ```bash
@@ -158,6 +354,8 @@ go build -o driftqctl ./cmd/driftqctl
 ./driftqctl --base-url http://127.0.0.1:8080 runs demo
 ```
 
+<a id="api-surface"></a>
+
 ## API Surface
 
 ### v1 (stable)
@@ -178,6 +376,9 @@ All stable broker endpoints are under `/v1/*`:
 
 Full reference: `docs/v1/v1-README.md`
 
+> **Note:** `/v1/consume` requires **topic + group + owner** (example: `/v1/consume?topic=T&group=G&owner=O`). Ack/nack are scoped to that `owner`.
+
+
 ### v2 foundations (debug / evolving)
 
 These endpoints are under `/debug/*` and are meant for development, demos, and iteration:
@@ -191,8 +392,8 @@ These endpoints are under `/debug/*` and are meant for development, demos, and i
 | POST | `/debug/run-replay` | Time-travel or live replay |
 | POST | `/debug/run-cancel` | Cancel a run |
 | GET | `/debug/run-artifacts?run_id=ID` | List run artifacts |
-| GET | `/debug/artifact-meta?run_id=ID&node_id=N` | Artifact metadata |
-| GET | `/debug/artifact-get?run_id=ID&node_id=N` | Download artifact |
+| GET | `/debug/artifact-meta?artifact_id=A` | Artifact metadata |
+| GET | `/debug/artifact-get?artifact_id=A` | Download artifact |
 | POST | `/debug/run-demo` | Start demo workflow |
 | GET | `/debug/index/active` | Get active index pointer |
 | POST | `/debug/index/promote` | Promote index pointer |
@@ -204,6 +405,8 @@ These endpoints are under `/debug/*` and are meant for development, demos, and i
 
 Full reference: `docs/v2/v2-README.md`
 
+
+<a id="development"></a>
 
 ## Development
 
@@ -372,10 +575,14 @@ go build -o driftqctl ./cmd/driftqctl
 go build -ldflags "-X main.buildVersion=1.2.0 -X main.buildCommit=$(git rev-parse --short HEAD)" -o driftqd ./cmd/driftqd
 ```
 
+<a id="compatibility-note-wal-️"></a>
+
 ## Compatibility note (WAL) ⚠️
 
 WAL is **forward-compatible only**: once you write WAL entries with newer ops, you can't safely downgrade to an older binary that doesn't understand them.
 
+
+<a id="roadmap"></a>
 
 ## Roadmap
 
@@ -384,6 +591,8 @@ WAL is **forward-compatible only**: once you write WAL entries with newer ops, y
 - Multi-Agent Runtime & Real-Time AI
 - DriftQ Cloud
 
+
+<a id="repo-layout"></a>
 
 ## Repo layout
 
@@ -407,7 +616,7 @@ DriftQ-Core/
 └── Makefile
 ```
 
----
+<a id="starter-templates--demos"></a>
 
 ## Starter templates & demos
 
@@ -416,11 +625,15 @@ For copy/paste starter repos and runnable demos, see **DriftQ-Starters**:
 - GitHub: [driftq-org/DriftQ-Starters](https://github.com/driftq-org/DriftQ-Starters)
 
 
+<a id="docs"></a>
+
 ## Docs
 
 - **v1 broker docs:** `docs/v1/v1-README.md`
 - **v2 foundations docs:** `docs/v2/v2-README.md`
 
+
+<a id="license"></a>
 
 ## License
 

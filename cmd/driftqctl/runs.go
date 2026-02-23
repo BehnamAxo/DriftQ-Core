@@ -45,6 +45,18 @@ type nodeExec struct {
 	Output     any        `json:"output,omitempty"`
 }
 
+type timelineRow struct {
+	StepID        string
+	Attempt       int64
+	UsedCached    bool
+	CachedAttempt int64
+	QueuedAt      string
+	StartedAt     string
+	EndedAt       string
+	QueueMS       int64
+	WorkerMS      int64
+}
+
 type runStateResp struct {
 	Ok     bool       `json:"ok"`
 	Run    any        `json:"run"`
@@ -603,6 +615,7 @@ func runsDiff(baseURL string, timeout time.Duration, args []string) error {
 	if id == "" {
 		return fmt.Errorf("runs diff: --run-id is required")
 	}
+
 	if nid == "" {
 		return fmt.Errorf("runs diff: --node-id is required")
 	}
@@ -980,73 +993,6 @@ func pickInt64(m map[string]any, keys ...string) int64 {
 	return 0
 }
 
-// Pull artifact ids out of whatever shape NodeExecution uses
-// Supports:
-// - artifact_id: "a1"
-// - artifact_ids: ["a1","a2"]
-// - artifacts: ["a1"] OR [{"artifact_id":"a1"}] OR [{"id":"a1"}]
-func extractArtifactIDs(node map[string]any) []string {
-	var out []string
-	seen := map[string]struct{}{}
-
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return
-		}
-
-		if _, ok := seen[s]; ok {
-			return
-		}
-
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-
-	// single
-	if s := pickString(node, "artifact_id", "artifactId", "ArtifactID"); s != "" {
-		add(s)
-	}
-
-	// list
-	if xs, ok := node["artifact_ids"].([]any); ok {
-		for _, x := range xs {
-			if s, ok := x.(string); ok {
-				add(s)
-			}
-		}
-	}
-
-	if xs, ok := node["artifactIds"].([]any); ok {
-		for _, x := range xs {
-			if s, ok := x.(string); ok {
-				add(s)
-			}
-		}
-	}
-
-	if xs, ok := node["ArtifactIDs"].([]any); ok {
-		for _, x := range xs {
-			if s, ok := x.(string); ok {
-				add(s)
-			}
-		}
-	}
-
-	if xs, ok := node["artifacts"].([]any); ok {
-		for _, x := range xs {
-			switch vv := x.(type) {
-			case string:
-				add(vv)
-			case map[string]any:
-				add(pickString(vv, "artifact_id", "artifactId", "id", "ID", "ArtifactID"))
-			}
-		}
-	}
-
-	return out
-}
-
 func runsReplay(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("runs replay", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run id (required)")
@@ -1063,15 +1009,18 @@ func runsReplay(baseURL string, timeout time.Duration, args []string) error {
 	if id == "" {
 		return fmt.Errorf("runs replay: --run-id is required")
 	}
+
 	if step == "" {
 		return fmt.Errorf("runs replay: --from-step is required")
 	}
+
 	if m == "" {
 		m = "time-travel"
 	}
+
 	switch m {
-	case "time-travel", "timetravel", "tt":
-		m = "time-travel"
+	case "time-travel", "timetravel", "tt", "time_travel":
+		m = "time_travel"
 	case "live":
 		// ok
 	default:
@@ -1130,18 +1079,6 @@ func runsReplay(baseURL string, timeout time.Duration, args []string) error {
 	return nil
 }
 
-type timelineRow struct {
-	StepID        string
-	Attempt       int64
-	UsedCached    bool
-	CachedAttempt int64
-	QueuedAt      string
-	StartedAt     string
-	EndedAt       string
-	QueueMS       int64
-	WorkerMS      int64
-}
-
 func runsTimeline(baseURL string, timeout time.Duration, args []string) error {
 	fs := flag.NewFlagSet("runs timeline", flag.ContinueOnError)
 	runID := fs.String("run-id", "", "run id (required)")
@@ -1160,26 +1097,26 @@ func runsTimeline(baseURL string, timeout time.Duration, args []string) error {
 		return err
 	}
 
-eventsAny := root.Events
-var events []any
-switch v := eventsAny.(type) {
-case []any:
-	events = v
-case nil:
-	// keep empty
-default:
-	// Some servers might wrap events under an object; try common shapes.
-	if m, ok := v.(map[string]any); ok {
-		if arr, ok := m["events"].([]any); ok {
-			events = arr
-		} else if arr, ok := m["items"].([]any); ok {
-			events = arr
+	eventsAny := root.Events
+	var events []any
+	switch v := eventsAny.(type) {
+	case []any:
+		events = v
+	case nil:
+		// keep empty
+	default:
+		// Some servers might wrap events under an object; try common shapes.
+		if m, ok := v.(map[string]any); ok {
+			if arr, ok := m["events"].([]any); ok {
+				events = arr
+			} else if arr, ok := m["items"].([]any); ok {
+				events = arr
+			}
 		}
 	}
-}
-if len(events) == 0 {
-	return fmt.Errorf("runs timeline: no events available for run %q", id)
-}
+	if len(events) == 0 {
+		return fmt.Errorf("runs timeline: no events available for run %q", id)
+	}
 
 	rows := make([]timelineRow, 0, 32)
 	for _, ev := range events {
@@ -1265,7 +1202,6 @@ func pickBool(m map[string]any, keys ...string) bool {
 	}
 	return false
 }
-
 
 func runsActiveIndex(baseURL string, timeout time.Duration, args []string) error {
 	// no flags for now

@@ -1,62 +1,162 @@
-# DriftQ v1 HTTP API (MVP)
+# DriftQ v1 HTTP API (stable broker)
 
 Base URL: `http://<host>:8080`
 
-All API endpoints below are under `/v1/*` **except** `/metrics` (Prometheus) which is unversioned.
+All stable broker endpoints are under `/v1/*` except `/metrics`, which is unversioned.
 
+## Quickstart (local)
 
-## Endpoints
+### Run the broker (Docker)
+Pinned image tag:
 
-### Health
+```bash
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
+```
 
-**GET** `/v1/healthz`
+Health check:
 
-Returns `200 OK` with JSON:
+```bash
+curl http://127.0.0.1:8080/v1/healthz
+```
+
+Expected:
 
 ```json
 {"status":"ok"}
 ```
 
----
+Windows PowerShell notes:
+- Use `curl.exe` (PowerShell aliases `curl` to `Invoke-WebRequest`).
+- For streaming consume, use `curl.exe --no-buffer`.
 
-### Version
+### End-to-end "Hello World" (create -> produce -> consume -> ack)
 
-**GET** `/v1/version`
+1. Create topic:
 
-Returns JSON:
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/topics?name=demo&partitions=1"
+```
+
+Expected status: `201 Created`
+
+2. Produce one message:
+
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/produce?topic=demo&value=hello"
+```
+
+Expected body:
+
+```json
+{"status":"produced","topic":"demo"}
+```
+
+3. Consume in a second terminal (streaming NDJSON):
+
+macOS/Linux:
+
+```bash
+curl -N "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=5000"
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe --no-buffer "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=5000"
+```
+
+Sample line:
+
+```json
+{"partition":0,"offset":0,"attempts":1,"key":"","value":"hello","last_error":"","routing":{"label":"test-label","meta":{"source":"router"}}}
+```
+
+4. Ack using the same `owner` that consumed:
+
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/ack?topic=demo&group=g1&owner=c1&partition=0&offset=0"
+```
+
+Expected status: `204 No Content`
+
+## Retry, redelivery, and DLQ walkthrough
+
+1. Produce with retry policy:
+
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/produce?topic=demo&value=needs-retry&retry_max_attempts=3&retry_backoff_ms=500"
+```
+
+2. Consume it:
+
+```bash
+curl -N "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=2000"
+```
+
+3. Nack it from the same owner:
+
+```bash
+curl -i -X POST "http://127.0.0.1:8080/v1/nack?topic=demo&group=g1&owner=c1&partition=0&offset=<OFFSET>&reason=processing_failed"
+```
+
+4. Observe subsequent deliveries:
+- `attempts` increases on each redelivery.
+- `last_error` carries the latest failure context.
+
+5. When max attempts is reached:
+- Message is routed to `dlq.<topic>` (for `demo`, that is `dlq.demo`).
+- The broker auto-creates the DLQ topic if it does not already exist.
+
+6. Consume DLQ:
+
+```bash
+curl -N "http://127.0.0.1:8080/v1/consume?topic=dlq.demo&group=dlq&owner=dlq1&lease_ms=5000"
+```
+
+## Core behavior notes
+
+- `topic`, `group`, and `owner` are required for `/v1/consume`.
+- Ack/Nack are ownership-scoped. Wrong `owner` returns `409 Conflict` with error code `FAILED_PRECONDITION`.
+- `/v1/consume` is an open stream. It does not return a finite JSON array.
+- `value` is required and cannot be empty for `/v1/produce`.
+- Consumer offsets are tracked per `(topic, group, partition)`, so groups consume independently.
+- JSON request parsing is strict (`unknown field` is rejected with `400 INVALID_ARGUMENT`).
+
+## Endpoint reference
+
+### GET `/v1/healthz`
+
+Response:
+
+```json
+{"status":"ok"}
+```
+
+### GET `/v1/version`
+
+Response shape:
 
 ```json
 {"version":"dev","commit":"unknown","wal_enabled":true}
 ```
 
----
+### GET `/v1/topics`
 
-### Topics
-
-#### List Topics
-
-**GET** `/v1/topics`
-
-Returns JSON:
+Response:
 
 ```json
-{"topics":["my-topic","another-topic"]}
+{"topics":["demo","orders","payments"]}
 ```
 
-#### Create Topic
+### POST `/v1/topics`
 
-**POST** `/v1/topics`
+Create topic. Supports query params or JSON body.
 
-Accepts either query params or JSON body.
+Query params:
+- `name` (required)
+- `partitions` (optional, default `1`, must be `> 0`)
 
-**Query params:**
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | Topic name |
-| `partitions` | No | Number of partitions (default: 1) |
-
-**JSON body:**
+JSON body:
 
 ```json
 {
@@ -65,315 +165,173 @@ Accepts either query params or JSON body.
 }
 ```
 
-**Response:**
+Response:
 
 ```json
 {"status":"created","name":"my-topic","partitions":4}
 ```
 
-**Example:**
+Status codes:
+- `201 Created`
+- `400 INVALID_ARGUMENT`
 
-```bash
-curl -i -X POST "http://localhost:8080/v1/topics?name=t&partitions=1"
-```
+### POST `/v1/produce`
 
----
+Produce a message. Supports JSON body or query params.
 
-### Produce
+Query params:
+- `topic` (required)
+- `value` (required, non-empty)
+- `key` (optional)
 
-**POST** `/v1/produce`
+Optional query envelope fields:
+- `run_id`
+- `step_id`
+- `parent_step_id`
+- `tenant_id` (alias: `tenant`)
+- `idempotency_key` (alias: `idem_key`)
+- `target_topic`
+- `partition_override`
+- `deadline_rfc3339`
+- `deadline_ms`
 
-Accepts either JSON body or query params (useful for quick manual testing).
+Optional query retry policy fields:
+- `retry_max_attempts`
+- `retry_backoff_ms`
+- `retry_max_backoff_ms`
 
-#### JSON body (recommended)
+If `retry_backoff_ms` or `retry_max_backoff_ms` is set, `retry_max_attempts` must be `> 0`.
+
+JSON body example:
 
 ```json
 {
-  "topic": "my-topic",
-  "key": "optional-key",
-  "value": "message-content",
+  "topic": "orders",
+  "key": "order-123",
+  "value": "created",
   "envelope": {
     "run_id": "run-123",
-    "step_id": "step-456",
-    "parent_step_id": "step-000",
-    "tenant_id": "tenant-abc",
-    "idempotency_key": "unique-key",
-    "target_topic": "next-topic",
-    "deadline": "2024-01-15T10:30:00Z",
-    "partition_override": 2,
+    "step_id": "step-1",
+    "tenant_id": "tenant-a",
+    "idempotency_key": "order-123-created",
+    "target_topic": "orders.enriched",
+    "deadline": "2026-02-23T12:00:00Z",
+    "partition_override": 0,
     "retry_policy": {
       "max_attempts": 3,
-      "backoff_ms": 1000,
-      "max_backoff_ms": 30000
+      "backoff_ms": 500,
+      "max_backoff_ms": 5000
     }
   }
 }
 ```
 
-#### Query params
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| `topic` | Yes | Target topic |
-| `key` | No | Message key (for partitioning) |
-| `value` | Yes | Message content |
-
-**Envelope params (all optional):**
-
-| Param | Alias | Description |
-|-------|-------|-------------|
-| `tenant_id` | `tenant` | Tenant identifier |
-| `run_id` | | Workflow run ID |
-| `step_id` | | Step identifier |
-| `parent_step_id` | | Parent step ID |
-| `idempotency_key` | `idem_key` | Deduplication key |
-| `deadline_rfc3339` | | Deadline (RFC3339 format, e.g. `2024-01-15T10:30:00Z`) |
-| `deadline_ms` | | Deadline (Unix milliseconds) |
-| `target_topic` | | Target topic for routing |
-| `partition_override` | | Force specific partition (int) |
-
-**Retry policy params (all optional):**
-
-| Param | Description |
-|-------|-------------|
-| `retry_max_attempts` | Max retry attempts (required if using backoff params) |
-| `retry_backoff_ms` | Initial backoff in milliseconds |
-| `retry_max_backoff_ms` | Maximum backoff in milliseconds |
-
-**Response:**
+Success response:
 
 ```json
-{"status":"ok","topic":"my-topic"}
+{"status":"produced","topic":"orders"}
 ```
 
-**Example:**
-
-```bash
-curl -i -X POST "http://localhost:8080/v1/produce?topic=t&value=hello&retry_max_attempts=2"
-```
-
-**Error responses:**
-
-- `400 Bad Request` — Invalid arguments
-- `429 Too Many Requests` — Broker overloaded (includes `Retry-After` header)
+Overload response (`429 Too Many Requests`) includes `Retry-After` header:
 
 ```json
 {
   "error": "RESOURCE_EXHAUSTED",
-  "message": "producer overloaded",
-  "reason": "overloaded",
+  "message": "producer overload: partition_buffer_full",
+  "reason": "partition_buffer_full",
   "retry_after_ms": 1000
 }
 ```
 
----
+Possible `reason` values:
+- `partition_buffer_full`
+- `partition_buffer_bytes_full`
 
-### Consume (streaming)
+### GET `/v1/consume` (streaming NDJSON)
 
-**GET** `/v1/consume`
+Streams one JSON object per line until client disconnects.
 
-Consumes messages for a consumer group. This endpoint **streams NDJSON**
-(one JSON object per line) until the client disconnects.
+Query params:
+- `topic` (required)
+- `group` (required)
+- `owner` (required)
+- `lease_ms` (optional, default `2000`)
 
-Accepts either query params or JSON body.
-
-#### Query params
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| `topic` | Yes | Topic to consume from |
-| `group` | Yes | Consumer group name |
-| `owner` | Yes | Consumer instance identifier |
-| `lease_ms` | No | Lease duration in milliseconds (default: 2000) |
-
-#### JSON body
-
-```json
-{
-  "topic": "my-topic",
-  "group": "my-group",
-  "owner": "consumer-1",
-  "lease_ms": 5000
-}
-```
-
-**Example:**
+Example:
 
 ```bash
-curl -N "http://localhost:8080/v1/consume?topic=t&group=g&owner=o&lease_ms=5000"
+curl -N "http://127.0.0.1:8080/v1/consume?topic=orders&group=workers&owner=w1&lease_ms=5000"
 ```
 
-**Output format (NDJSON):**
-
-Each line is a `ConsumeItem` JSON object:
+Sample output lines:
 
 ```json
-{"partition":0,"offset":0,"attempts":1,"key":"k","value":"v","last_error":"","routing":{"label":"test","meta":{}},"envelope":{"run_id":"r1"}}
-{"partition":0,"offset":1,"attempts":1,"key":"k2","value":"v2","last_error":""}
+{"partition":0,"offset":0,"attempts":1,"key":"order-123","value":"created","last_error":""}
+{"partition":0,"offset":1,"attempts":2,"key":"order-456","value":"created","last_error":"processing_failed"}
 ```
 
-**Important notes:**
+Notes:
+- `attempts` starts at `1`.
+- `routing` and `envelope` are optional fields and appear when present.
+- There is no partition filter on `/v1/consume`.
 
-- If you never `ack`, messages will be redelivered after the lease expires.
-- If a message has a retry policy and exceeds `max_attempts`, it is routed to `dlq.<topic>`.
+### POST `/v1/ack`
 
----
+Ack a leased message (must use the same `owner` that consumed it).
 
-### Ack
+Required fields (query or JSON body):
+- `topic`
+- `group`
+- `owner`
+- `partition`
+- `offset`
 
-**POST** `/v1/ack`
-
-Marks a message as successfully processed (advances the committed offset if possible).
-
-Accepts either query params or JSON body.
-
-#### Query params
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| `topic` | Yes | Topic name |
-| `group` | Yes | Consumer group |
-| `owner` | Yes | Consumer instance identifier |
-| `partition` | Yes | Partition number |
-| `offset` | Yes | Message offset |
-
-#### JSON body
-
-```json
-{
-  "topic": "my-topic",
-  "group": "my-group",
-  "owner": "consumer-1",
-  "partition": 0,
-  "offset": 5
-}
-```
-
-**Example:**
+Query example:
 
 ```bash
-curl -i -X POST "http://localhost:8080/v1/ack?topic=t&group=g&owner=o&partition=0&offset=0"
+curl -i -X POST "http://127.0.0.1:8080/v1/ack?topic=orders&group=workers&owner=w1&partition=0&offset=10"
 ```
 
-**Responses:**
+Responses:
+- `204 No Content` on success
+- `400 INVALID_ARGUMENT`
+- `409 FAILED_PRECONDITION` when owner does not match lease owner
 
-- `204 No Content` — Success
-- `400 Bad Request` — Invalid arguments
-- `409 Conflict` — Caller is not the current owner
+### POST `/v1/nack`
 
----
+Nack a leased message (must use the same `owner` that consumed it).
 
-### Nack
+Required fields (query or JSON body):
+- `topic`
+- `group`
+- `owner`
+- `partition`
+- `offset`
 
-**POST** `/v1/nack`
+Optional:
+- `reason` (defaults to `"nack"` when omitted/empty)
 
-Marks a message as failed (may schedule retry depending on policy).
-
-Accepts either query params or JSON body.
-
-#### Query params
-
-| Param | Required | Description |
-|-------|----------|-------------|
-| `topic` | Yes | Topic name |
-| `group` | Yes | Consumer group |
-| `owner` | Yes | Consumer instance identifier |
-| `partition` | Yes | Partition number |
-| `offset` | Yes | Message offset |
-| `reason` | No | Error reason (stored for debugging/metrics) |
-
-#### JSON body
-
-```json
-{
-  "topic": "my-topic",
-  "group": "my-group",
-  "owner": "consumer-1",
-  "partition": 0,
-  "offset": 5,
-  "reason": "processing failed: timeout"
-}
-```
-
-**Example:**
+Query example:
 
 ```bash
-curl -i -X POST "http://localhost:8080/v1/nack?topic=t&group=g&owner=o&partition=0&offset=0&reason=failed"
+curl -i -X POST "http://127.0.0.1:8080/v1/nack?topic=orders&group=workers&owner=w1&partition=0&offset=10&reason=timeout"
 ```
 
-**Responses:**
+Responses:
+- `204 No Content` on success
+- `400 INVALID_ARGUMENT`
+- `409 FAILED_PRECONDITION` when owner does not match lease owner
 
-- `204 No Content` — Success
-- `400 Bad Request` — Invalid arguments
-- `409 Conflict` — Caller is not the current owner
+## Metrics
 
----
-
-### Metrics (Prometheus)
-
-**GET** `/metrics`
-
-Exports Prometheus metrics:
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `inflight_messages` | gauge | topic, group, partition | Messages currently being processed |
-| `consumer_lag` | gauge | topic, group, partition | Number of unprocessed messages |
-| `dlq_messages_total` | counter | topic, reason | Messages routed to DLQ |
-| `produce_rejected_total` | counter | reason | Rejected produce requests |
-
-**Example:**
+Prometheus scrape endpoint:
 
 ```bash
-curl -s "http://localhost:8080/metrics" | grep consumer_lag
+curl http://127.0.0.1:8080/metrics
 ```
 
-
-## Error format
-
-All errors are JSON with this structure:
-
-```json
-{"error":"ERROR_CODE","message":"Human readable description"}
-```
-
-Common error codes:
-
-| Code | Description |
-|------|-------------|
-| `INVALID_ARGUMENT` | Bad request parameters |
-| `FAILED_PRECONDITION` | Operation cannot be performed (e.g., not owner) |
-| `RESOURCE_EXHAUSTED` | Rate limited / overloaded |
-| `INTERNAL` | Server error |
-
----
-
-## Method handling
-
-Calling an endpoint with the wrong HTTP method returns `405 Method Not Allowed`
-and includes an `Allow` header indicating the correct method.
-
----
-
-## Idempotency
-
-To ensure exactly-once delivery semantics, include an `idempotency_key` in the envelope:
-
-```bash
-curl -X POST "http://localhost:8080/v1/produce?topic=t&value=hello&idem_key=unique-123"
-```
-
-If a message with the same idempotency key has already been processed, the broker will deduplicate it.
-
-
-## Dead Letter Queue (DLQ)
-
-Messages that exceed `max_attempts` in their retry policy are automatically routed to `dlq.<topic>`.
-
-For example, if a message on topic `orders` fails 3 times with `max_attempts=3`, it will be moved to `dlq.orders`.
-
-DLQ messages preserve the original message content and include metadata about the failure:
-- Original topic, partition, and offset
-- Number of attempts
-- Last error message
-- Timestamp when routed to DLQ
+Key metrics include:
+- `inflight_messages{topic,group,partition}`
+- `consumer_lag{topic,group,partition}`
+- `produce_rejected_total{reason}`
+- `dlq_messages_total{topic,reason}`
