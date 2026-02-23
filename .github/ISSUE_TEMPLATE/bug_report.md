@@ -25,7 +25,7 @@ What actually happened (include error message if any).
 Paste relevant logs here (redact secrets).
 
 ## Environment
-- DriftQ-Core version (tag/commit): 
+- DriftQ-Core version (tag/commit):
 - OS:
 - Install method: (docker / binary / go run)
 - Go version (if built from source):
