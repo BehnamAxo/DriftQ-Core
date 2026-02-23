@@ -1,232 +1,306 @@
-# DriftQ v2 Foundations (inside DriftQ-Core) 🧱
+# DriftQ v2 Foundations (inside DriftQ-Core)
 
-This folder documents the **v2 workflow runtime foundations** that currently live inside DriftQ-Core.
+This document covers the current v2 workflow runtime that ships inside DriftQ-Core.
 
-**Reality check:** the broker API (`/v1/*`) is the stable surface today. The v2 runtime is exposed via **debug endpoints** (`/debug/*`) and `driftqctl runs ...` so it’s easy to iterate and prove the system before a locked public API.
+Reality check:
+- Stable public surface today is still broker v1 (`/v1/*`).
+- v2 is currently exposed through debug endpoints (`/debug/*`) and `driftqctl runs ...`.
 
----
+## What exists today
 
-## What you get (today)
+- Run model with persisted state + append-only event log when `--engine-store file` is enabled.
+- Deterministic DAG execution with dependency ordering and cycle validation.
+- Replay controls: `live` re-executes from a chosen step, `time_travel` reuses recorded outputs/artifacts when possible.
+- Durable delay/timer flow (`Delay(...)` in handlers, timer fire + resume loop in server).
+- Artifact storage + retrieval endpoints.
+- Run cancel support.
+- Minimal index pointer promote/rollback controls.
 
-- **Durable runs**: a run has durable state + an **append-only event log**
-- **Deterministic DAG scheduling**: deps, fan-out/fan-in, retries, attempts
-  - Duplicate + empty node IDs rejected at parse time
-  - Cycle detection (DFS) before execution begins
-- **Replay**
-  - **time-travel** replay: reuse recorded outputs/artifacts
-  - **live** replay: re-execute from a chosen step
-- **Durable delay** primitive: timers that survive restarts
-- **Artifacts + replay cache**: store big outputs and reuse on replay
-- **Budget/throttle controls**: max attempts, wallclock timeout
-- **Cancel propagation**
-- **Rollback primitive (minimal but real)**: “active index” pointer (promote/rollback)
+Important behavior notes:
+- Automatic "retry on failure" is not a generic built-in node policy today.
+- `retry.max_attempts` is parsed in spec and stored, but current execution does not auto-retry failed nodes from that field.
+- Demo handler `fail_once` succeeds on a later attempt when you replay.
 
-If you’re here for “Temporal-like durability + replay”, this is the track.
+## Quickstart
 
----
+### Option A: Docker
 
-## Quickstart (local)
+Pinned image:
 
-### Option A: run with Docker (fastest)
-Pinned tag:
 ```bash
 docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
 ```
 
-This runs `driftqd` with:
+This starts:
 - broker WAL at `/data/driftq.wal`
-- v2 engine store defaults to `memory` unless you enable file mode
+- engine store in memory by default
+- artifact store at default path (`driftq.artifacts`) inside the container filesystem
 
-### Enable durable engine storage + artifacts (recommended for v2 demos)
+Durable engine + persistent artifacts on the mounted volume:
+
 ```bash
-docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0   -engine-store file   -engine-wal /data/engine.wal   -artifacts-dir /data/artifacts
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0 \
+  -engine-store file \
+  -engine-wal /data/engine.wal \
+  -artifacts-dir /data/artifacts
 ```
 
-Health:
+Health check:
+
 ```bash
 curl http://127.0.0.1:8080/v1/healthz
 ```
 
-**Windows PowerShell notes**
-- use `curl.exe` (PowerShell aliases `curl`)
-- streaming endpoints: `curl.exe --no-buffer`
+### Option B: From source
 
-### Option B: run from source (dev)
-Go version: **Go 1.25** (see `go.mod`).
+`go.mod` currently targets Go `1.25`.
+
+Default run:
 
 ```bash
-# in-memory engine, file-based broker WAL (default)
 go run ./cmd/driftqd
-
-# durable engine + artifacts stored under ./data
-mkdir -p ./data
-go run ./cmd/driftqd   --wal ./data/driftq.wal   --engine-store file   --engine-wal ./data/engine.wal   --artifacts-dir ./data/artifacts
 ```
 
----
+Durable engine + durable artifacts:
 
-## driftqctl (CLI)
+```bash
+mkdir -p ./data
+go run ./cmd/driftqd \
+  --wal ./data/driftq.wal \
+  --engine-store file \
+  --engine-wal ./data/engine.wal \
+  --artifacts-dir ./data/artifacts
+```
+
+Windows PowerShell notes:
+- Use `curl.exe` instead of `curl`.
+- For streaming output, use `curl.exe --no-buffer`.
+
+## CLI quickstart (`driftqctl`)
 
 Build:
+
 ```bash
 go build -o driftqctl ./cmd/driftqctl
 ```
 
 Windows:
+
 ```powershell
 go build -o driftqctl.exe ./cmd/driftqctl
 ```
 
-Sanity check:
+Sanity:
+
 ```bash
 ./driftqctl --base-url http://127.0.0.1:8080 runs list --limit 20
 ```
 
----
+## End-to-end v2 flow (fast)
 
-## Fastest demo: run the built‑in demo workflow
+1. Start demo run:
 
-Start a demo run:
 ```bash
 ./driftqctl --base-url http://127.0.0.1:8080 runs demo
 ```
 
-Then:
+Expected output includes:
+- `run_id=<...>`
+- optional `trace_id=<...>`
+
+2. Inspect:
+
 ```bash
-./driftqctl --base-url http://127.0.0.1:8080 runs list --limit 20
 ./driftqctl --base-url http://127.0.0.1:8080 runs status --run-id <RUN_ID>
+./driftqctl --base-url http://127.0.0.1:8080 runs events --run-id <RUN_ID>
 ./driftqctl --base-url http://127.0.0.1:8080 runs timeline --run-id <RUN_ID>
 ./driftqctl --base-url http://127.0.0.1:8080 runs artifacts --run-id <RUN_ID>
 ```
 
-Replay:
-```bash
-# live replay (re-execute steps) via driftqctl
-./driftqctl --base-url http://127.0.0.1:8080 runs replay --run-id <RUN_ID> --from-step <STEP_ID> --mode live
+3. Replay from a step:
 
-# time-travel replay (reuse recorded outputs/artifacts) via the debug endpoint
-curl -i -X POST "http://127.0.0.1:8080/debug/run-replay" -H "Content-Type: application/json" -d '{"run_id":"<RUN_ID>","from_step":"<STEP_ID>","mode":"time_travel"}'
+Live replay:
+
+```bash
+./driftqctl --base-url http://127.0.0.1:8080 runs replay --run-id <RUN_ID> --from-step <STEP_ID> --mode live
 ```
 
+Time-travel replay:
 
-Cancel:
+```bash
+./driftqctl --base-url http://127.0.0.1:8080 runs replay --run-id <RUN_ID> --from-step <STEP_ID> --mode time-travel
+```
+
+Equivalent raw API call:
+
+```bash
+curl -i -X POST "http://127.0.0.1:8080/debug/run-replay" \
+  -H "Content-Type: application/json" \
+  -d '{"run_id":"<RUN_ID>","from_step":"<STEP_ID>","mode":"time_travel"}'
+```
+
+4. Cancel a run:
+
 ```bash
 ./driftqctl --base-url http://127.0.0.1:8080 runs cancel --run-id <RUN_ID> --reason "stopping"
 ```
 
----
+## Run from a JSON spec
 
-## Starting a run from a spec
+Endpoint:
+- `POST /debug/run-spec`
 
-### POST `/debug/run-spec`
+Request body shape:
 
-This starts a run from an inline **JSON spec** and input.
-
-Request body:
 ```json
 {
   "run_id": "demo-1",
   "spec": {
     "id": "wf_demo",
     "nodes": [
-      {"id": "A", "topic": "sleep_500ms"},
-      {"id": "B", "topic": "noop", "deps": ["A"]}
+      {"id":"A","topic":"sleep_500ms"},
+      {"id":"B","topic":"noop","deps":["A"]}
     ]
   },
-  "input": {"hello": "world"}
+  "input": {"hello":"world"}
 }
 ```
 
 Example:
+
 ```bash
-curl -i -X POST "http://127.0.0.1:8080/debug/run-spec"   -H "Content-Type: application/json"   -d '{"run_id":"demo-1","spec":{"id":"wf_demo","nodes":[{"id":"A","topic":"sleep_500ms"},{"id":"B","topic":"noop","deps":["A"]}]},"input":{"hello":"world"}}'
+curl -i -X POST "http://127.0.0.1:8080/debug/run-spec" \
+  -H "Content-Type: application/json" \
+  -d '{"run_id":"demo-1","spec":{"id":"wf_demo","nodes":[{"id":"A","topic":"sleep_500ms"},{"id":"B","topic":"noop","deps":["A"]}]},"input":{"hello":"world"}}'
 ```
-
-**Spec format**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Workflow identifier |
-| `nodes` | array | List of node specs |
-
-**Node spec format**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Node identifier (must be non-empty + unique) |
-| `topic` | string | Handler name |
-| `deps` | array | Prerequisite node IDs (optional) |
-| `retry` | object | Retry policy (optional) |
-
-**Validation rules**
-- Node `id` must not be empty
-- Node `id` values must be unique
-- DAG must be acyclic
-- All IDs referenced in `deps` must exist
-
-The server ships with a small set of **demo handlers**:
-- `noop`
-- `sleep_500ms`
-- `fail_once` (fails first attempt, succeeds on retry)
-- `delay_once_2s` (durable timer delay on first attempt)
 
 Response:
+
 ```json
-{"ok": true, "run_id": "demo-1", "trace_id": "abc123"}
+{"ok":true,"run_id":"demo-1","trace_id":"..."}
 ```
 
----
+Validation enforced by current runtime:
+- `spec.id` required.
+- `spec.nodes` must be non-empty.
+- each node `id` must be non-empty and unique.
+- `deps` references must point to existing node IDs.
+- graph must be acyclic.
+- each node must have `topic`.
+- each `topic` must exist in handler registry.
 
-## Inspecting a run
+Built-in handlers registered by `driftqd`:
+- `noop`
+- `sleep_500ms`
+- `fail_once`
+- `delay_once_2s`
 
-### GET `/debug/run?run_id=<RUN_ID>`
-Returns a compact summary of the run with per-node status rows.
+## Inspecting runs
 
-### GET `/debug/run-state?run_id=<RUN_ID>`
-Returns the full durable run state plus:
-- `events` (event log)
-- `nodes` (node executions)
-- `timers` (durable timers)
+Summary:
+- `GET /debug/run?run_id=<RUN_ID>`
+
+Full state:
+- `GET /debug/run-state?run_id=<RUN_ID>`
+
+`/debug/run-state` includes:
+- `run`
+- `nodes`
+- `events`
+- `timers`
 
 CLI equivalents:
+
 ```bash
+./driftqctl --base-url http://127.0.0.1:8080 runs list --limit 20
 ./driftqctl --base-url http://127.0.0.1:8080 runs status --run-id <RUN_ID>
 ./driftqctl --base-url http://127.0.0.1:8080 runs state --run-id <RUN_ID>
 ./driftqctl --base-url http://127.0.0.1:8080 runs events --run-id <RUN_ID>
 ./driftqctl --base-url http://127.0.0.1:8080 runs step --run-id <RUN_ID> --node-id <NODE_ID>
+./driftqctl --base-url http://127.0.0.1:8080 runs diff --run-id <RUN_ID> --node-id <NODE_ID>
 ```
-
----
 
 ## Artifacts
 
-### GET `/debug/run-artifacts?run_id=<RUN_ID>`
-Lists artifacts for a run (requires artifacts store to be configured).
+List artifacts by run:
+- `GET /debug/run-artifacts?run_id=<RUN_ID>&limit=<N>`
 
-If you started DriftQ with:
-- `-artifacts-dir /data/artifacts` (Docker) or
-- `--artifacts-dir ./data/artifacts` (from source)
+CLI:
 
-…then you can list artifacts:
 ```bash
-./driftqctl --base-url http://127.0.0.1:8080 runs artifacts --run-id <RUN_ID>
+./driftqctl --base-url http://127.0.0.1:8080 runs artifacts --run-id <RUN_ID> --limit 50
 ```
 
-You can also query:
-- `/debug/artifact-meta?artifact_id=<ARTIFACT_ID>`
-- `/debug/artifact-get?artifact_id=<ARTIFACT_ID>`
+Artifact metadata:
+- `GET /debug/artifact-meta?artifact_id=<ARTIFACT_ID>`
 
----
+Artifact bytes:
+- `GET /debug/artifact-get?artifact_id=<ARTIFACT_ID>`
+
+CLI helpers:
+
+```bash
+./driftqctl --base-url http://127.0.0.1:8080 runs artifact-meta --artifact-id <ARTIFACT_ID>
+./driftqctl --base-url http://127.0.0.1:8080 runs artifact-get --artifact-id <ARTIFACT_ID> --out ./artifact.bin
+```
+
+If artifact store is not configured, artifact endpoints return `400` with text like `artifact store not configured`.
+
+## Delay/timer behavior
+
+When a handler returns a delay (`engine.Delay(...)`):
+- node moves to waiting state
+- timer is written into the run store (durable across restart when `--engine-store file` is used)
+- run moves to `waiting`
+- on timer fire, run is resumed by server loop
+
+Timer fire + resume loop runs continuously in `driftqd`.
+
+## Replay semantics
+
+`POST /debug/run-replay` body:
+
+```json
+{
+  "run_id": "<RUN_ID>",
+  "from_step": "<STEP_ID>",
+  "mode": "time_travel"
+}
+```
+
+Modes:
+- `time_travel`: reuse recorded successful outputs/artifacts where valid.
+- `live`: force execution from selected step onward.
+
+API allows `from_step` to be empty for full-run behavior.
+Current CLI requires `--from-step`.
+
+## Active index pointer (promote/rollback)
+
+Get active version:
+- `GET /debug/index/active`
+- CLI: `driftqctl runs active-index`
+
+Promote a succeeded run:
+- `POST /debug/index/promote`
+- body: `{"run_id":"<RUN_ID>","version":"<OPTIONAL_VERSION>"}`
+- CLI: `driftqctl runs promote --run-id <RUN_ID> [--version <V>]`
+
+Rollback pointer:
+- `POST /debug/index/rollback`
+- body: `{"version":"<VERSION>"}`
+- CLI: `driftqctl runs rollback --to <VERSION>`
+
+Promote requires run status `succeeded`.
 
 ## Metrics
 
-- `/metrics` → Prometheus metrics (broker + some v2 counters)
-- `/debug/metrics` → JSON snapshot of internal runner metrics (dev/debug)
-
----
+- `GET /metrics` is Prometheus broker metrics (plus broker-side rejection/DLQ counters).
+- `GET /debug/metrics` is JSON snapshot of internal engine runner metrics.
 
 ## Troubleshooting
 
-- **Nothing shows up in the demo:** make sure the server is running and `/v1/healthz` returns `{"status":"ok"}`.
-- **Artifacts endpoints say “not configured”:** you started with `--artifacts-dir ""` or left it unset. Re-run with a directory.
-- **PowerShell streaming:** use `curl.exe --no-buffer`.
+- Demo run fails with `artifact store not configured`: start server with non-empty `--artifacts-dir` or Docker `-artifacts-dir`.
+- Replay returns `run not found`: verify run ID exists with `runs list`.
+- Spec run fails with `no handler registered for topic`: your node `topic` is not registered in server handler registry.
+- PowerShell streaming behavior: use `curl.exe --no-buffer`.

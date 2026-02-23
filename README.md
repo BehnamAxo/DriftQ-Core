@@ -1,6 +1,6 @@
 # DriftQ-Core 🚀
 
-**DriftQ-Core** is a durable message broker (v1) that also contains the **DriftQ v2 foundations**: a replayable workflow runtime with a persistent run/event log, deterministic DAG scheduling, and debugging primitives.
+**DriftQ-Core** is a durable message broker (v1) that also contains the **DriftQ v2 foundations**: a replayable workflow runtime with a run/event log (persistent when `-engine-store file` is enabled), deterministic DAG scheduling, and debugging primitives.
 
 - **v1 (stable):** broker API under `/v1/*` (produce/consume/ack/nack, topics, leases).
 - **v2 foundations (evolving):** workflow runtime exposed via `/debug/*` and `driftqctl runs ...` (replay, timelines, diffs, rollback primitives).
@@ -281,7 +281,7 @@ go build -o driftqctl.exe ./cmd/driftqctl
 ./driftqctl --base-url http://127.0.0.1:8080 runs artifacts --run-id <RUN_ID>
 ```
 
-> Note: the `/debug/run-replay` endpoint currently expects `"mode": "time_travel"` or `"live"` in JSON.
+> Note: the `/debug/run-replay` endpoint expects `"mode": "time_travel"` or `"live"` in JSON. `driftqctl runs replay --mode time-travel` maps to `"time_travel"` for you.
 
 
 <a id="common-gotchas"></a>
@@ -392,8 +392,8 @@ These endpoints are under `/debug/*` and are meant for development, demos, and i
 | POST | `/debug/run-replay` | Time-travel or live replay |
 | POST | `/debug/run-cancel` | Cancel a run |
 | GET | `/debug/run-artifacts?run_id=ID` | List run artifacts |
-| GET | `/debug/artifact-meta?run_id=ID&node_id=N` | Artifact metadata |
-| GET | `/debug/artifact-get?run_id=ID&node_id=N` | Download artifact |
+| GET | `/debug/artifact-meta?artifact_id=A` | Artifact metadata |
+| GET | `/debug/artifact-get?artifact_id=A` | Download artifact |
 | POST | `/debug/run-demo` | Start demo workflow |
 | GET | `/debug/index/active` | Get active index pointer |
 | POST | `/debug/index/promote` | Promote index pointer |
