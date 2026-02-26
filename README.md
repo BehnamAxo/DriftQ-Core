@@ -604,13 +604,15 @@ DriftQ-Core/
 ├── internal/
 │   ├── broker/           # v1 broker core (dispatch, redelivery, idempotency, DLQ)
 │   ├── engine/           # v2 workflow runtime (runner, DAG, replay, artifacts, timers)
+│   ├── multiagent/       # v3.1 foundational multi-agent message contract + validation
 │   ├── storage/          # WAL implementation
 │   └── httpapi/          # HTTP types and helpers
 ├── scripts/
 │   ├── loadtest.sh       # Load testing script (uses hey)
 ├── docs/
 │   ├── v1/               # Broker documentation
-│   └── v2/               # Workflow runtime documentation
+│   ├── v2/               # Workflow runtime documentation
+│   └── v3/               # Multi-agent runtime docs (foundational)
 ├── docker-compose.yml    # Local development
 ├── Dockerfile            # Multi-stage distroless build
 └── Makefile
@@ -631,6 +633,7 @@ For copy/paste starter repos and runnable demos, see **DriftQ-Starters**:
 
 - **v1 broker docs:** `docs/v1/v1-README.md`
 - **v2 foundations docs:** `docs/v2/v2-README.md`
+- **v3.1 messaging foundation docs:** `docs/v3/v3.1-README.md`
 
 
 <a id="license"></a>
