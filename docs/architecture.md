@@ -28,7 +28,6 @@ DriftQ-Core is a single Go binary that provides two main subsystems:
 
 Both subsystems share core infrastructure (HTTP server, WAL storage, metrics) but operate independently. You can use v1 alone as a simple message queue, or combine both for durable workflow orchestration.
 
----
 
 ## High-Level Architecture
 
@@ -138,7 +137,6 @@ A background goroutine (`internal/broker/redelivery.go`) handles:
 3. Either redelivering to consumers or routing to DLQ
 4. Updating retry state in WAL
 
----
 
 ## v2 Workflow Engine Architecture
 
@@ -271,7 +269,6 @@ Replay implementation (`internal/engine/replay.go`):
 3. Invalidate downstream nodes from `from_step`
 4. Re-execute DAG with cache (time_travel) or without (live)
 
----
 
 ## Storage Layer
 
@@ -327,7 +324,6 @@ Artifacts are stored as:
 - `blobs/<sha256>` — raw content
 - `meta/<artifact_id>.json` — metadata (run_id, node_id, attempt, sha256, etc.)
 
----
 
 ## HTTP API Layer
 
@@ -407,7 +403,6 @@ Client Request
    b. Emit run_finished event
 ```
 
----
 
 ## Durability Model
 
