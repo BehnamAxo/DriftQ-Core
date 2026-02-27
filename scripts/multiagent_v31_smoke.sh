@@ -37,7 +37,7 @@ import json, pathlib, sys
 
 topic = sys.argv[1]
 msg_file = pathlib.Path(sys.argv[2])
-idem_key = sys.argv[3]
+idem_key = sys.argv[3] if len(sys.argv) > 3 else ""
 msg_obj = json.loads(msg_file.read_text(encoding='utf-8'))
 req = {
     "topic": topic,
@@ -100,16 +100,18 @@ produce_message() {
 
 consume_once() {
   local topic="$1" group="$2" owner="$3"
-  curl -sS --max-time "$CURL_TIMEOUT" \
+  local line
+  line="$(curl -sS --max-time "$CURL_TIMEOUT" \
     "${BASE_URL}/v1/consume?topic=${topic}&group=${group}&owner=${owner}&lease_ms=${LEASE_MS}" \
-    | head -n 1
+    2>/dev/null | head -n 1 || true)"
+  printf '%s' "$line"
 }
 
 print_routing_summary() {
   local line="$1"
-  python3 - "$line" <<'PY'
-import json, sys
-line = sys.argv[1].strip()
+  LINE_JSON="$line" python3 - <<'PY'
+import json, os
+line = (os.environ.get("LINE_JSON") or "").strip()
 if not line:
     print("<empty>")
     raise SystemExit(0)
@@ -126,13 +128,13 @@ PY
 ack_line() {
   local line="$1" topic="$2" group="$3" owner="$4"
   local req resp
-  req=$(python3 - "$line" "$topic" "$group" "$owner" <<'PY'
-import json, sys
-obj = json.loads(sys.argv[1])
+  req=$(LINE_JSON="$line" python3 - "$topic" "$group" "$owner" <<'PY'
+import json, os, sys
+obj = json.loads(os.environ.get("LINE_JSON") or "")
 print(json.dumps({
-    "topic": sys.argv[2],
-    "group": sys.argv[3],
-    "owner": sys.argv[4],
+    "topic": sys.argv[1],
+    "group": sys.argv[2],
+    "owner": sys.argv[3],
     "partition": obj["partition"],
     "offset": obj["offset"],
 }, separators=(",", ":")))

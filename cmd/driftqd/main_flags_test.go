@@ -247,6 +247,10 @@ func assertNoConsumeLineWithin(t *testing.T, baseURL, topic, group, owner string
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		// Expected when no message arrives before timeout.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
 		t.Fatalf("GET /v1/consume: %v", err)
 	}
 
@@ -761,6 +765,7 @@ func TestMainFlags_MultiagentRouter_StrictInvalidPayload_PassesThroughSourceTopi
 
 	p := startDriftqdProc(t, "-multiagent-config", cfgPath)
 	mustCreateTopic(t, p.baseURL, "agent-ingress", 1)
+	mustCreateTopic(t, p.baseURL, "agent.coder-a.inbox", 1)
 
 	// Not valid agent JSON. Router sees an error, but broker currently swallows router errors
 	// and preserves the producer topic. This test locks that behavior for now.
