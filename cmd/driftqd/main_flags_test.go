@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,11 +14,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+type driftqdProc struct {
+	cmd     *exec.Cmd
+	baseURL string
+	logs    *safeBuffer
+}
 
 func TestDriftqdMainHelperProcess(t *testing.T) {
 	if os.Getenv("DRIFTQD_MAIN_HELPER") != "1" {
@@ -43,11 +56,6 @@ func TestDriftqdMainHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-type safeBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
 func (s *safeBuffer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -58,12 +66,6 @@ func (s *safeBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
-}
-
-type driftqdProc struct {
-	cmd     *exec.Cmd
-	baseURL string
-	logs    *safeBuffer
 }
 
 func (p *driftqdProc) stop() {
@@ -179,6 +181,90 @@ func mustProduceStatus(t *testing.T, baseURL, topic, value string, want int) (in
 		t.Fatalf("produce status=%d want=%d body=%s", status, want, string(body))
 	}
 	return status, string(body)
+}
+
+func postJSON(t *testing.T, rawURL string, body string) (int, []byte, http.Header) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest POST %s: %v", rawURL, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b, resp.Header
+}
+
+func consumeOneNDJSONLine(t *testing.T, baseURL, topic, group, owner string, leaseMs int, timeout time.Duration) (string, int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	u := fmt.Sprintf("%s/v1/consume?topic=%s&group=%s&owner=%s&lease_ms=%d", baseURL, topic, group, owner, leaseMs)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+
+	if err != nil {
+		t.Fatalf("NewRequest consume: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/consume: %v", err)
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("consume status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	if !sc.Scan() {
+		if err := sc.Err(); err != nil {
+			t.Fatalf("scan consume: %v", err)
+		}
+		t.Fatalf("expected one consumed line from topic=%s group=%s", topic, group)
+	}
+
+	return sc.Text(), resp.StatusCode
+}
+
+func assertNoConsumeLineWithin(t *testing.T, baseURL, topic, group, owner string, leaseMs int, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+
+	defer cancel()
+	u := fmt.Sprintf("%s/v1/consume?topic=%s&group=%s&owner=%s&lease_ms=%d", baseURL, topic, group, owner, leaseMs)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+
+	if err != nil {
+		t.Fatalf("NewRequest consume: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/consume: %v", err)
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("consume status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	if sc.Scan() {
+		t.Fatalf("expected no message, got line=%s", sc.Text())
+	}
+
+	if err := sc.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		// Scanner typically returns nil when the request context cancels and the body closes.
+		t.Fatalf("unexpected scanner error: %v", err)
+	}
 }
 
 func TestMainFlags_ResetWAL_CreatesBackupAndNewWAL(t *testing.T) {
@@ -533,4 +619,173 @@ func TestMainFlags_MultiagentConfig_BootstrapAndRouter(t *testing.T) {
 	if got := item.Routing.Meta["route_kind"]; got != "capability" {
 		t.Fatalf("routing route_kind=%q want capability", got)
 	}
+}
+
+func TestMainFlags_MultiagentRouter_Direct_IdempotentAckFlow(t *testing.T) {
+	cfgJSON := `{
+  "agents": ["coder-a"],
+  "teams": ["core"],
+  "capabilities": {"coding": ["coder-a"]},
+  "router_strict": false,
+  "source_topics": ["agent-ingress"]
+}`
+
+	cfgPath := filepath.Join(t.TempDir(), "multiagent.json")
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	p := startDriftqdProc(t, "-multiagent-config", cfgPath, "-bootstrap-multiagent-topics")
+	mustCreateTopic(t, p.baseURL, "agent-ingress", 1)
+
+	agentMsg := `{"sender":"planner","receiver":"coder-a","intent":"implement","payload":{"task":"pr5"}}`
+	produceBody := `{"topic":"agent-ingress","value":` + strconv.Quote(agentMsg) + `,"envelope":{"tenant_id":"t1","idempotency_key":"idem-1"}}`
+	status, body, _ := postJSON(t, p.baseURL+"/v1/produce", produceBody)
+
+	if status != http.StatusOK {
+		t.Fatalf("first produce status=%d body=%s", status, string(body))
+	}
+
+	status, body, _ = postJSON(t, p.baseURL+"/v1/produce", produceBody)
+	if status != http.StatusOK {
+		t.Fatalf("second produce (idempotent duplicate) status=%d body=%s", status, string(body))
+	}
+
+	line, _ := consumeOneNDJSONLine(t, p.baseURL, "agent.coder-a.inbox", "g1", "o1", 5000, 3*time.Second)
+	var item struct {
+		Partition int    `json:"partition"`
+		Offset    int64  `json:"offset"`
+		Value     string `json:"value"`
+		Routing   struct {
+			Label string            `json:"label"`
+			Meta  map[string]string `json:"meta"`
+		} `json:"routing"`
+		Envelope struct {
+			TenantID       string `json:"tenant_id"`
+			IdempotencyKey string `json:"idempotency_key"`
+		} `json:"envelope"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &item); err != nil {
+		t.Fatalf("unmarshal consume item: %v line=%s", err, line)
+	}
+
+	if item.Value != agentMsg {
+		t.Fatalf("value mismatch got=%q want=%q", item.Value, agentMsg)
+	}
+
+	if got := item.Routing.Meta["route_kind"]; got != "direct" {
+		t.Fatalf("route_kind=%q want direct (routing=%+v)", got, item.Routing)
+	}
+
+	if got := item.Routing.Meta["receiver"]; got != "coder-a" {
+		t.Fatalf("receiver meta=%q want coder-a", got)
+	}
+
+	if item.Envelope.TenantID != "t1" || item.Envelope.IdempotencyKey != "idem-1" {
+		t.Fatalf("envelope mismatch: %+v", item.Envelope)
+	}
+
+	ackURL := fmt.Sprintf("%s/v1/ack?topic=agent.coder-a.inbox&group=g1&owner=o1&partition=%d&offset=%d", p.baseURL, item.Partition, item.Offset)
+	status, body, _ = postURL(t, ackURL)
+	if status != http.StatusNoContent {
+		t.Fatalf("ack status=%d body=%s", status, string(body))
+	}
+
+	assertNoConsumeLineWithin(t, p.baseURL, "agent.coder-a.inbox", "g1", "o1", 500, 300*time.Millisecond)
+}
+
+func TestMainFlags_MultiagentRouter_Broadcast_ReachesMultipleGroups(t *testing.T) {
+	cfgJSON := `{
+  "agents": ["planner"],
+  "teams": ["core"],
+  "router_strict": false,
+  "source_topics": ["agent-ingress"]
+}`
+
+	cfgPath := filepath.Join(t.TempDir(), "multiagent.json")
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	p := startDriftqdProc(t, "-multiagent-config", cfgPath, "-bootstrap-multiagent-topics")
+	mustCreateTopic(t, p.baseURL, "agent-ingress", 1)
+
+	bmsg := `{"sender":"planner","team":"core","intent":"announce","payload":{"msg":"hello team"}}`
+	body := `{"topic":"agent-ingress","value":` + strconv.Quote(bmsg) + `}`
+	status, respBody, _ := postJSON(t, p.baseURL+"/v1/produce", body)
+	if status != http.StatusOK {
+		t.Fatalf("produce status=%d body=%s", status, string(respBody))
+	}
+
+	lineA, _ := consumeOneNDJSONLine(t, p.baseURL, "team.core.broadcast", "agentA", "oa", 5000, 3*time.Second)
+	lineB, _ := consumeOneNDJSONLine(t, p.baseURL, "team.core.broadcast", "agentB", "ob", 5000, 3*time.Second)
+
+	for name, line := range map[string]string{"A": lineA, "B": lineB} {
+		var item struct {
+			Value   string `json:"value"`
+			Routing struct {
+				Meta map[string]string `json:"meta"`
+			} `json:"routing"`
+		}
+
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			t.Fatalf("unmarshal consume item %s: %v line=%s", name, err, line)
+		}
+
+		if item.Value != bmsg {
+			t.Fatalf("group %s value mismatch got=%q want=%q", name, item.Value, bmsg)
+		}
+
+		if got := item.Routing.Meta["route_kind"]; got != "broadcast" {
+			t.Fatalf("group %s route_kind=%q want broadcast", name, got)
+		}
+
+		if got := item.Routing.Meta["team"]; got != "core" {
+			t.Fatalf("group %s team meta=%q want core", name, got)
+		}
+	}
+}
+
+func TestMainFlags_MultiagentRouter_StrictInvalidPayload_PassesThroughSourceTopic(t *testing.T) {
+	cfgJSON := `{
+  "agents": ["coder-a"],
+  "router_strict": true,
+  "source_topics": ["agent-ingress"]
+}`
+
+	cfgPath := filepath.Join(t.TempDir(), "multiagent.json")
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	p := startDriftqdProc(t, "-multiagent-config", cfgPath)
+	mustCreateTopic(t, p.baseURL, "agent-ingress", 1)
+
+	// Not valid agent JSON. Router sees an error, but broker currently swallows router errors
+	// and preserves the producer topic. This test locks that behavior for now.
+	status, body := mustProduceStatus(t, p.baseURL, "agent-ingress", "not-json", http.StatusOK)
+	if status != http.StatusOK {
+		t.Fatalf("produce status=%d body=%s", status, body)
+	}
+
+	line, _ := consumeOneNDJSONLine(t, p.baseURL, "agent-ingress", "g1", "o1", 5000, 3*time.Second)
+	var item struct {
+		Value   string      `json:"value"`
+		Routing interface{} `json:"routing"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &item); err != nil {
+		t.Fatalf("unmarshal consume item: %v line=%s", err, line)
+	}
+
+	if item.Value != "not-json" {
+		t.Fatalf("value mismatch got=%q want=%q", item.Value, "not-json")
+	}
+
+	if item.Routing != nil {
+		t.Fatalf("expected no routing metadata on invalid payload passthrough, got=%v", item.Routing)
+	}
+
+	assertNoConsumeLineWithin(t, p.baseURL, "agent.coder-a.inbox", "g2", "o2", 500, 300*time.Millisecond)
 }
