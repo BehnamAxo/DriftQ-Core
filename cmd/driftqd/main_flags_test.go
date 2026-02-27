@@ -410,3 +410,127 @@ func TestMainFlags_Addr_UsesRequestedBindAddress(t *testing.T) {
 		t.Fatalf("baseURL mismatch: got %s want %s", p.baseURL, "http://"+addr)
 	}
 }
+
+func TestMainFlags_MultiagentConfig_BootstrapAndRouter(t *testing.T) {
+	cfgJSON := `{
+  "agents": ["planner"],
+  "teams": ["core"],
+  "capabilities": { "coding": ["coder-a"] },
+  "topic_partitions": 1,
+  "router_strict": false,
+  "source_topics": ["agent-ingress"]
+}`
+	cfgPath := filepath.Join(t.TempDir(), "multiagent.json")
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	p := startDriftqdProc(t,
+		"-multiagent-config", cfgPath,
+		"-bootstrap-multiagent-topics",
+	)
+
+	// Bootstrapped topics should exist (union of explicit agents + capability agents + teams)
+	resp, err := http.Get(p.baseURL + "/v1/topics")
+	if err != nil {
+		t.Fatalf("GET /v1/topics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("topics status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	var list struct {
+		Topics []string `json:"topics"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode topics: %v", err)
+	}
+
+	wantTopics := map[string]bool{
+		"agent.planner.inbox":  true,
+		"agent.planner.outbox": true,
+		"agent.coder-a.inbox":  true,
+		"agent.coder-a.outbox": true,
+		"team.core.broadcast":  true,
+	}
+	for _, tname := range list.Topics {
+		delete(wantTopics, tname)
+	}
+	if len(wantTopics) != 0 {
+		t.Fatalf("missing bootstrapped topics: %v (all=%v)", wantTopics, list.Topics)
+	}
+
+	// Router source topic itself is not auto-created; create it and verify capability routing.
+	mustCreateTopic(t, p.baseURL, "agent-ingress", 1)
+
+	agentMsg := `{"sender":"planner","capability":"coding","intent":"implement_pr","payload":{"pr":3}}`
+	reqBody := fmt.Sprintf(`{"topic":"agent-ingress","value":%q}`, agentMsg)
+
+	req, err := http.NewRequest(http.MethodPost, p.baseURL+"/v1/produce", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("NewRequest produce: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	prodResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/produce: %v", err)
+	}
+	defer prodResp.Body.Close()
+
+	if prodResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(prodResp.Body)
+		t.Fatalf("produce status=%d body=%s", prodResp.StatusCode, string(body))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	consumeURL := p.baseURL + "/v1/consume?topic=agent.coder-a.inbox&group=g1&owner=o1&lease_ms=5000"
+	creq, err := http.NewRequestWithContext(ctx, http.MethodGet, consumeURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest consume: %v", err)
+	}
+	cresp, err := http.DefaultClient.Do(creq)
+	if err != nil {
+		t.Fatalf("GET /v1/consume: %v", err)
+	}
+	defer cresp.Body.Close()
+
+	if cresp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(cresp.Body)
+		t.Fatalf("consume status=%d body=%s", cresp.StatusCode, string(body))
+	}
+
+	sc := bufio.NewScanner(cresp.Body)
+	if !sc.Scan() {
+		if err := sc.Err(); err != nil {
+			t.Fatalf("scan consume: %v", err)
+		}
+		t.Fatal("expected one consumed line")
+	}
+
+	var item struct {
+		Value   string `json:"value"`
+		Routing struct {
+			Label string            `json:"label"`
+			Meta  map[string]string `json:"meta"`
+		} `json:"routing"`
+	}
+	if err := json.Unmarshal(sc.Bytes(), &item); err != nil {
+		t.Fatalf("unmarshal consume item: %v line=%s", err, string(sc.Bytes()))
+	}
+
+	if item.Value != agentMsg {
+		t.Fatalf("consumed value mismatch got=%q want=%q", item.Value, agentMsg)
+	}
+	if got := item.Routing.Meta["selected_agent"]; got != "coder-a" {
+		t.Fatalf("routing selected_agent=%q want coder-a (routing=%+v)", got, item.Routing)
+	}
+	if got := item.Routing.Meta["route_kind"]; got != "capability" {
+		t.Fatalf("routing route_kind=%q want capability", got)
+	}
+}
