@@ -1,0 +1,11 @@
+{
+  "message_id": "msg_direct_001",
+  "sender": "planner",
+  "receiver": "reviewer",
+  "intent": "review_pr",
+  "payload": {
+    "repo": "DriftQ-Core",
+    "pr": 4,
+    "notes": "Please review the smoke script and examples."
+  }
+}

@@ -105,6 +105,20 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - **Minimal rollback primitive** via an "active index" pointer (promote/rollback)
 - **Handler panic recovery** (panicking handlers do not crash the server)
 
+### v3.1 foundation — Multi-Agent Messaging Layer
+- Agent topic conventions:
+  - `agent.{id}.inbox`
+  - `agent.{id}.outbox`
+  - `team.{id}.broadcast`
+- Basic capability/role routing via in-memory registry (round-robin selection)
+- Structured agent message contract (`sender`, `receiver|team|capability|role`, `intent`, `payload`)
+- Startup config and topic bootstrap in `driftqd` via:
+  - `-multiagent-config`
+  - `-bootstrap-multiagent-topics`
+- Runnable examples and smoke script:
+  - `examples/multiagent/v3.1/*`
+  - `scripts/multiagent_v31_smoke.sh`
+
 
 <a id="quickstart-docker"></a>
 
@@ -562,6 +576,36 @@ The load test covers:
 - Sustained load (50 req/s for 30s)
 - Health check throughput
 - Concurrent workflow demo execution + completion polling
+
+### v3.1 multi-agent smoke test
+
+Use this to validate direct, capability, and broadcast routing end-to-end with `/v1/*` APIs.
+
+Start server with the example config:
+
+```bash
+go run ./cmd/driftqd -addr 127.0.0.1:8080 -reset-wal \
+  -multiagent-config ./examples/multiagent/v3.1/multiagent.json \
+  -bootstrap-multiagent-topics
+```
+
+Linux/macOS:
+
+```bash
+BASE_URL=http://127.0.0.1:8080 ./scripts/multiagent_v31_smoke.sh
+```
+
+Windows (PowerShell + Git Bash):
+
+```powershell
+$gitBash = Join-Path $env:ProgramFiles "Git\\bin\\bash.exe"
+if (-not (Test-Path $gitBash) -and ${env:ProgramFiles(x86)}) {
+  $gitBash = Join-Path ${env:ProgramFiles(x86)} "Git\\bin\\bash.exe"
+}
+
+# If python3 is not on PATH but Python launcher (py) is available:
+& $gitBash -lc "python3(){ py -3 \"\$@\"; }; export -f python3; cd /c/Workspace/DriftQ-Core && BASE_URL=http://127.0.0.1:8080 ./scripts/multiagent_v31_smoke.sh"
+```
 
 ### Build binaries
 

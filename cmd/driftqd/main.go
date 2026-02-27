@@ -23,6 +23,7 @@ import (
 	"github.com/driftq-org/DriftQ-Core/internal/broker"
 	"github.com/driftq-org/DriftQ-Core/internal/engine"
 	v1 "github.com/driftq-org/DriftQ-Core/internal/httpapi/v1"
+	"github.com/driftq-org/DriftQ-Core/internal/multiagent"
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -242,6 +243,9 @@ func main() {
 	maxPartitionMsgs := flag.Int("max-partition-msgs", 0, "Max messages buffered per partition (0 = broker default)")
 	maxInFlight := flag.Int("max-inflight", 0, "Max in-flight per (topic,group,partition) (0 = broker default)")
 
+	multiagentConfigPath := flag.String("multiagent-config", "", "path to v3.1 multi-agent config JSON (optional)")
+	bootstrapMultiagentTopics := flag.Bool("bootstrap-multiagent-topics", false, "create configured v3.1 agent/team topics on startup (safe to rerun)")
+
 	flag.Parse()
 
 	logger := configureLogger(*logLevel, *logFormat)
@@ -316,7 +320,45 @@ func main() {
 	defer appCancel()
 
 	b.StartRedeliveryLoop(appCtx)
-	b.SetRouter(TestRouter{})
+
+	if cfgPath := strings.TrimSpace(*multiagentConfigPath); cfgPath != "" {
+		maCfg, err := multiagent.LoadStartupConfig(cfgPath)
+		if err != nil {
+			fatal("failed to load multiagent config", err)
+		}
+
+		if *bootstrapMultiagentTopics {
+			summary, err := multiagent.BootstrapTopics(appCtx, b, maCfg)
+			if err != nil {
+				fatal("failed to bootstrap multiagent topics", err)
+			}
+
+			slog.Info("multiagent topics bootstrapped",
+				"created", len(summary.Created),
+				"skipped", len(summary.Skipped),
+				"partitions", maCfg.TopicPartitions,
+			)
+		}
+
+		reg, err := maCfg.BuildRegistry()
+		if err != nil {
+			fatal("failed to build multiagent capability registry", err)
+		}
+
+		mrouter := multiagent.NewRouter(maCfg.RouterConfig(reg))
+		b.SetRouter(mrouter)
+
+		slog.Info("multiagent router enabled",
+			"config", cfgPath,
+			"agents", len(maCfg.AllAgentIDs()),
+			"teams", len(maCfg.Teams),
+			"capabilities", len(maCfg.Capabilities),
+			"strict", maCfg.RouterStrict,
+			"source_topics", len(maCfg.SourceTopics),
+		)
+	} else {
+		b.SetRouter(TestRouter{})
+	}
 
 	s := &server{broker: b}
 

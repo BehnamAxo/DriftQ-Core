@@ -1,0 +1,10 @@
+{
+  "message_id": "msg_bcast_001",
+  "sender": "coordinator",
+  "team": "core",
+  "intent": "announce",
+  "payload": {
+    "text": "Smoke test started",
+    "source": "examples/multiagent/v3.1"
+  }
+}
