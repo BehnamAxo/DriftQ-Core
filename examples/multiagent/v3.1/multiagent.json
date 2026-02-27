@@ -1,0 +1,11 @@
+{
+  "agents": ["planner", "coder-a", "coder-b", "reviewer"],
+  "teams": ["core"],
+  "capabilities": {
+    "coding": ["coder-a", "coder-b"],
+    "review": ["reviewer"]
+  },
+  "topic_partitions": 1,
+  "router_strict": false,
+  "source_topics": ["agent-ingress"]
+}

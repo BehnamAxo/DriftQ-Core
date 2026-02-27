@@ -1,0 +1,11 @@
+{
+  "message_id": "msg_cap_001",
+  "sender": "planner",
+  "capability": "coding",
+  "intent": "implement_followup",
+  "payload": {
+    "repo": "DriftQ-Core",
+    "task": "Prepare PR 5 tests",
+    "priority": "normal"
+  }
+}
