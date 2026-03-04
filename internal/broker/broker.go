@@ -143,6 +143,28 @@ func (b *InMemoryBroker) SetMetricsSink(m MetricsSink) {
 	b.metrics = m
 }
 
+func (b *InMemoryBroker) observeWALAppend(kind string, d time.Duration) {
+	if obs, ok := b.metrics.(TimingMetricsSink); ok {
+		obs.ObserveWALAppend(kind, d)
+	}
+}
+
+func (b *InMemoryBroker) observeDispatch(d time.Duration, staged int) {
+	if obs, ok := b.metrics.(TimingMetricsSink); ok {
+		obs.ObserveDispatch(d, staged)
+	}
+}
+
+func (b *InMemoryBroker) appendWALEntry(kind string, entry storage.Entry) error {
+	if b.wal == nil {
+		return nil
+	}
+	start := time.Now()
+	err := b.wal.Append(entry)
+	b.observeWALAppend(kind, time.Since(start))
+	return err
+}
+
 func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
 	if b.lag == nil {
 		return nil, nil
@@ -213,7 +235,7 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 	// Persist topic metadata so topics with zero messages still exist after restart (this was a bug)
 	// Convention: for RecordTypeTopic, Entry.Partition stores the partition count
 	if b.wal != nil {
-		if err := b.wal.Append(storage.Entry{
+		if err := b.appendWALEntry("topic", storage.Entry{
 			Type:      storage.RecordTypeTopic,
 			Topic:     name,
 			Partition: partitions,
@@ -489,7 +511,7 @@ func (b *InMemoryBroker) Ack(_ context.Context, topic, group string, partition i
 			Offset:    offset,
 		}
 
-		if err := b.wal.Append(entry); err != nil {
+		if err := b.appendWALEntry("offset", entry); err != nil {
 			return err
 		}
 	}
@@ -685,7 +707,7 @@ func (b *InMemoryBroker) advanceOffsetLocked(topic, group string, partition int,
 			Partition: partition,
 			Offset:    offset,
 		}
-		if err := b.wal.Append(entry); err != nil {
+		if err := b.appendWALEntry("offset", entry); err != nil {
 			return err
 		}
 	}
@@ -760,7 +782,7 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 
 	if b.wal != nil {
 		at := now
-		if err := b.wal.Append(storage.Entry{
+		if err := b.appendWALEntry("retry_state", storage.Entry{
 			Type:        storage.RecordTypeRetryState,
 			Topic:       topic,
 			Group:       group,
@@ -797,7 +819,7 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 			rs[offset] = &retryStateEntry{LastError: merged2, LastErrorAt: now}
 			if b.wal != nil {
 				at := now
-				_ = b.wal.Append(storage.Entry{
+				_ = b.appendWALEntry("retry_state", storage.Entry{
 					Type:        storage.RecordTypeRetryState,
 					Topic:       topic,
 					Group:       group,
@@ -978,7 +1000,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 			}
 		}
 
-		if err := b.wal.Append(entry); err != nil {
+		if err := b.appendWALEntry("message", entry); err != nil {
 			return err
 		}
 	}
