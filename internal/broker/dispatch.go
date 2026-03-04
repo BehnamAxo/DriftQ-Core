@@ -8,6 +8,12 @@ import (
 )
 
 func (b *InMemoryBroker) dispatchLocked(topic string) {
+	start := time.Now()
+	staged := 0
+	defer func() {
+		b.observeDispatch(time.Since(start), staged)
+	}()
+
 	ts, ok := b.topics[topic]
 	if !ok {
 		return
@@ -76,7 +82,7 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 
 						if m.Offset > cur {
 							if b.wal != nil {
-								if err := b.wal.Append(storage.Entry{
+								if err := b.appendWALEntry("offset", storage.Entry{
 									Type:      storage.RecordTypeOffset,
 									Topic:     topic,
 									Group:     group,
@@ -180,7 +186,7 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 						}
 						if b.wal != nil {
 							at := time.Now()
-							_ = b.wal.Append(storage.Entry{
+							_ = b.appendWALEntry("retry_state", storage.Entry{
 								Type:        storage.RecordTypeRetryState,
 								Topic:       topic,
 								Group:       group,
@@ -222,7 +228,7 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 						}
 						if m.Offset > cur {
 							if b.wal != nil {
-								if err := b.wal.Append(storage.Entry{
+								if err := b.appendWALEntry("offset", storage.Entry{
 									Type:      storage.RecordTypeOffset,
 									Topic:     topic,
 									Group:     group,
@@ -258,6 +264,7 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 					// Enqueue to the per-consumer FIFO to preserve ordering
 					select {
 					case cs.Q <- send:
+						staged++
 						// commit offset immediately
 						if _, ok := b.consumerOffsets[topic]; !ok {
 							b.consumerOffsets[topic] = make(map[string]map[int]int64)
@@ -273,7 +280,7 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 
 						if m.Offset > cur {
 							if b.wal != nil {
-								if err := b.wal.Append(storage.Entry{
+								if err := b.appendWALEntry("offset", storage.Entry{
 									Type:      storage.RecordTypeOffset,
 									Topic:     topic,
 									Group:     group,
@@ -319,6 +326,7 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 				// Enqueue to the per-consumer FIFO to preserve ordering
 				select {
 				case cs.Q <- send:
+					staged++
 					// staged
 				default:
 					// undo and try again later
