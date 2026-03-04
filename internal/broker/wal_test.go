@@ -46,6 +46,7 @@ func TestWAL_RecoveryRestoresTopics(t *testing.T) {
 			}
 		}
 
+		_ = b.Close()
 		wal.Close()
 	}
 
@@ -61,6 +62,7 @@ func TestWAL_RecoveryRestoresTopics(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 		}
+		defer b.Close()
 
 		// Verify topics exist
 		topics, err := b.ListTopics(ctx)
@@ -158,6 +160,7 @@ func TestWAL_RecoveryRestoresOffsets(t *testing.T) {
 			}
 		}
 
+		_ = b.Close()
 		wal.Close()
 	}
 
@@ -173,6 +176,7 @@ func TestWAL_RecoveryRestoresOffsets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 		}
+		defer b.Close()
 
 		ch, err := b.Consume(ctx, "offset-test", "group1", "owner1")
 		if err != nil {
@@ -239,6 +243,7 @@ func TestWAL_RecoveryRestoresIdempotency(t *testing.T) {
 			t.Fatalf("Produce: %v", err)
 		}
 
+		_ = b.Close()
 		wal.Close()
 	}
 
@@ -254,6 +259,7 @@ func TestWAL_RecoveryRestoresIdempotency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 		}
+		defer b.Close()
 
 		// Try to produce same idempotency key
 		msg := Message{
@@ -333,6 +339,7 @@ func TestWAL_RecoveryRestoresRetryState(t *testing.T) {
 			t.Fatal("timeout")
 		}
 
+		_ = b.Close()
 		wal.Close()
 	}
 
@@ -348,6 +355,7 @@ func TestWAL_RecoveryRestoresRetryState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 		}
+		defer b.Close()
 
 		ch, err := b.Consume(ctx, "retry-recovery", "group1", "owner1")
 		if err != nil {
@@ -385,6 +393,7 @@ func TestWAL_EmptyWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 	}
+	defer b.Close()
 
 	// Should work fine with empty WAL
 	topics, err := b.ListTopics(context.Background())

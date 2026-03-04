@@ -73,6 +73,7 @@ func startTestServer(t *testing.T) *testServer {
 	t.Cleanup(func() {
 		cancel()
 		srv.Close()
+		_ = b.Close()
 		_ = wal.Close()
 	})
 

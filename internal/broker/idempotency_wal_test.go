@@ -50,6 +50,7 @@ func TestConsumeIdempotencySurvivesRestart(t *testing.T) {
 		t.Fatalf("ConsumeCommitIfOwner: %v", err)
 	}
 
+	_ = b1.Close()
 	_ = w1.Close()
 
 	// Restart: replay WAL into a new broker
@@ -63,6 +64,7 @@ func TestConsumeIdempotencySurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 	}
+	defer b2.Close()
 
 	if b2.idem == nil {
 		t.Fatalf("idem store is nil after replay")
@@ -120,6 +122,7 @@ func TestConsumePendingLeaseExpiresOnRestart(t *testing.T) {
 		t.Fatalf("expected alreadyDone=false on first begin, got true")
 	}
 
+	_ = b1.Close()
 	_ = w1.Close()
 
 	// --- Restart: replay WAL into new broker ---
@@ -133,6 +136,7 @@ func TestConsumePendingLeaseExpiresOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 	}
+	defer b2.Close()
 
 	if b2.idem == nil {
 		t.Fatalf("idem store is nil after replay")

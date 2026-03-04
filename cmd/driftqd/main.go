@@ -549,6 +549,9 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("http shutdown error", "err", err)
 	}
+	if err := b.Close(); err != nil {
+		slog.Error("broker close error", "err", err)
+	}
 
 	slog.Info("broker stopped")
 }

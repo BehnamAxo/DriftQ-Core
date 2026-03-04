@@ -34,6 +34,7 @@ func TestDebug_TopicsList_EmptyIsArray_ThenShowsTopic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new broker: %v", err)
 	}
+	t.Cleanup(func() { _ = b.Close() })
 
 	mux := http.NewServeMux()
 	engine.AttachTopicDebugRoutes(mux, topicDebugAdapter{b: b})

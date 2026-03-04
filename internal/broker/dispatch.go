@@ -81,18 +81,8 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 						}
 
 						if m.Offset > cur {
-							if b.wal != nil {
-								if err := b.appendWALEntry("offset", storage.Entry{
-									Type:      storage.RecordTypeOffset,
-									Topic:     topic,
-									Group:     group,
-									Partition: p,
-									Offset:    m.Offset,
-								}); err != nil {
-									return
-								}
-							}
 							b.consumerOffsets[topic][group][p] = m.Offset
+							b.queueOffsetPersistLocked(topic, group, p, m.Offset)
 						}
 
 						b.purgeRetryStateLocked(topic, group, p, m.Offset)
@@ -227,18 +217,8 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 							cur = -1
 						}
 						if m.Offset > cur {
-							if b.wal != nil {
-								if err := b.appendWALEntry("offset", storage.Entry{
-									Type:      storage.RecordTypeOffset,
-									Topic:     topic,
-									Group:     group,
-									Partition: p,
-									Offset:    m.Offset,
-								}); err != nil {
-									return
-								}
-							}
 							b.consumerOffsets[topic][group][p] = m.Offset
+							b.queueOffsetPersistLocked(topic, group, p, m.Offset)
 						}
 
 						b.purgeRetryStateLocked(topic, group, p, m.Offset)
@@ -279,18 +259,8 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 						}
 
 						if m.Offset > cur {
-							if b.wal != nil {
-								if err := b.appendWALEntry("offset", storage.Entry{
-									Type:      storage.RecordTypeOffset,
-									Topic:     topic,
-									Group:     group,
-									Partition: p,
-									Offset:    m.Offset,
-								}); err != nil {
-									return
-								}
-							}
 							b.consumerOffsets[topic][group][p] = m.Offset
+							b.queueOffsetPersistLocked(topic, group, p, m.Offset)
 						}
 
 						b.purgeRetryStateLocked(topic, group, p, m.Offset)

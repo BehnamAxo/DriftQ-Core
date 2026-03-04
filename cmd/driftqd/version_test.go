@@ -63,6 +63,7 @@ func TestVersion_WALEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 	}
+	defer b.Close()
 
 	s := &server{broker: b}
 

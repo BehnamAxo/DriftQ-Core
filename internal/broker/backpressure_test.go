@@ -14,8 +14,13 @@ func TestProduce_Backpressure_WhenPartitionBufferFull(t *testing.T) {
 		t.Fatalf("CreateTopic: %v", err)
 	}
 
-	// Fill to default maxPartitionMsgs (=100)
-	for i := 0; i < 100; i++ {
+	limit := b.MaxPartitionMsgs()
+	if limit <= 0 {
+		t.Fatalf("expected positive default maxPartitionMsgs, got %d", limit)
+	}
+
+	// Fill to the broker's default maxPartitionMsgs.
+	for i := 0; i < limit; i++ {
 		if err := b.Produce(ctx, "t1", Message{Value: []byte("x")}); err != nil {
 			t.Fatalf("produce %d unexpected err: %v", i, err)
 		}
