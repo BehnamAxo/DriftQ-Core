@@ -29,6 +29,7 @@ func newV1TestServer(t *testing.T) (*httptest.Server, *broker.InMemoryBroker) {
 	v1Mux.HandleFunc("/produce", s.requireMethod(http.MethodPost)(s.handleProduce))
 	v1Mux.HandleFunc("/consume", s.requireMethod(http.MethodGet)(s.handleConsume))
 	v1Mux.HandleFunc("/ack", s.requireMethod(http.MethodPost)(s.handleAck))
+	v1Mux.HandleFunc("/ack-cumulative", s.requireMethod(http.MethodPost)(s.handleAckCumulative))
 	v1Mux.HandleFunc("/nack", s.requireMethod(http.MethodPost)(s.handleNack))
 	v1Mux.HandleFunc("/topics", s.method(s.handleTopicsList, s.handleTopicsCreate))
 	v1Mux.HandleFunc("/version", s.requireMethod(http.MethodGet)(s.handleVersion))
@@ -481,5 +482,59 @@ func TestV1_Consume_GroupOffsetsAreIndependent(t *testing.T) {
 
 	if it3.Partition != 0 || it3.Offset != 0 || it3.Value != "a" {
 		t.Fatalf("g2 first item unexpected (expected offset=0 value=a): %+v", it3)
+	}
+}
+
+func TestV1_AckCumulative(t *testing.T) {
+	ts, b := newV1TestServer(t)
+	ctx := context.Background()
+
+	if err := b.CreateTopic(ctx, "t1", 1); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+
+	ch, err := b.ConsumeWithLease(ctx, "t1", "g1", "o1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("ConsumeWithLease: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := b.Produce(ctx, "t1", broker.Message{Value: []byte{byte('a' + i)}}); err != nil {
+			t.Fatalf("Produce %d: %v", i, err)
+		}
+	}
+
+	var last broker.Message
+	for i := 0; i < 3; i++ {
+		select {
+		case last = <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for message")
+		}
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/ack-cumulative?topic=t1&group=g1&owner=o1&partition=0&offset=2", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/ack-cumulative: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d want=%d body=%s", resp.StatusCode, http.StatusNoContent, string(body))
+	}
+
+	if err := b.Produce(ctx, "t1", broker.Message{Value: []byte("d")}); err != nil {
+		t.Fatalf("Produce after cumulative ack: %v", err)
+	}
+
+	select {
+	case next := <-ch:
+		if next.Offset != last.Offset+1 || string(next.Value) != "d" {
+			t.Fatalf("next item after cumulative ack unexpected: %+v", next)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for next message after cumulative ack")
 	}
 }

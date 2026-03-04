@@ -473,6 +473,46 @@ func TestAckIfOwner_WrongOwner(t *testing.T) {
 	}
 }
 
+func TestAckCumulativeIfOwner_AcksContiguousRange(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	b := NewInMemoryBroker()
+	b.StartRedeliveryLoop(ctx)
+
+	if err := b.CreateTopic(ctx, "ack-cumulative", 1); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+
+	ch, err := b.ConsumeWithLease(ctx, "ack-cumulative", "group1", "owner1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("ConsumeWithLease: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := b.Produce(ctx, "ack-cumulative", Message{Value: []byte{byte('a' + i)}}); err != nil {
+			t.Fatalf("Produce %d: %v", i, err)
+		}
+	}
+
+	var last Message
+	for i := 0; i < 3; i++ {
+		select {
+		case last = <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for message")
+		}
+	}
+
+	if err := b.AckCumulativeIfOwner(ctx, "ack-cumulative", "group1", last.Partition, last.Offset, "owner1"); err != nil {
+		t.Fatalf("AckCumulativeIfOwner: %v", err)
+	}
+
+	if got := b.consumerOffsets["ack-cumulative"]["group1"][0]; got != last.Offset {
+		t.Fatalf("committed offset=%d want=%d", got, last.Offset)
+	}
+}
+
 func TestNack_SchedulesRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
