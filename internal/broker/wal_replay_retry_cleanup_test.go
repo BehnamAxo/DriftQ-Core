@@ -21,6 +21,7 @@ func TestWALReplayDoesNotResurrectCommittedRetryState(t *testing.T) {
 	defer func() { _ = wal.Close() }()
 
 	b := NewInMemoryBrokerWithWAL(wal)
+	defer b.Close()
 	b.redeliverTick = 5 * time.Millisecond
 
 	ctx := context.Background()
@@ -57,6 +58,9 @@ func TestWALReplayDoesNotResurrectCommittedRetryState(t *testing.T) {
 	}
 
 	// Close WAL so all bytes are durable before replay
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close broker: %v", err)
+	}
 	if err := wal.Close(); err != nil {
 		t.Fatalf("Close WAL: %v", err)
 	}
@@ -72,6 +76,7 @@ func TestWALReplayDoesNotResurrectCommittedRetryState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInMemoryBrokerFromWAL: %v", err)
 	}
+	defer b2.Close()
 
 	// Offset should be committed
 	if b2.consumerOffsets["t1"] == nil || b2.consumerOffsets["t1"]["g1"] == nil {

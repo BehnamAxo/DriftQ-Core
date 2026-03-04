@@ -90,6 +90,12 @@ type consumerStream struct {
 	Q     chan Message // internal per-consumer FIFO to preserve ordering
 }
 
+type offsetFlushKey struct {
+	Topic     string
+	Group     string
+	Partition int
+}
+
 // TODO: Move to types
 // InMemoryBroker is our first implementation. For sure later we'll replace pieces with WAL, scheduler, partitions, etc
 type InMemoryBroker struct {
@@ -129,6 +135,12 @@ type InMemoryBroker struct {
 	metrics MetricsSink
 
 	lag *LagTracker
+
+	pendingOffsets      map[offsetFlushKey]int64
+	offsetFlushInterval time.Duration
+	offsetFlushStop     chan struct{}
+	offsetFlushDone     chan struct{}
+	closeOnce           sync.Once
 }
 
 func (b *InMemoryBroker) SetRouter(r Router) {
@@ -141,6 +153,155 @@ func (b *InMemoryBroker) SetMetricsSink(m MetricsSink) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.metrics = m
+}
+
+func (b *InMemoryBroker) observeWALAppend(kind string, d time.Duration) {
+	if obs, ok := b.metrics.(TimingMetricsSink); ok {
+		obs.ObserveWALAppend(kind, d)
+	}
+}
+
+func (b *InMemoryBroker) observeDispatch(d time.Duration, staged int) {
+	if obs, ok := b.metrics.(TimingMetricsSink); ok {
+		obs.ObserveDispatch(d, staged)
+	}
+}
+
+func (b *InMemoryBroker) appendWALEntry(kind string, entry storage.Entry) error {
+	if b.wal == nil {
+		return nil
+	}
+	start := time.Now()
+	err := b.wal.Append(entry)
+	b.observeWALAppend(kind, time.Since(start))
+	return err
+}
+
+func (b *InMemoryBroker) ensureOffsetFlushLoopLocked() {
+	if b.wal == nil || b.offsetFlushInterval <= 0 || b.offsetFlushStop != nil {
+		return
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	b.offsetFlushStop = stop
+	b.offsetFlushDone = done
+
+	go func(stop <-chan struct{}, done chan struct{}) {
+		ticker := time.NewTicker(b.offsetFlushInterval)
+		defer ticker.Stop()
+		defer close(done)
+
+		for {
+			select {
+			case <-ticker.C:
+				_ = b.flushPendingOffsets()
+			case <-stop:
+				_ = b.flushPendingOffsets()
+				return
+			}
+		}
+	}(stop, done)
+}
+
+func (b *InMemoryBroker) queueOffsetPersistLocked(topic, group string, partition int, offset int64) {
+	if b.wal == nil {
+		return
+	}
+
+	b.ensureOffsetFlushLoopLocked()
+
+	key := offsetFlushKey{
+		Topic:     topic,
+		Group:     group,
+		Partition: partition,
+	}
+	if cur, ok := b.pendingOffsets[key]; !ok || offset > cur {
+		b.pendingOffsets[key] = offset
+	}
+}
+
+func (b *InMemoryBroker) flushPendingOffsets() error {
+	if b.wal == nil {
+		return nil
+	}
+
+	b.mu.Lock()
+	if len(b.pendingOffsets) == 0 {
+		b.mu.Unlock()
+		return nil
+	}
+
+	pending := b.pendingOffsets
+	b.pendingOffsets = make(map[offsetFlushKey]int64)
+	b.mu.Unlock()
+
+	keys := make([]offsetFlushKey, 0, len(pending))
+	for key := range pending {
+		keys = append(keys, key)
+	}
+
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Topic != keys[j].Topic {
+			return keys[i].Topic < keys[j].Topic
+		}
+
+		if keys[i].Group != keys[j].Group {
+			return keys[i].Group < keys[j].Group
+		}
+
+		return keys[i].Partition < keys[j].Partition
+	})
+
+	failed := make(map[offsetFlushKey]int64)
+	for i, key := range keys {
+		entry := storage.Entry{
+			Type:      storage.RecordTypeOffset,
+			Topic:     key.Topic,
+			Group:     key.Group,
+			Partition: key.Partition,
+			Offset:    pending[key],
+		}
+
+		if err := b.appendWALEntry("offset", entry); err != nil {
+			failed[key] = pending[key]
+			for _, rest := range keys[i+1:] {
+				failed[rest] = pending[rest]
+			}
+
+			b.mu.Lock()
+			for failedKey, failedOffset := range failed {
+				if cur, ok := b.pendingOffsets[failedKey]; !ok || failedOffset > cur {
+					b.pendingOffsets[failedKey] = failedOffset
+				}
+			}
+
+			b.mu.Unlock()
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (b *InMemoryBroker) Close() error {
+	var err error
+
+	b.closeOnce.Do(func() {
+		b.mu.Lock()
+		stop := b.offsetFlushStop
+		done := b.offsetFlushDone
+		b.mu.Unlock()
+
+		if stop != nil {
+			close(stop)
+			<-done
+		}
+
+		err = b.flushPendingOffsets()
+	})
+
+	return err
 }
 
 func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
@@ -163,21 +324,23 @@ func NewInMemoryBrokerWithWAL(wal storage.WAL, opts ...BrokerOption) *InMemoryBr
 // This now lets me plug in both durability and a brain, so passing nil for either is fine (pure in-memory/no routing)
 func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...BrokerOption) *InMemoryBroker {
 	b := &InMemoryBroker{
-		topics:            make(map[string]*TopicState),
-		consumerOffsets:   make(map[string]map[string]map[int]int64),
-		consumerChans:     make(map[string]map[string][]consumerStream),
-		rrCursor:          make(map[string]map[string]int),
-		maxInFlight:       2, // 2 default, tune via flags
-		inFlight:          make(map[string]map[string]map[int]map[int64]*inflightEntry),
-		nextIndex:         make(map[string]map[string]map[int]int),
-		wal:               wal,
-		router:            r,
-		ackTimeout:        2 * time.Second,
-		redeliverTick:     250 * time.Millisecond,
-		maxPartitionMsgs:  100,             // 100 default, tune via flags
-		maxPartitionBytes: 4 * 1024 * 1024, // 4MB default, tune via flags
-		retryState:        make(map[string]map[string]map[int]map[int64]*retryStateEntry),
-		lag:               NewLagTracker(),
+		topics:              make(map[string]*TopicState),
+		consumerOffsets:     make(map[string]map[string]map[int]int64),
+		consumerChans:       make(map[string]map[string][]consumerStream),
+		rrCursor:            make(map[string]map[string]int),
+		maxInFlight:         32, // default, tune via flags
+		inFlight:            make(map[string]map[string]map[int]map[int64]*inflightEntry),
+		nextIndex:           make(map[string]map[string]map[int]int),
+		wal:                 wal,
+		router:              r,
+		ackTimeout:          2 * time.Second,
+		redeliverTick:       250 * time.Millisecond,
+		maxPartitionMsgs:    1024,            // default, tune via flags
+		maxPartitionBytes:   4 * 1024 * 1024, // 4MB default, tune via flags
+		retryState:          make(map[string]map[string]map[int]map[int64]*retryStateEntry),
+		lag:                 NewLagTracker(),
+		pendingOffsets:      make(map[offsetFlushKey]int64),
+		offsetFlushInterval: 25 * time.Millisecond,
 	}
 
 	// default idempotency store (depends on WAL)
@@ -213,7 +376,7 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 	// Persist topic metadata so topics with zero messages still exist after restart (this was a bug)
 	// Convention: for RecordTypeTopic, Entry.Partition stores the partition count
 	if b.wal != nil {
-		if err := b.wal.Append(storage.Entry{
+		if err := b.appendWALEntry("topic", storage.Entry{
 			Type:      storage.RecordTypeTopic,
 			Topic:     name,
 			Partition: partitions,
@@ -479,21 +642,6 @@ func (b *InMemoryBroker) Ack(_ context.Context, topic, group string, partition i
 		return nil
 	}
 
-	// WAL append only when we advance progress
-	if b.wal != nil {
-		entry := storage.Entry{
-			Type:      storage.RecordTypeOffset,
-			Topic:     topic,
-			Group:     group,
-			Partition: partition,
-			Offset:    offset,
-		}
-
-		if err := b.wal.Append(entry); err != nil {
-			return err
-		}
-	}
-
 	inFlight := b.ensureInFlight(topic, group, partition)
 	if e, ok := inFlight[offset]; ok && e != nil {
 		e.LastError = ""
@@ -503,6 +651,7 @@ func (b *InMemoryBroker) Ack(_ context.Context, topic, group string, partition i
 	}
 	delete(inFlight, offset)
 	parts[partition] = offset
+	b.queueOffsetPersistLocked(topic, group, partition, offset)
 	b.dispatchLocked(topic)
 
 	return nil
@@ -676,21 +825,8 @@ func (b *InMemoryBroker) advanceOffsetLocked(topic, group string, partition int,
 		return nil
 	}
 
-	// Persist progress only when advancing
-	if b.wal != nil {
-		entry := storage.Entry{
-			Type:      storage.RecordTypeOffset,
-			Topic:     topic,
-			Group:     group,
-			Partition: partition,
-			Offset:    offset,
-		}
-		if err := b.wal.Append(entry); err != nil {
-			return err
-		}
-	}
-
 	parts[partition] = offset
+	b.queueOffsetPersistLocked(topic, group, partition, offset)
 
 	// Keep messages flowing
 	b.dispatchLocked(topic)
@@ -760,7 +896,7 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 
 	if b.wal != nil {
 		at := now
-		if err := b.wal.Append(storage.Entry{
+		if err := b.appendWALEntry("retry_state", storage.Entry{
 			Type:        storage.RecordTypeRetryState,
 			Topic:       topic,
 			Group:       group,
@@ -797,7 +933,7 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 			rs[offset] = &retryStateEntry{LastError: merged2, LastErrorAt: now}
 			if b.wal != nil {
 				at := now
-				_ = b.wal.Append(storage.Entry{
+				_ = b.appendWALEntry("retry_state", storage.Entry{
 					Type:        storage.RecordTypeRetryState,
 					Topic:       topic,
 					Group:       group,
@@ -978,7 +1114,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 			}
 		}
 
-		if err := b.wal.Append(entry); err != nil {
+		if err := b.appendWALEntry("message", entry); err != nil {
 			return err
 		}
 	}

@@ -233,8 +233,13 @@ func TestV1_Produce_BackpressureMapsTo429(t *testing.T) {
 		t.Fatalf("CreateTopic: %v", err)
 	}
 
-	// Fill partition to the default maxPartitionMsgs=100
-	for i := 0; i < 100; i++ {
+	limit := b.MaxPartitionMsgs()
+	if limit <= 0 {
+		t.Fatalf("expected positive default maxPartitionMsgs, got %d", limit)
+	}
+
+	// Fill partition to the broker's default maxPartitionMsgs.
+	for i := 0; i < limit; i++ {
 		if err := b.Produce(ctx, "t1", broker.Message{Value: []byte("x")}); err != nil {
 			t.Fatalf("pre-fill produce %d: %v", i, err)
 		}

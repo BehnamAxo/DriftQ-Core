@@ -444,15 +444,15 @@ go run ./cmd/driftqd
 | `--log-format` | `text` | Log format: `text` or `json` |
 | `--max-partition-bytes` | `0` | Max bytes buffered per partition (`0` = broker default: 4 MB) |
 | `--max-partition-msgs` | `0` | Max messages buffered per partition (`0` = broker default: 100) |
-| `--max-inflight` | `0` | Max in-flight messages per (topic, group, partition) (`0` = broker default: 2) |
+| `--max-inflight` | `0` | Max in-flight messages per (topic, group, partition) (`0` = broker default: 32) |
 
 **Broker defaults** (when flags are `0` or omitted):
 
 | Limit | Default | Description |
 |-------|---------|-------------|
 | Max partition bytes | 4 MB | Per-partition byte buffer limit (backpressure) |
-| Max partition messages | 100 | Per-partition message count limit (backpressure) |
-| Max in-flight | 2 | Max unacknowledged messages per (topic, group, partition) |
+| Max partition messages | 1024 | Per-partition message count limit (backpressure) |
+| Max in-flight | 32 | Max unacknowledged messages per (topic, group, partition) |
 
 **Examples:**
 

@@ -53,6 +53,9 @@ type statusRecorder struct {
 type promSink struct {
 	produceRejected *prometheus.CounterVec
 	dlqTotal        *prometheus.CounterVec
+	walAppend       *prometheus.HistogramVec
+	dispatch        prometheus.Histogram
+	dispatchStaged  prometheus.Counter
 }
 
 func (a topicDebugAdapter) ListTopics() ([]string, error) {
@@ -65,6 +68,21 @@ func (p *promSink) IncProduceRejected(reason string) {
 
 func (p *promSink) IncDLQ(topic, reason string) {
 	p.dlqTotal.WithLabelValues(topic, reason).Inc()
+}
+
+func (p *promSink) ObserveWALAppend(kind string, d time.Duration) {
+	if p.walAppend != nil {
+		p.walAppend.WithLabelValues(kind).Observe(d.Seconds())
+	}
+}
+
+func (p *promSink) ObserveDispatch(d time.Duration, staged int) {
+	if p.dispatch != nil {
+		p.dispatch.Observe(d.Seconds())
+	}
+	if p.dispatchStaged != nil && staged > 0 {
+		p.dispatchStaged.Add(float64(staged))
+	}
 }
 
 func (w *statusRecorder) Flush() {
@@ -309,11 +327,38 @@ func main() {
 		[]string{"topic", "reason"},
 	)
 
-	prometheus.MustRegister(produceRejected, dlqTotal, NewBrokerCollector(b))
+	walAppend := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "broker_wal_append_duration_seconds",
+			Help:    "Latency of broker WAL appends by record type.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"kind"},
+	)
+
+	dispatch := prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "broker_dispatch_duration_seconds",
+			Help:    "Latency of broker dispatch passes.",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+
+	dispatchStaged := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "broker_dispatch_staged_messages_total",
+			Help: "Total number of messages staged onto consumer queues by dispatch.",
+		},
+	)
+
+	prometheus.MustRegister(produceRejected, dlqTotal, walAppend, dispatch, dispatchStaged, NewBrokerCollector(b))
 
 	b.SetMetricsSink(&promSink{
 		produceRejected: produceRejected,
 		dlqTotal:        dlqTotal,
+		walAppend:       walAppend,
+		dispatch:        dispatch,
+		dispatchStaged:  dispatchStaged,
 	})
 
 	appCtx, appCancel := context.WithCancel(context.Background())
@@ -503,6 +548,9 @@ func main() {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("http shutdown error", "err", err)
+	}
+	if err := b.Close(); err != nil {
+		slog.Error("broker close error", "err", err)
 	}
 
 	slog.Info("broker stopped")
