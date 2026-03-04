@@ -728,6 +728,89 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 	return b.Ack(ctx, topic, group, partition, offset)
 }
 
+func (b *InMemoryBroker) AckCumulativeIfOwner(ctx context.Context, topic, group string, partition int, offset int64, owner string) error {
+	if topic == "" {
+		return errors.New("topic cannot be empty")
+	}
+
+	if group == "" {
+		return errors.New("group cannot be empty")
+	}
+
+	if partition < 0 {
+		return errors.New("partition cannot be negative")
+	}
+
+	if offset < 0 {
+		return errors.New("offset cannot be negative")
+	}
+
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return errors.New("owner cannot be empty")
+	}
+
+	var start int64
+
+	b.mu.Lock()
+
+	ts, ok := b.topics[topic]
+	if !ok {
+		b.mu.Unlock()
+		return errors.New("topic does not exist")
+	}
+
+	if partition >= len(ts.partitions) {
+		b.mu.Unlock()
+		return errors.New("partition out of range")
+	}
+
+	groups, ok := b.consumerOffsets[topic]
+	if !ok {
+		groups = make(map[string]map[int]int64)
+		b.consumerOffsets[topic] = groups
+	}
+
+	parts, ok := groups[group]
+	if !ok {
+		parts = make(map[int]int64)
+		groups[group] = parts
+	}
+
+	cur, ok := parts[partition]
+	if !ok {
+		cur = -1
+	}
+	if offset <= cur {
+		b.mu.Unlock()
+		return nil
+	}
+
+	inFlight := b.ensureInFlight(topic, group, partition)
+	for off := cur + 1; off <= offset; off++ {
+		e, ok := inFlight[off]
+		if !ok || e == nil {
+			b.mu.Unlock()
+			return errors.New("message range is not fully in-flight")
+		}
+		if strings.TrimSpace(e.Owner) != owner {
+			b.mu.Unlock()
+			return ErrNotOwner
+		}
+	}
+
+	start = cur + 1
+	b.mu.Unlock()
+
+	for off := start; off <= offset; off++ {
+		if err := b.AckIfOwner(ctx, topic, group, partition, off, owner); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (b *InMemoryBroker) IdempotencyHelper() *IdempotencyConsumerHelper {
 	if b == nil {
 		return nil

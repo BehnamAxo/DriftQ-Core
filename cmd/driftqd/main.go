@@ -503,6 +503,7 @@ func main() {
 	v1Mux.HandleFunc("/produce", s.requireMethod(http.MethodPost)(s.handleProduce))
 	v1Mux.HandleFunc("/consume", s.requireMethod(http.MethodGet)(s.handleConsume))
 	v1Mux.HandleFunc("/ack", s.requireMethod(http.MethodPost)(s.handleAck))
+	v1Mux.HandleFunc("/ack-cumulative", s.requireMethod(http.MethodPost)(s.handleAckCumulative))
 	v1Mux.HandleFunc("/nack", s.requireMethod(http.MethodPost)(s.handleNack))
 	v1Mux.HandleFunc("/topics", s.method(s.handleTopicsList, s.handleTopicsCreate))
 	v1Mux.HandleFunc("/version", s.requireMethod(http.MethodGet)(s.handleVersion))
@@ -1106,28 +1107,22 @@ func (s *server) handleConsume(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) handleAck(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
+func parseAckRequest(w http.ResponseWriter, r *http.Request) (topic, group, owner string, part int, off int64, ok bool) {
 	var (
-		topic string
-		group string
-		owner string
-		part  int
-		off   int64
+		parseOK bool
 	)
 
 	if r.Body != nil && r.ContentLength != 0 {
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "failed to read body")
-			return
+			return "", "", "", 0, 0, false
 		}
 
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
 			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json body: "+err.Error())
-			return
+			return "", "", "", 0, 0, false
 		}
 
 		allowed := map[string]struct{}{
@@ -1141,7 +1136,7 @@ func (s *server) handleAck(w http.ResponseWriter, r *http.Request) {
 		for k := range raw {
 			if _, ok := allowed[k]; !ok {
 				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "unknown field: "+k)
-				return
+				return "", "", "", 0, 0, false
 			}
 		}
 
@@ -1160,15 +1155,16 @@ func (s *server) handleAck(w http.ResponseWriter, r *http.Request) {
 		if v, ok := raw["partition"]; ok {
 			if err := json.Unmarshal(v, &part); err != nil {
 				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid partition")
-				return
+				return "", "", "", 0, 0, false
 			}
 		}
 		if v, ok := raw["offset"]; ok {
 			if err := json.Unmarshal(v, &off); err != nil {
 				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid offset")
-				return
+				return "", "", "", 0, 0, false
 			}
 		}
+		parseOK = true
 	} else {
 		q := r.URL.Query()
 		topic = q.Get("topic")
@@ -1179,21 +1175,22 @@ func (s *server) handleAck(w http.ResponseWriter, r *http.Request) {
 		oStr := strings.TrimSpace(q.Get("offset"))
 		if pStr == "" || oStr == "" {
 			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "partition and offset are required")
-			return
+			return "", "", "", 0, 0, false
 		}
 
 		p64, err := strconv.ParseInt(pStr, 10, 32)
 		if err != nil {
 			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid partition")
-			return
+			return "", "", "", 0, 0, false
 		}
 		part = int(p64)
 
 		off, err = strconv.ParseInt(oStr, 10, 64)
 		if err != nil {
 			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid offset")
-			return
+			return "", "", "", 0, 0, false
 		}
+		parseOK = true
 	}
 
 	topic = strings.TrimSpace(topic)
@@ -1202,10 +1199,41 @@ func (s *server) handleAck(w http.ResponseWriter, r *http.Request) {
 
 	if topic == "" || group == "" || owner == "" {
 		v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "topic, group, and owner are required")
+		return "", "", "", 0, 0, false
+	}
+
+	return topic, group, owner, part, off, parseOK
+}
+
+func (s *server) handleAck(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	topic, group, owner, part, off, ok := parseAckRequest(w, r)
+	if !ok {
 		return
 	}
 
 	if err := s.broker.AckIfOwner(ctx, topic, group, part, off, owner); err != nil {
+		if errors.Is(err, broker.ErrNotOwner) {
+			v1.WriteError(w, http.StatusConflict, "FAILED_PRECONDITION", "not owner")
+			return
+		}
+		v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleAckCumulative(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	topic, group, owner, part, off, ok := parseAckRequest(w, r)
+	if !ok {
+		return
+	}
+
+	if err := s.broker.AckCumulativeIfOwner(ctx, topic, group, part, off, owner); err != nil {
 		if errors.Is(err, broker.ErrNotOwner) {
 			v1.WriteError(w, http.StatusConflict, "FAILED_PRECONDITION", "not owner")
 			return
