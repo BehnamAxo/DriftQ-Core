@@ -39,5 +39,6 @@ driftq.wal
 # DriftQ runtime artifacts / local logs
 driftq.artifacts/
 loadtest.log
+results/
 
 .vscode/
