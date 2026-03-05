@@ -437,13 +437,16 @@ go run ./cmd/driftqd
 | `--addr` | `:8080` | HTTP listen address |
 | `--wal` | `driftq.wal` | Path to broker WAL file |
 | `--reset-wal` | `false` | Reset WAL by moving existing file aside (creates a `.bak.<ts>` file) |
+| `--wal-sync-interval` | `0` | Broker WAL fsync interval (`0` = fsync every append; higher = lower latency with larger crash window) |
+| `--wal-buffer-bytes` | `262144` | Broker WAL write buffer size in bytes |
+| `--access-log` | `true` | Enable per-request HTTP access logging |
 | `--engine-store` | `memory` | Engine store: `memory` or `file` |
 | `--engine-wal` | `driftq.engine.wal` | Path to engine WAL (when `--engine-store=file`) |
 | `--artifacts-dir` | `driftq.artifacts` | Artifact store directory (empty = in-memory) |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | Log format: `text` or `json` |
 | `--max-partition-bytes` | `0` | Max bytes buffered per partition (`0` = broker default: 4 MB) |
-| `--max-partition-msgs` | `0` | Max messages buffered per partition (`0` = broker default: 100) |
+| `--max-partition-msgs` | `0` | Max messages buffered per partition (`0` = broker default: 1024) |
 | `--max-inflight` | `0` | Max in-flight messages per (topic, group, partition) (`0` = broker default: 32) |
 
 **Broker defaults** (when flags are `0` or omitted):
@@ -468,6 +471,9 @@ go run ./cmd/driftqd --log-format json
 
 # Durable engine with file-based storage
 go run ./cmd/driftqd --engine-store file --engine-wal ./data/engine.wal --artifacts-dir ./data/artifacts
+
+# Tune WAL latency/throughput behavior and disable access logs
+go run ./cmd/driftqd --wal-sync-interval 20ms --wal-buffer-bytes 1048576 --access-log=false
 
 # Tune broker backpressure limits
 go run ./cmd/driftqd --max-partition-bytes 8388608 --max-partition-msgs 500 --max-inflight 4
