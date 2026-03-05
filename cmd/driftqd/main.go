@@ -249,6 +249,9 @@ func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	walPath := flag.String("wal", "driftq.wal", "path to WAL file")
 	resetWAL := flag.Bool("reset-wal", false, "reset WAL by moving existing file aside (creates a .bak.<ts> file)")
+	walSyncInterval := flag.Duration("wal-sync-interval", 0, "broker WAL fsync interval (0 = fsync every append, higher = lower latency with larger crash window)")
+	walBufferBytes := flag.Int("wal-buffer-bytes", 256*1024, "broker WAL write buffer size in bytes")
+	accessLog := flag.Bool("access-log", true, "enable per-request access logging")
 
 	engineStore := flag.String("engine-store", "memory", "engine store: memory|file")
 	engineWAL := flag.String("engine-wal", "driftq.engine.wal", "path to engine run/event WAL file (engine-store=file)")
@@ -281,7 +284,10 @@ func main() {
 		}
 	}
 
-	wal, err := storage.OpenFileWAL(*walPath)
+	wal, err := storage.OpenFileWALWithOptions(*walPath, storage.FileWALOptions{
+		SyncInterval: *walSyncInterval,
+		BufferBytes:  *walBufferBytes,
+	})
 	if err != nil {
 		fatal("failed to open WAL", err)
 	}
@@ -309,6 +315,9 @@ func main() {
 		"max_partition_bytes", b.MaxPartitionBytes(),
 		"max_partition_msgs", b.MaxPartitionMsgs(),
 		"max_inflight", b.MaxInFlight(),
+		"wal_sync_interval", walSyncInterval.String(),
+		"wal_buffer_bytes", *walBufferBytes,
+		"access_log", *accessLog,
 	)
 
 	produceRejected := prometheus.NewCounterVec(
@@ -401,8 +410,6 @@ func main() {
 			"strict", maCfg.RouterStrict,
 			"source_topics", len(maCfg.SourceTopics),
 		)
-	} else {
-		b.SetRouter(TestRouter{})
 	}
 
 	s := &server{broker: b}
@@ -518,7 +525,10 @@ func main() {
 		v1.WriteError(w, http.StatusNotFound, "NOT_FOUND", "use /v1/* endpoints")
 	})
 
-	handler := withRequestLogging(rootMux)
+	handler := http.Handler(rootMux)
+	if *accessLog {
+		handler = withRequestLogging(rootMux)
+	}
 
 	srv := &http.Server{
 		Addr:         *addr,
@@ -720,84 +730,97 @@ func (s *server) handleTopicsCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleProduce(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	toBrokerEnvelope := func(env *v1.Envelope) *broker.Envelope {
-		if env == nil {
-			return nil
-		}
-
-		out := &broker.Envelope{
-			RunID:             env.RunID,
-			StepID:            env.StepID,
-			ParentStepID:      env.ParentStepID,
-			TenantID:          env.TenantID,
-			IdempotencyKey:    env.IdempotencyKey,
-			TargetTopic:       env.TargetTopic,
-			Deadline:          env.Deadline,
-			PartitionOverride: env.PartitionOverride,
-		}
-
-		if env.RetryPolicy != nil {
-			out.RetryPolicy = &broker.RetryPolicy{
-				MaxAttempts:  env.RetryPolicy.MaxAttempts,
-				BackoffMs:    env.RetryPolicy.BackoffMs,
-				MaxBackoffMs: env.RetryPolicy.MaxBackoffMs,
-			}
-		}
-
-		return out
+func toBrokerEnvelope(env *v1.Envelope) *broker.Envelope {
+	if env == nil {
+		return nil
 	}
 
-	parseDeadline := func(q url.Values) (*time.Time, error) {
-		if v := strings.TrimSpace(q.Get("deadline_rfc3339")); v != "" {
-			t, err := time.Parse(time.RFC3339, v)
-			if err != nil {
-				return nil, fmt.Errorf("invalid deadline_rfc3339: %w", err)
-			}
+	out := &broker.Envelope{
+		RunID:             env.RunID,
+		StepID:            env.StepID,
+		ParentStepID:      env.ParentStepID,
+		TenantID:          env.TenantID,
+		IdempotencyKey:    env.IdempotencyKey,
+		TargetTopic:       env.TargetTopic,
+		Deadline:          env.Deadline,
+		PartitionOverride: env.PartitionOverride,
+	}
 
-			return &t, nil
+	if env.RetryPolicy != nil {
+		out.RetryPolicy = &broker.RetryPolicy{
+			MaxAttempts:  env.RetryPolicy.MaxAttempts,
+			BackoffMs:    env.RetryPolicy.BackoffMs,
+			MaxBackoffMs: env.RetryPolicy.MaxBackoffMs,
 		}
+	}
 
-		if v := strings.TrimSpace(q.Get("deadline_ms")); v != "" {
-			ms, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid deadline_ms: %w", err)
-			}
+	return out
+}
 
-			t := time.Unix(0, ms*int64(time.Millisecond))
-			return &t, nil
+func parseDeadlineQuery(q url.Values) (*time.Time, error) {
+	if v := strings.TrimSpace(q.Get("deadline_rfc3339")); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid deadline_rfc3339: %w", err)
 		}
+		return &t, nil
+	}
 
+	if v := strings.TrimSpace(q.Get("deadline_ms")); v != "" {
+		ms, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid deadline_ms: %w", err)
+		}
+		t := time.Unix(0, ms*int64(time.Millisecond))
+		return &t, nil
+	}
+
+	return nil, nil
+}
+
+func parseOptionalIntQuery(q url.Values, key string) (*int, error) {
+	v := strings.TrimSpace(q.Get(key))
+	if v == "" {
 		return nil, nil
 	}
 
-	parseOptInt := func(q url.Values, key string) (*int, error) {
-		v := strings.TrimSpace(q.Get(key))
-		if v == "" {
-			return nil, nil
-		}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s", key)
+	}
+	return &n, nil
+}
 
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %s", key)
-		}
-		return &n, nil
+func parseOptionalInt64Query(q url.Values, key string) (*int64, error) {
+	v := strings.TrimSpace(q.Get(key))
+	if v == "" {
+		return nil, nil
 	}
 
-	parseOptInt64 := func(q url.Values, key string) (*int64, error) {
-		v := strings.TrimSpace(q.Get(key))
-		if v == "" {
-			return nil, nil
-		}
-
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %s", key)
-		}
-		return &n, nil
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s", key)
 	}
+	return &n, nil
+}
+
+func hasProduceEnvelopeQueryParams(q url.Values) bool {
+	for key := range q {
+		switch key {
+		case "run_id", "step_id", "parent_step_id",
+			"tenant_id", "tenant",
+			"idempotency_key", "idem_key",
+			"target_topic", "partition_override",
+			"deadline_rfc3339", "deadline_ms",
+			"retry_max_attempts", "retry_backoff_ms", "retry_max_backoff_ms":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *server) handleProduce(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 
 	var req v1.ProduceRequest
 
@@ -816,126 +839,129 @@ func (s *server) handleProduce(w http.ResponseWriter, r *http.Request) {
 		req.Key = q.Get("key")
 		req.Value = q.Get("value")
 
-		env := &v1.Envelope{}
-		anySet := false
+		// Hot-path: plain query produce (topic/key/value only).
+		if hasProduceEnvelopeQueryParams(q) {
+			env := &v1.Envelope{}
+			anySet := false
 
-		if v := strings.TrimSpace(q.Get("run_id")); v != "" {
-			env.RunID = v
-			anySet = true
-		}
-
-		if v := strings.TrimSpace(q.Get("step_id")); v != "" {
-			env.StepID = v
-			anySet = true
-		}
-
-		if v := strings.TrimSpace(q.Get("parent_step_id")); v != "" {
-			env.ParentStepID = v
-			anySet = true
-		}
-
-		// tenant_id (primary) + tenant (alias)
-		if v := strings.TrimSpace(q.Get("tenant_id")); v != "" {
-			env.TenantID = v
-			anySet = true
-		} else if v := strings.TrimSpace(q.Get("tenant")); v != "" {
-			env.TenantID = v
-			anySet = true
-		}
-
-		// idempotency_key (primary) + idem_key (alias)
-		idem := strings.TrimSpace(q.Get("idempotency_key"))
-		if idem == "" {
-			idem = strings.TrimSpace(q.Get("idem_key"))
-		}
-
-		if idem != "" {
-			env.IdempotencyKey = idem
-			anySet = true
-		}
-
-		if v := strings.TrimSpace(q.Get("target_topic")); v != "" {
-			env.TargetTopic = v
-			anySet = true
-		}
-
-		if v := strings.TrimSpace(q.Get("partition_override")); v != "" {
-			pi, err := strconv.Atoi(v)
-			if err != nil || pi < 0 {
-				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid partition_override")
-				return
-			}
-			env.PartitionOverride = &pi
-			anySet = true
-		}
-
-		if dl, err := parseDeadline(q); err != nil {
-			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
-			return
-		} else if dl != nil {
-			env.Deadline = dl
-			anySet = true
-		}
-
-		// Retry policy (query params)
-		maxAttemptsPtr, err := parseOptInt(q, "retry_max_attempts")
-		if err != nil {
-			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
-			return
-		}
-
-		backoffPtr, err := parseOptInt64(q, "retry_backoff_ms")
-		if err != nil {
-			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
-			return
-		}
-
-		maxBackoffPtr, err := parseOptInt64(q, "retry_max_backoff_ms")
-		if err != nil {
-			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
-			return
-		}
-
-		if maxAttemptsPtr != nil || backoffPtr != nil || maxBackoffPtr != nil {
-			rp := &v1.RetryPolicy{}
-
-			if maxAttemptsPtr != nil {
-				if *maxAttemptsPtr < 0 {
-					v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid retry_max_attempts")
-					return
-				}
-				rp.MaxAttempts = *maxAttemptsPtr
-			}
-
-			if backoffPtr != nil {
-				if *backoffPtr < 0 {
-					v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid retry_backoff_ms")
-					return
-				}
-				rp.BackoffMs = *backoffPtr
-			}
-
-			if maxBackoffPtr != nil {
-				if *maxBackoffPtr < 0 {
-					v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid retry_max_backoff_ms")
-					return
-				}
-				rp.MaxBackoffMs = *maxBackoffPtr
-			}
-
-			if (backoffPtr != nil || maxBackoffPtr != nil) && rp.MaxAttempts <= 0 {
-				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "retry_max_attempts must be > 0 when using retry backoff params")
-				return
-			}
-
-			if rp.MaxAttempts != 0 || rp.BackoffMs != 0 || rp.MaxBackoffMs != 0 {
-				env.RetryPolicy = rp
+			if v := strings.TrimSpace(q.Get("run_id")); v != "" {
+				env.RunID = v
 				anySet = true
 			}
-		}
 
-		if anySet {
-			req.Envelope = env
+			if v := strings.TrimSpace(q.Get("step_id")); v != "" {
+				env.StepID = v
+				anySet = true
+			}
+
+			if v := strings.TrimSpace(q.Get("parent_step_id")); v != "" {
+				env.ParentStepID = v
+				anySet = true
+			}
+
+			// tenant_id (primary) + tenant (alias)
+			if v := strings.TrimSpace(q.Get("tenant_id")); v != "" {
+				env.TenantID = v
+				anySet = true
+			} else if v := strings.TrimSpace(q.Get("tenant")); v != "" {
+				env.TenantID = v
+				anySet = true
+			}
+
+			// idempotency_key (primary) + idem_key (alias)
+			idem := strings.TrimSpace(q.Get("idempotency_key"))
+			if idem == "" {
+				idem = strings.TrimSpace(q.Get("idem_key"))
+			}
+
+			if idem != "" {
+				env.IdempotencyKey = idem
+				anySet = true
+			}
+
+			if v := strings.TrimSpace(q.Get("target_topic")); v != "" {
+				env.TargetTopic = v
+				anySet = true
+			}
+
+			if v := strings.TrimSpace(q.Get("partition_override")); v != "" {
+				pi, err := strconv.Atoi(v)
+				if err != nil || pi < 0 {
+					v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid partition_override")
+					return
+				}
+				env.PartitionOverride = &pi
+				anySet = true
+			}
+
+			if dl, err := parseDeadlineQuery(q); err != nil {
+				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+				return
+			} else if dl != nil {
+				env.Deadline = dl
+				anySet = true
+			}
+
+			// Retry policy (query params)
+			maxAttemptsPtr, err := parseOptionalIntQuery(q, "retry_max_attempts")
+			if err != nil {
+				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+				return
+			}
+
+			backoffPtr, err := parseOptionalInt64Query(q, "retry_backoff_ms")
+			if err != nil {
+				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+				return
+			}
+
+			maxBackoffPtr, err := parseOptionalInt64Query(q, "retry_max_backoff_ms")
+			if err != nil {
+				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+				return
+			}
+
+			if maxAttemptsPtr != nil || backoffPtr != nil || maxBackoffPtr != nil {
+				rp := &v1.RetryPolicy{}
+
+				if maxAttemptsPtr != nil {
+					if *maxAttemptsPtr < 0 {
+						v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid retry_max_attempts")
+						return
+					}
+					rp.MaxAttempts = *maxAttemptsPtr
+				}
+
+				if backoffPtr != nil {
+					if *backoffPtr < 0 {
+						v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid retry_backoff_ms")
+						return
+					}
+					rp.BackoffMs = *backoffPtr
+				}
+
+				if maxBackoffPtr != nil {
+					if *maxBackoffPtr < 0 {
+						v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid retry_max_backoff_ms")
+						return
+					}
+					rp.MaxBackoffMs = *maxBackoffPtr
+				}
+
+				if (backoffPtr != nil || maxBackoffPtr != nil) && rp.MaxAttempts <= 0 {
+					v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "retry_max_attempts must be > 0 when using retry backoff params")
+					return
+				}
+
+				if rp.MaxAttempts != 0 || rp.BackoffMs != 0 || rp.MaxBackoffMs != 0 {
+					env.RetryPolicy = rp
+					anySet = true
+				}
+			}
+
+			if anySet {
+				req.Envelope = env
+			}
 		}
 	}
 
