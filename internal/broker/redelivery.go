@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
@@ -44,22 +43,25 @@ func (b *InMemoryBroker) redeliverExpiredLocked() {
 				continue
 			}
 
-			leaseForOwner := func(owner string) time.Duration {
+			ownerLease := make(map[string]time.Duration, len(chans))
+			for _, st := range chans {
 				lease := b.ackTimeout
-				own := strings.TrimSpace(owner)
-
-				for _, st := range chans {
-					if strings.TrimSpace(st.Owner) == own && st.Lease > 0 {
-						lease = st.Lease
-						break
-					}
+				if st.Lease > 0 {
+					lease = st.Lease
 				}
-				return lease
+				ownerLease[st.Owner] = lease
+			}
+
+			leaseForOwner := func(owner string) time.Duration {
+				if lease, ok := ownerLease[owner]; ok {
+					return lease
+				}
+				return b.ackTimeout
 			}
 
 			leaseForStream := func(st consumerStream) time.Duration {
-				if st.Lease > 0 {
-					return st.Lease
+				if lease, ok := ownerLease[st.Owner]; ok {
+					return lease
 				}
 				return b.ackTimeout
 			}
