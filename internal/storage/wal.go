@@ -85,19 +85,56 @@ type WAL interface {
 }
 
 type FileWAL struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
+	mu           sync.Mutex
+	f            *os.File
+	bw           *bufio.Writer
+	enc          *json.Encoder
+	path         string
+	syncInterval time.Duration
+	lastSync     time.Time
+}
+
+type FileWALOptions struct {
+	// SyncInterval controls fsync cadence.
+	// 0 keeps strict durability (fsync every append).
+	SyncInterval time.Duration
+
+	// BufferBytes controls the in-process write buffer size.
+	// If <= 0, a default is used.
+	BufferBytes int
 }
 
 func OpenFileWAL(path string) (*FileWAL, error) {
+	return OpenFileWALWithOptions(path, FileWALOptions{})
+}
+
+func OpenFileWALWithOptions(path string, opts FileWALOptions) (*FileWAL, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
+
+	bufferBytes := opts.BufferBytes
+	if bufferBytes <= 0 {
+		bufferBytes = 256 * 1024
+	}
+
+	syncInterval := opts.SyncInterval
+	if syncInterval < 0 {
+		syncInterval = 0
+	}
+
+	bw := bufio.NewWriterSize(f, bufferBytes)
+	enc := json.NewEncoder(bw)
+	enc.SetEscapeHTML(false)
+
 	return &FileWAL{
-		f:    f,
-		path: path,
+		f:            f,
+		bw:           bw,
+		enc:          enc,
+		path:         path,
+		syncInterval: syncInterval,
+		lastSync:     time.Now(),
 	}, nil
 }
 
@@ -105,26 +142,44 @@ func (w *FileWAL) Append(e Entry) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	data, err := json.Marshal(e)
-	if err != nil {
-		return fmt.Errorf("marshal WAL entry: %w", err)
+	if err := w.enc.Encode(e); err != nil {
+		return fmt.Errorf("encode WAL entry: %w", err)
 	}
 
-	if _, err := w.f.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("write WAL entry: %w", err)
+	if w.syncInterval > 0 {
+		if time.Since(w.lastSync) < w.syncInterval {
+			return nil
+		}
 	}
 
-	// Durability guarantee for MVP
+	if err := w.flushAndSyncLocked(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (w *FileWAL) flushAndSyncLocked() error {
+	if err := w.bw.Flush(); err != nil {
+		return fmt.Errorf("flush WAL buffer: %w", err)
+	}
+
+	// Durability guarantee in strict mode (or periodic group-commit if configured)
 	if err := w.f.Sync(); err != nil {
 		return fmt.Errorf("fsync WAL: %w", err)
 	}
 
+	w.lastSync = time.Now()
 	return nil
 }
 
 func (w *FileWAL) Replay() ([]Entry, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	if err := w.bw.Flush(); err != nil {
+		return nil, fmt.Errorf("flush WAL buffer before replay: %w", err)
+	}
 
 	// Rewind to start
 	if _, err := w.f.Seek(0, io.SeekStart); err != nil {
@@ -166,5 +221,11 @@ func (w *FileWAL) Replay() ([]Entry, error) {
 func (w *FileWAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	if err := w.flushAndSyncLocked(); err != nil {
+		_ = w.f.Close()
+		return err
+	}
+
 	return w.f.Close()
 }

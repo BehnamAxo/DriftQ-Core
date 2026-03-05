@@ -8,6 +8,14 @@ import (
 )
 
 func (b *InMemoryBroker) dispatchLocked(topic string) {
+	b.dispatchFilteredLocked(topic, -1)
+}
+
+func (b *InMemoryBroker) dispatchPartitionLocked(topic string, partition int) {
+	b.dispatchFilteredLocked(topic, partition)
+}
+
+func (b *InMemoryBroker) dispatchFilteredLocked(topic string, onlyPartition int) {
 	start := time.Now()
 	staged := 0
 	defer func() {
@@ -36,6 +44,10 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 		nextByPart := b.ensureNextIndex(topic, group)
 
 		for p := range ts.partitions {
+			if onlyPartition >= 0 && p != onlyPartition {
+				continue
+			}
+
 			inflight := b.ensureInFlight(topic, group, p)
 
 			// Resume after last ack if we haven't initialized next index yet
@@ -229,10 +241,12 @@ func (b *InMemoryBroker) dispatchLocked(topic string) {
 				}
 
 				// seed error from retryState
-				rs := b.ensureRetryState(topic, group, p)
+				rs := b.getRetryState(topic, group, p)
 				lastErr := ""
-				if st, ok := rs[m.Offset]; ok && st != nil {
-					lastErr = st.LastError
+				if rs != nil {
+					if st, ok := rs[m.Offset]; ok && st != nil {
+						lastErr = st.LastError
+					}
 				}
 
 				// ✅ SIMPLE MODE: no inflight, no acks, auto-commit offsets once enqueued

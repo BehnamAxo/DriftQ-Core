@@ -38,6 +38,7 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryB
 				// Topic already exists (maybe created implicitly from message replay) so ensure it has at least e.Partition partitions.
 				for len(ts.partitions) < e.Partition {
 					ts.partitions = append(ts.partitions, nil)
+					ts.partitionByteSums = append(ts.partitionByteSums, nil)
 				}
 			}
 
@@ -45,7 +46,8 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryB
 			ts, ok := b.topics[e.Topic]
 			if !ok {
 				ts = &TopicState{
-					partitions: make([][]Message, 0),
+					partitions:        make([][]Message, 0),
+					partitionByteSums: make([][]int64, 0),
 				}
 
 				b.topics[e.Topic] = ts
@@ -53,6 +55,7 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryB
 
 			for len(ts.partitions) <= e.Partition {
 				ts.partitions = append(ts.partitions, nil)
+				ts.partitionByteSums = append(ts.partitionByteSums, nil)
 			}
 
 			expected := int64(len(ts.partitions[e.Partition]))
@@ -88,6 +91,16 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryB
 			}
 
 			ts.partitions[e.Partition] = append(ts.partitions[e.Partition], m)
+			msgBytes := int64(len(m.Key) + len(m.Value))
+			sums := ts.partitionByteSums[e.Partition]
+
+			if len(sums) == 0 {
+				sums = append(sums, msgBytes)
+			} else {
+				sums = append(sums, sums[len(sums)-1]+msgBytes)
+			}
+
+			ts.partitionByteSums[e.Partition] = sums
 
 		case storage.RecordTypeOffset:
 			if _, ok := b.consumerOffsets[e.Topic]; !ok {
