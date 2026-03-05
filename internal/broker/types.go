@@ -37,7 +37,8 @@ type Message struct {
 }
 
 type TopicState struct {
-	partitions [][]Message
+	partitions        [][]Message
+	partitionByteSums [][]int64
 }
 
 // RoutingDecision is what the brain tells me to do with a message. For v0 I'm keeping it small
