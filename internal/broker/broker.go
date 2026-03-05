@@ -334,13 +334,13 @@ func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...Broker
 		wal:                 wal,
 		router:              r,
 		ackTimeout:          2 * time.Second,
-		redeliverTick:       250 * time.Millisecond,
+		redeliverTick:       1 * time.Second,
 		maxPartitionMsgs:    1024,            // default, tune via flags
 		maxPartitionBytes:   4 * 1024 * 1024, // 4MB default, tune via flags
 		retryState:          make(map[string]map[string]map[int]map[int64]*retryStateEntry),
 		lag:                 NewLagTracker(),
 		pendingOffsets:      make(map[offsetFlushKey]int64),
-		offsetFlushInterval: 25 * time.Millisecond,
+		offsetFlushInterval: 100 * time.Millisecond,
 	}
 
 	// default idempotency store (depends on WAL)
@@ -496,17 +496,16 @@ func (b *InMemoryBroker) Consume(ctx context.Context, topic, group, owner string
 		return nil, errors.New("topic and group are required")
 	}
 
+	owner = strings.TrimSpace(owner)
 	if owner == "" {
 		return nil, errors.New("owner is required")
 	}
 
-	out := make(chan Message)
-	q := make(chan Message, 1024)
+	out := make(chan Message, 1024)
 
 	b.mu.Lock()
 	if _, ok := b.topics[topic]; !ok {
 		b.mu.Unlock()
-		close(q)
 		close(out)
 		return nil, fmt.Errorf("topic not found: %s", topic)
 	}
@@ -516,32 +515,12 @@ func (b *InMemoryBroker) Consume(ctx context.Context, topic, group, owner string
 	}
 
 	groupChans := b.consumerChans[topic]
-	st := consumerStream{Owner: owner, Lease: 0, Ch: out, Q: q}
+	st := consumerStream{Owner: owner, Lease: 0, Ch: out, Q: out}
 	groupChans[group] = append(groupChans[group], st)
 	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
 
-	// Single writer to `out` to preserve ordering. The broker enqueues into `q`
-	go func() {
-		defer close(out)
-		for {
-			select {
-			case m, ok := <-q:
-				if !ok {
-					return
-				}
-				select {
-				case out <- m:
-				case <-ctx.Done():
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// When consumer disconnects, unregister it and stop its pump
+	// When consumer disconnects, unregister it and close the stream channel.
 	go func() {
 		<-ctx.Done()
 
@@ -605,6 +584,12 @@ func (b *InMemoryBroker) Ack(_ context.Context, topic, group string, partition i
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	return b.ackLocked(topic, group, partition, offset)
+}
+
+// ackLocked advances group offset/inflight bookkeeping for a single message
+// b.mu must already be held by the caller
+func (b *InMemoryBroker) ackLocked(topic, group string, partition int, offset int64) error {
 	ts, ok := b.topics[topic]
 	if !ok {
 		return errors.New("topic does not exist")
@@ -638,7 +623,7 @@ func (b *InMemoryBroker) Ack(_ context.Context, topic, group string, partition i
 		}
 
 		delete(inFlight, offset)
-		b.dispatchLocked(topic)
+		b.dispatchPartitionLocked(topic, partition)
 		return nil
 	}
 
@@ -652,7 +637,7 @@ func (b *InMemoryBroker) Ack(_ context.Context, topic, group string, partition i
 	delete(inFlight, offset)
 	parts[partition] = offset
 	b.queueOffsetPersistLocked(topic, group, partition, offset)
-	b.dispatchLocked(topic)
+	b.dispatchPartitionLocked(topic, partition)
 
 	return nil
 }
@@ -700,7 +685,7 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 		return errors.New("message is not in-flight")
 	}
 
-	if strings.TrimSpace(e.Owner) != owner {
+	if e.Owner != owner {
 		b.mu.Unlock()
 		return ErrNotOwner
 	}
@@ -708,6 +693,12 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 	if b.idem != nil && e.Msg.Envelope != nil && e.Msg.Envelope.IdempotencyKey != "" {
 		tenantID = e.Msg.Envelope.TenantID
 		idk = e.Msg.Envelope.IdempotencyKey
+	}
+
+	if b.idem == nil || idk == "" {
+		err := b.ackLocked(topic, group, partition, offset)
+		b.mu.Unlock()
+		return err
 	}
 
 	b.mu.Unlock()
@@ -725,7 +716,10 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 		}
 	}
 
-	return b.Ack(ctx, topic, group, partition, offset)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.ackLocked(topic, group, partition, offset)
 }
 
 func (b *InMemoryBroker) AckCumulativeIfOwner(ctx context.Context, topic, group string, partition int, offset int64, owner string) error {
@@ -793,7 +787,7 @@ func (b *InMemoryBroker) AckCumulativeIfOwner(ctx context.Context, topic, group 
 			b.mu.Unlock()
 			return errors.New("message range is not fully in-flight")
 		}
-		if strings.TrimSpace(e.Owner) != owner {
+		if e.Owner != owner {
 			b.mu.Unlock()
 			return ErrNotOwner
 		}
@@ -863,7 +857,7 @@ func computeBackoff(p *RetryPolicy, retryNumber int) time.Duration {
 // Same behavior as Ack():
 // - the stored offset is the "last acked offset" for that (topic, group, partition)
 // - we only write to the WAL if the offset actually moves forward
-// - after advancing, we call dispatchLocked(topic) to keep messages moving
+// - after advancing, we call dispatchPartitionLocked(topic, partition) to keep messages moving
 func (b *InMemoryBroker) advanceOffsetLocked(topic, group string, partition int, offset int64) error {
 	if topic == "" {
 		return errors.New("topic cannot be empty")
@@ -912,7 +906,7 @@ func (b *InMemoryBroker) advanceOffsetLocked(topic, group string, partition int,
 	b.queueOffsetPersistLocked(topic, group, partition, offset)
 
 	// Keep messages flowing
-	b.dispatchLocked(topic)
+	b.dispatchPartitionLocked(topic, partition)
 	return nil
 }
 
@@ -961,7 +955,7 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 		return errors.New("message is not in-flight")
 	}
 
-	if strings.TrimSpace(e.Owner) != owner {
+	if e.Owner != owner {
 		return ErrNotOwner
 	}
 
@@ -1036,7 +1030,7 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 	if groupStreams, ok := b.consumerChans[topic]; ok {
 		if streams, ok := groupStreams[group]; ok {
 			for _, st := range streams {
-				if strings.TrimSpace(st.Owner) == strings.TrimSpace(e.Owner) && st.Lease > 0 {
+				if st.Owner == e.Owner && st.Lease > 0 {
 					lease = st.Lease
 					break
 				}
@@ -1068,7 +1062,8 @@ func (b *InMemoryBroker) createTopicLocked(name string, partitions int) error {
 	}
 
 	b.topics[name] = &TopicState{
-		partitions: make([][]Message, partitions),
+		partitions:        make([][]Message, partitions),
+		partitionByteSums: make([][]int64, partitions),
 	}
 
 	return nil
@@ -1128,7 +1123,7 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 
 	// 2) bytes cap
 	if b.maxPartitionBytes > 0 {
-		bufferedBytes := bufferedBytesCount(ts.partitions[part], slowest)
+		bufferedBytes := bufferedBytesCount(ts.partitions[part], ts.partitionByteSums[part], slowest)
 		bufferedBytes += len(msg.Key) + len(msg.Value)
 
 		if bufferedBytes >= b.maxPartitionBytes {
@@ -1204,9 +1199,17 @@ func (b *InMemoryBroker) produceLocked(_ context.Context, topic string, msg Mess
 
 	// Commit to in-memory state (no ts.nextOffset anymore)
 	ts.partitions[part] = append(ts.partitions[part], msg)
+	msgBytes := int64(len(msg.Key) + len(msg.Value))
+	sums := ts.partitionByteSums[part]
+	if len(sums) == 0 {
+		sums = append(sums, msgBytes)
+	} else {
+		sums = append(sums, sums[len(sums)-1]+msgBytes)
+	}
+	ts.partitionByteSums[part] = sums
 
 	// Deliver what we can
-	b.dispatchLocked(topic)
+	b.dispatchPartitionLocked(topic, part)
 
 	return nil
 }
@@ -1216,6 +1219,7 @@ func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, own
 		return nil, errors.New("topic and group are required")
 	}
 
+	owner = strings.TrimSpace(owner)
 	if owner == "" {
 		return nil, errors.New("owner is required")
 	}
@@ -1227,13 +1231,11 @@ func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, own
 		}
 	}
 
-	out := make(chan Message)
-	q := make(chan Message, 1024)
+	out := make(chan Message, 1024)
 
 	b.mu.Lock()
 	if _, ok := b.topics[topic]; !ok {
 		b.mu.Unlock()
-		close(q)
 		close(out)
 		return nil, fmt.Errorf("topic not found: %s", topic)
 	}
@@ -1243,32 +1245,12 @@ func (b *InMemoryBroker) ConsumeWithLease(ctx context.Context, topic, group, own
 	}
 
 	groupChans := b.consumerChans[topic]
-	st := consumerStream{Owner: owner, Lease: lease, Ch: out, Q: q}
+	st := consumerStream{Owner: owner, Lease: lease, Ch: out, Q: out}
 	groupChans[group] = append(groupChans[group], st)
 	b.consumerChans[topic] = groupChans
 	b.mu.Unlock()
 
-	// Single writer to `out` to preserve ordering. The broker enqueues into `q`.
-	go func() {
-		defer close(out)
-		for {
-			select {
-			case m, ok := <-q:
-				if !ok {
-					return
-				}
-				select {
-				case out <- m:
-				case <-ctx.Done():
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Unregister consumer on context cancellation and stop its pump.
+	// Unregister consumer on context cancellation and close the stream channel.
 	go func() {
 		<-ctx.Done()
 
