@@ -558,7 +558,7 @@ func main() {
 
 	// mount v1 under /v1/*
 	rootMux.Handle("/v1/", http.StripPrefix("/v1", v1Mux))
-	// Embedded dashboard UI
+	// Optional dashboard UI
 	rootMux.Handle("/ui", http.RedirectHandler("/ui/", http.StatusPermanentRedirect))
 	rootMux.Handle("/ui/", ui.Handler())
 	// Prometheus scrape endpoint (not versioned yet)
