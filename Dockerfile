@@ -27,7 +27,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
-COPY --from=ui-build /ui/dist /src/ui/dist
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -43,6 +42,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build --chown=65532:65532 /out/driftqd /driftqd
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=ui-build --chown=65532:65532 /ui/dist /ui/dist
 
 EXPOSE 8080
 
