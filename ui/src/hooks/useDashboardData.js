@@ -35,12 +35,13 @@ export function useDashboardData(activeTab) {
 
   const refresh = useCallback(
     async (signal) => {
+      const selectedGroup = group.trim() || "bench";
       const errors = [];
       const [healthRes, versionRes, topicsRes, lagRes, metricsRes, runsRes] = await Promise.allSettled([
         getJSON("/v1/healthz", signal),
         getJSON("/v1/version", signal),
         getJSON("/debug/topics", signal),
-        getJSON(`/debug/topics/lag?group=${encodeURIComponent(group)}`, signal),
+        getJSON(`/debug/topics/lag?group=${encodeURIComponent(selectedGroup)}`, signal),
         getText("/metrics", signal),
         getJSON("/debug/runs?limit=10", signal)
       ]);
@@ -138,7 +139,7 @@ export function useDashboardData(activeTab) {
 
       const lagMetrics = metricsByName(metricRows, "consumer_lag");
       const inflightMetrics = metricsByName(metricRows, "inflight_messages");
-      const groups = new Set([group]);
+      const groups = new Set([selectedGroup]);
       for (const r of lagMetrics) {
         if (r.labels.group) groups.add(r.labels.group);
       }
@@ -239,15 +240,15 @@ export function useDashboardData(activeTab) {
       const deltaEvents = [];
 
       if (totals.produced > prevTotals.produced) {
-        deltaEvents.push({ id: `p-${nowMs}`, type: "PRODUCE", color: "#00ff9d", ts, topic: "broker", group });
+        deltaEvents.push({ id: `p-${nowMs}`, type: "PRODUCE", color: "#00ff9d", ts, topic: "broker", group: selectedGroup });
       }
 
       if (totals.consumed > prevTotals.consumed) {
-        deltaEvents.push({ id: `a-${nowMs}`, type: "ACK", color: "#6ee7b7", ts, topic: "broker", group });
+        deltaEvents.push({ id: `a-${nowMs}`, type: "ACK", color: "#6ee7b7", ts, topic: "broker", group: selectedGroup });
       }
 
       if (totals.inflight > prevTotals.inflight) {
-        deltaEvents.push({ id: `l-${nowMs}`, type: "LEASE", color: "#818cf8", ts, topic: "broker", group });
+        deltaEvents.push({ id: `l-${nowMs}`, type: "LEASE", color: "#818cf8", ts, topic: "broker", group: selectedGroup });
       }
 
       if (totals.dlq > prevTotals.dlq) {
