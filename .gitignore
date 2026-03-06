@@ -42,3 +42,5 @@ loadtest.log
 results/
 
 .vscode/
+ui/node_modules/
+ui/.vite/
