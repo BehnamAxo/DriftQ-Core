@@ -55,6 +55,11 @@ export default function App() {
         <Controls
           group={group}
           onGroupChange={setGroup}
+          onGroupBlur={() => {
+            if (!group.trim()) {
+              setGroup("bench");
+            }
+          }}
           onRefresh={() => refresh(new AbortController().signal)}
           loading={loading}
           tick={tick}
