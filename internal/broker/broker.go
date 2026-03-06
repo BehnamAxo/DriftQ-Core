@@ -305,10 +305,72 @@ func (b *InMemoryBroker) Close() error {
 }
 
 func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
-	if b.lag == nil {
-		return nil, nil
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	topics := make([]string, 0, len(b.topics))
+	if topic != "" {
+		if _, ok := b.topics[topic]; !ok {
+			return []debugtypes.ConsumerLagRow{}, nil
+		}
+		topics = append(topics, topic)
+	} else {
+		for name := range b.topics {
+			topics = append(topics, name)
+		}
+		sort.Strings(topics)
 	}
-	return b.lag.Snapshot(group, topic), nil
+
+	out := make([]debugtypes.ConsumerLagRow, 0)
+	for _, name := range topics {
+		ts, ok := b.topics[name]
+		if !ok {
+			continue
+		}
+
+		for partition := 0; partition < len(ts.partitions); partition++ {
+			// Internal offsets are "last acked"; debug API exposes "next to deliver".
+			rawCommitted := int64(-1)
+			if byGroup, ok := b.consumerOffsets[name]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					if off, ok := byPart[partition]; ok {
+						rawCommitted = off
+					}
+				}
+			}
+			committed := rawCommitted + 1
+			if committed < 0 {
+				committed = 0
+			}
+
+			inflight := int64(0)
+			if byGroup, ok := b.inFlight[name]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					if byOff, ok := byPart[partition]; ok {
+						inflight = int64(len(byOff))
+					}
+				}
+			}
+
+			head := int64(len(ts.partitions[partition]))
+			lag := head - committed
+			if lag < 0 {
+				lag = 0
+			}
+
+			out = append(out, debugtypes.ConsumerLagRow{
+				Group:           group,
+				Topic:           name,
+				Partition:       partition,
+				HeadOffset:      head,
+				CommittedOffset: committed,
+				Inflight:        inflight,
+				Lag:             lag,
+			})
+		}
+	}
+
+	return out, nil
 }
 
 // NewInMemoryBroker constructs a broker with defaults, then applies any options.
