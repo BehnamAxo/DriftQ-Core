@@ -44,3 +44,4 @@ results/
 .vscode/
 ui/node_modules/
 ui/.vite/
+ui/dist/

@@ -434,13 +434,11 @@ go run ./cmd/driftqd
 
 The dashboard is a React app served by the same `driftqd` HTTP server.
 
-Build UI assets once before running from source:
+Build UI assets before running from source:
 
 ```bash
-cd ui
-npm install
-npm run build
-cd ..
+npm ci --prefix ui
+npm run build --prefix ui
 ```
 
 Then start DriftQ and open:
@@ -452,6 +450,7 @@ http://localhost:8080/ui/
 Notes:
 - API/debug routes stay the same (`/v1/*`, `/debug/*`).
 - Docker image builds the UI automatically in a Node build stage.
+- `ui/dist` is generated locally/CI and is not committed to git.
 
 **Server flags:**
 
@@ -509,6 +508,8 @@ go run ./cmd/driftqd --reset-wal
 
 **Unit tests:**
 ```bash
+npm ci --prefix ui
+npm run build --prefix ui
 go test ./... -count=1
 ```
 
