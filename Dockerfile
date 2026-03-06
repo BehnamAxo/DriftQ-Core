@@ -1,5 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
+# UI builder
+FROM node:20-bookworm AS ui-build
+
+WORKDIR /ui
+
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+
+COPY ui ./
+RUN npm run build
+
 # Builder
 ARG GO_VERSION=1.25
 FROM golang:${GO_VERSION}-bookworm AS build
@@ -14,6 +25,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
+COPY --from=ui-build /ui/dist /src/ui/dist
 
 ARG VERSION=dev
 ARG COMMIT=unknown
