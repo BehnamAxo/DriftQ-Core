@@ -21,10 +21,12 @@ import (
 	"time"
 
 	"github.com/driftq-org/DriftQ-Core/internal/broker"
+	"github.com/driftq-org/DriftQ-Core/internal/debugtypes"
 	"github.com/driftq-org/DriftQ-Core/internal/engine"
 	v1 "github.com/driftq-org/DriftQ-Core/internal/httpapi/v1"
 	"github.com/driftq-org/DriftQ-Core/internal/multiagent"
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
+	ui "github.com/driftq-org/DriftQ-Core/ui"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -60,6 +62,45 @@ type promSink struct {
 
 func (a topicDebugAdapter) ListTopics() ([]string, error) {
 	return a.b.ListTopics(context.Background())
+}
+
+func (a topicDebugAdapter) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
+	type consumerLagInspector interface {
+		ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error)
+	}
+
+	li, ok := a.b.(consumerLagInspector)
+	if !ok {
+		return nil, errors.New("lag not supported by broker")
+	}
+
+	return li.ConsumerLag(ctx, group, topic)
+}
+
+func (a topicDebugAdapter) TopicCount(ctx context.Context, topic string) (int64, error) {
+	type topicCounter interface {
+		TopicCount(ctx context.Context, topic string) (int64, error)
+	}
+
+	tc, ok := a.b.(topicCounter)
+	if !ok {
+		return 0, errors.New("topic count not supported by broker")
+	}
+
+	return tc.TopicCount(ctx, topic)
+}
+
+func (a topicDebugAdapter) Peek(topic string, limit int) ([]any, error) {
+	type topicPeeker interface {
+		Peek(topic string, limit int) ([]any, error)
+	}
+
+	pk, ok := a.b.(topicPeeker)
+	if !ok {
+		return nil, errors.New("peek not supported by broker")
+	}
+
+	return pk.Peek(topic, limit)
 }
 
 func (p *promSink) IncProduceRejected(reason string) {
@@ -517,6 +558,9 @@ func main() {
 
 	// mount v1 under /v1/*
 	rootMux.Handle("/v1/", http.StripPrefix("/v1", v1Mux))
+	// Embedded dashboard UI
+	rootMux.Handle("/ui", http.RedirectHandler("/ui/", http.StatusPermanentRedirect))
+	rootMux.Handle("/ui/", ui.Handler())
 	// Prometheus scrape endpoint (not versioned yet)
 	rootMux.Handle("/metrics", promhttp.Handler())
 
