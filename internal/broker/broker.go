@@ -403,6 +403,82 @@ func (b *InMemoryBroker) ListTopics(_ context.Context) ([]string, error) {
 	return names, nil
 }
 
+// TopicCount returns the buffered message count for a topic across all partitions.
+func (b *InMemoryBroker) TopicCount(_ context.Context, topic string) (int64, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ts, ok := b.topics[topic]
+	if !ok {
+		return 0, fmt.Errorf("topic not found: %s", topic)
+	}
+
+	var total int64
+	for _, part := range ts.partitions {
+		total += int64(len(part))
+	}
+	return total, nil
+}
+
+// Peek returns recent messages for a topic (descending by offset, partition tie-break).
+func (b *InMemoryBroker) Peek(topic string, limit int) ([]any, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ts, ok := b.topics[topic]
+	if !ok {
+		return nil, fmt.Errorf("topic not found: %s", topic)
+	}
+
+	type peekMsg struct {
+		Partition int
+		Message   Message
+	}
+
+	flat := make([]peekMsg, 0)
+	for p, part := range ts.partitions {
+		for _, m := range part {
+			flat = append(flat, peekMsg{Partition: p, Message: m})
+		}
+	}
+
+	sort.Slice(flat, func(i, j int) bool {
+		if flat[i].Message.Offset != flat[j].Message.Offset {
+			return flat[i].Message.Offset > flat[j].Message.Offset
+		}
+		return flat[i].Partition < flat[j].Partition
+	})
+
+	if len(flat) > limit {
+		flat = flat[:limit]
+	}
+
+	out := make([]any, 0, len(flat))
+	for _, row := range flat {
+		m := row.Message
+		out = append(out, map[string]any{
+			"topic":      topic,
+			"partition":  row.Partition,
+			"offset":     m.Offset,
+			"attempts":   m.Attempts,
+			"last_error": m.LastError,
+			"key":        string(m.Key),
+			"value":      string(m.Value),
+			"routing":    m.Routing,
+			"envelope":   m.Envelope,
+		})
+	}
+
+	return out, nil
+}
+
 func (b *InMemoryBroker) Produce(ctx context.Context, topic string, msg Message) error {
 	if topic == "" {
 		return errors.New("topic cannot be empty")
