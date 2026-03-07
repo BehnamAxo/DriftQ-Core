@@ -165,13 +165,45 @@ export function useDashboardData(activeTab) {
         groupList.map((g) => {
           const rows = lagDetails[g] || [];
           const topicsSet = new Set(rows.map((r) => r.topic));
+          const topicSummaries = Array.from(topicsSet)
+            .sort()
+            .map((topicName) => {
+              const topicRows = rows.filter((r) => r.topic === topicName);
+              return {
+                topic: topicName,
+                lag: topicRows.reduce((sum, r) => sum + safeNum(r.lag), 0),
+                inflight: topicRows.reduce((sum, r) => sum + safeNum(r.inflight), 0),
+                committed: topicRows.reduce((sum, r) => sum + Math.max(0, safeNum(r.committed_offset)), 0),
+                head: topicRows.reduce((sum, r) => sum + Math.max(0, safeNum(r.head_offset)), 0),
+                partitions: topicRows.length
+              };
+            });
+
           return {
             group: g,
             topics: Array.from(topicsSet),
             activeLease: rows.reduce((sum, r) => sum + safeNum(r.inflight), 0),
             totalAcked: rows.reduce((sum, r) => sum + Math.max(0, safeNum(r.committed_offset)), 0),
             totalNacked: 0,
-            status: rows.some((r) => safeNum(r.inflight) > 0) ? "connected" : "idle"
+            totalLag: rows.reduce((sum, r) => sum + safeNum(r.lag), 0),
+            partitions: rows.length,
+            rows: rows
+              .map((r) => ({
+                topic: r.topic || "unknown",
+                partition: safeNum(r.partition),
+                headOffset: Math.max(0, safeNum(r.head_offset)),
+                committedOffset: Math.max(0, safeNum(r.committed_offset)),
+                inflight: safeNum(r.inflight),
+                lag: safeNum(r.lag)
+              }))
+              .sort((a, b) => {
+                if (a.topic !== b.topic) {
+                  return a.topic.localeCompare(b.topic);
+                }
+                return a.partition - b.partition;
+              }),
+            topicSummaries,
+            status: rows.some((r) => safeNum(r.inflight) > 0) ? "connected" : rows.some((r) => safeNum(r.lag) > 0) ? "backlog" : "idle"
           };
         })
       );

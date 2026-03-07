@@ -246,6 +246,10 @@ body,
   gap: 8px;
 }
 
+.dq-form-actions.top-gap {
+  margin-top: 10px;
+}
+
 .dq-form-actions .mini-btn[disabled] {
   opacity: 0.6;
   cursor: not-allowed;
@@ -306,6 +310,11 @@ body,
   border: 1px solid #1e293b;
   border-radius: 8px;
   padding: 14px;
+}
+
+.dq-panel.selected {
+  border-color: #00ff9d55;
+  box-shadow: 0 0 0 1px #00ff9d22 inset;
 }
 
 .dq-panel h3 {
@@ -385,6 +394,10 @@ th.right {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 14px;
+}
+
+.dq-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .dq-panel.topic .row,
