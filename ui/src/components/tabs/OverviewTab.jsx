@@ -127,8 +127,8 @@ export default function OverviewTab({
                   <span className="badge" style={{ borderColor: `${e.color}66`, color: e.color }}>
                     {e.type}
                   </span>
-                  <span>{e.topic}</span>
-                  <span className="dim">{e.group}</span>
+                  <span>{e.topic}{e.count > 1 ? ` x${e.count}` : ""}</span>
+                  <span className="dim">{[e.group, e.detail].filter(Boolean).join(" | ")}</span>
                 </div>
               ))
             }

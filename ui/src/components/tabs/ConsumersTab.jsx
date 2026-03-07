@@ -330,7 +330,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
 
                 <label className="dq-input-stack small">
                   <span>Lease Ms</span>
-                  <input type="number" min="1" step="1000" value={leaseMs} onChange={(e) => setLeaseMs(e.target.value)} />
+                  <input type="number" min="1" step="1" value={leaseMs} onChange={(e) => setLeaseMs(e.target.value)} />
                 </label>
 
                 <div className="dq-form-actions">

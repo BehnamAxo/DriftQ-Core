@@ -56,6 +56,11 @@ type statusRecorder struct {
 type promSink struct {
 	produceRejected *prometheus.CounterVec
 	dlqTotal        *prometheus.CounterVec
+	topicsCreated   *prometheus.CounterVec
+	acksTotal       *prometheus.CounterVec
+	nacksTotal      *prometheus.CounterVec
+	leaseTimeouts   *prometheus.CounterVec
+	redeliveries    *prometheus.CounterVec
 	walAppend       *prometheus.HistogramVec
 	dispatch        prometheus.Histogram
 	dispatchStaged  prometheus.Counter
@@ -110,6 +115,36 @@ func (p *promSink) IncProduceRejected(reason string) {
 
 func (p *promSink) IncDLQ(topic, reason string) {
 	p.dlqTotal.WithLabelValues(topic, reason).Inc()
+}
+
+func (p *promSink) IncTopicCreated(topic string) {
+	if p.topicsCreated != nil {
+		p.topicsCreated.WithLabelValues(topic).Inc()
+	}
+}
+
+func (p *promSink) IncAck(topic, group string) {
+	if p.acksTotal != nil {
+		p.acksTotal.WithLabelValues(topic, group).Inc()
+	}
+}
+
+func (p *promSink) IncNack(topic, group, reason string) {
+	if p.nacksTotal != nil {
+		p.nacksTotal.WithLabelValues(topic, group, reason).Inc()
+	}
+}
+
+func (p *promSink) IncLeaseTimeout(topic, group string) {
+	if p.leaseTimeouts != nil {
+		p.leaseTimeouts.WithLabelValues(topic, group).Inc()
+	}
+}
+
+func (p *promSink) IncRedelivery(topic, group, cause string) {
+	if p.redeliveries != nil {
+		p.redeliveries.WithLabelValues(topic, group, cause).Inc()
+	}
 }
 
 func (p *promSink) ObserveWALAppend(kind string, d time.Duration) {
@@ -378,6 +413,46 @@ func main() {
 		[]string{"topic", "reason"},
 	)
 
+	topicsCreated := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "topic_created_total",
+			Help: "Total number of topics created.",
+		},
+		[]string{"topic"},
+	)
+
+	acksTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_acks_total",
+			Help: "Total number of successful message acknowledgements.",
+		},
+		[]string{"topic", "group"},
+	)
+
+	nacksTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_nacks_total",
+			Help: "Total number of explicit message nacks.",
+		},
+		[]string{"topic", "group", "reason"},
+	)
+
+	leaseTimeouts := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_lease_timeouts_total",
+			Help: "Total number of message lease timeouts detected by redelivery.",
+		},
+		[]string{"topic", "group"},
+	)
+
+	redeliveries := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_redeliveries_total",
+			Help: "Total number of broker redeliveries.",
+		},
+		[]string{"topic", "group", "cause"},
+	)
+
 	walAppend := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "broker_wal_append_duration_seconds",
@@ -402,11 +477,28 @@ func main() {
 		},
 	)
 
-	prometheus.MustRegister(produceRejected, dlqTotal, walAppend, dispatch, dispatchStaged, NewBrokerCollector(b))
+	prometheus.MustRegister(
+		produceRejected,
+		dlqTotal,
+		topicsCreated,
+		acksTotal,
+		nacksTotal,
+		leaseTimeouts,
+		redeliveries,
+		walAppend,
+		dispatch,
+		dispatchStaged,
+		NewBrokerCollector(b),
+	)
 
 	b.SetMetricsSink(&promSink{
 		produceRejected: produceRejected,
 		dlqTotal:        dlqTotal,
+		topicsCreated:   topicsCreated,
+		acksTotal:       acksTotal,
+		nacksTotal:      nacksTotal,
+		leaseTimeouts:   leaseTimeouts,
+		redeliveries:    redeliveries,
 		walAppend:       walAppend,
 		dispatch:        dispatch,
 		dispatchStaged:  dispatchStaged,

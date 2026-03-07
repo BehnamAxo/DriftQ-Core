@@ -5,6 +5,58 @@ import { safeNum } from "../utils/number";
 import { nowClock } from "../utils/time";
 import { normalizeRun } from "../utils/workflow";
 
+function counterKey(labels, keys) {
+  return keys.map((key) => labels?.[key] || "").join("\u0001");
+}
+
+function counterMap(rows, name, keys) {
+  const out = {};
+  for (const row of metricsByName(rows, name)) {
+    const key = counterKey(row.labels, keys);
+    out[key] = (out[key] || 0) + safeNum(row.value);
+  }
+  return out;
+}
+
+function pushCounterEvents(target, options) {
+  const { current, previous, type, color, ts, parse, makeId, shouldInclude } = options;
+
+  for (const [key, value] of Object.entries(current)) {
+    const delta = safeNum(value) - safeNum(previous[key]);
+    if (delta <= 0) {
+      continue;
+    }
+
+    const payload = parse(key, delta);
+    if (shouldInclude && !shouldInclude(payload, delta)) {
+      continue;
+    }
+
+    target.push({
+      id: makeId ? makeId(key, delta) : `${type}-${key}-${ts}`,
+      type,
+      color,
+      ts,
+      count: delta,
+      ...payload
+    });
+  }
+}
+
+function normalizeReason(reason) {
+  const value = (reason || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value === "ack_timeout") {
+    return "ack_timeout";
+  }
+  if (value.length > 32) {
+    return `${value.slice(0, 29)}...`;
+  }
+  return value;
+}
+
 export function useDashboardData(activeTab) {
   const [group, setGroup] = useState("bench");
   const [health, setHealth] = useState("unknown");
@@ -45,6 +97,15 @@ export function useDashboardData(activeTab) {
     at: 0,
     producedByTopic: {},
     consumedByTopic: {},
+    inflightByTopic: {},
+    eventCounters: {
+      topicCreated: {},
+      acks: {},
+      nacks: {},
+      leaseTimeouts: {},
+      redeliveries: {},
+      dlq: {}
+    },
     totals: { produced: 0, consumed: 0, inflight: 0, dlq: 0, runCount: 0 }
   });
 
@@ -305,28 +366,121 @@ export function useDashboardData(activeTab) {
       const ts = nowClock();
       const deltaEvents = [];
 
-      if (totals.produced > prevTotals.produced) {
-        deltaEvents.push({ id: `p-${nowMs}`, type: "PRODUCE", color: "#00ff9d", ts, topic: "broker", group: selectedGroup });
-      }
+      if (prev.at > 0) {
+        for (const topic of nextTopics) {
+          const producedDelta = safeNum(topic.produced) - safeNum(prev.producedByTopic[topic.name]);
+          if (producedDelta > 0) {
+            deltaEvents.push({
+              id: `p-${topic.name}-${nowMs}`,
+              type: "PRODUCE",
+              color: "#00ff9d",
+              ts,
+              topic: topic.name,
+              group: "broker",
+              count: producedDelta
+            });
+          }
 
-      if (totals.consumed > prevTotals.consumed) {
-        deltaEvents.push({ id: `a-${nowMs}`, type: "ACK", color: "#6ee7b7", ts, topic: "broker", group: selectedGroup });
-      }
+          const inflightDelta = safeNum(topic.inflight) - safeNum(prev.inflightByTopic[topic.name]);
+          if (inflightDelta > 0) {
+            deltaEvents.push({
+              id: `lease-${topic.name}-${nowMs}`,
+              type: "LEASE",
+              color: "#818cf8",
+              ts,
+              topic: topic.name,
+              group: selectedGroup,
+              count: inflightDelta
+            });
+          }
+        }
 
-      if (totals.inflight > prevTotals.inflight) {
-        deltaEvents.push({ id: `l-${nowMs}`, type: "LEASE", color: "#818cf8", ts, topic: "broker", group: selectedGroup });
-      }
+        const topicCreatedCounters = counterMap(metricRows, "topic_created_total", ["topic"]);
+        const ackCounters = counterMap(metricRows, "message_acks_total", ["topic", "group"]);
+        const nackCounters = counterMap(metricRows, "message_nacks_total", ["topic", "group", "reason"]);
+        const leaseTimeoutCounters = counterMap(metricRows, "message_lease_timeouts_total", ["topic", "group"]);
+        const redeliveryCounters = counterMap(metricRows, "message_redeliveries_total", ["topic", "group", "cause"]);
+        const dlqCountersByReason = counterMap(metricRows, "dlq_messages_total", ["topic", "reason"]);
 
-      if (totals.dlq > prevTotals.dlq) {
-        deltaEvents.push({ id: `d-${nowMs}`, type: "DLQ", color: "#ef4444", ts, topic: "dlq", group: "system" });
-      }
+        pushCounterEvents(deltaEvents, {
+          current: topicCreatedCounters,
+          previous: prev.eventCounters.topicCreated,
+          type: "TOPIC",
+          color: "#f59e0b",
+          ts,
+          parse: (key) => {
+            const [topic] = key.split("\u0001");
+            return { topic: topic || "unknown", group: "system", detail: "created" };
+          }
+        });
 
-      if (totals.runCount > prevTotals.runCount) {
-        deltaEvents.push({ id: `r-${nowMs}`, type: "RUN", color: "#38bdf8", ts, topic: "workflow", group: "v2" });
+        pushCounterEvents(deltaEvents, {
+          current: ackCounters,
+          previous: prev.eventCounters.acks,
+          type: "ACK",
+          color: "#6ee7b7",
+          ts,
+          parse: (key) => {
+            const [topic, eventGroup] = key.split("\u0001");
+            return { topic: topic || "unknown", group: eventGroup || "unknown" };
+          }
+        });
+
+        pushCounterEvents(deltaEvents, {
+          current: nackCounters,
+          previous: prev.eventCounters.nacks,
+          type: "NACK",
+          color: "#fb7185",
+          ts,
+          parse: (key) => {
+            const [topic, eventGroup, reason] = key.split("\u0001");
+            return { topic: topic || "unknown", group: eventGroup || "unknown", detail: normalizeReason(reason) };
+          }
+        });
+
+        pushCounterEvents(deltaEvents, {
+          current: leaseTimeoutCounters,
+          previous: prev.eventCounters.leaseTimeouts,
+          type: "LEASE_TIMEOUT",
+          color: "#f97316",
+          ts,
+          parse: (key) => {
+            const [topic, eventGroup] = key.split("\u0001");
+            return { topic: topic || "unknown", group: eventGroup || "unknown" };
+          }
+        });
+
+        pushCounterEvents(deltaEvents, {
+          current: redeliveryCounters,
+          previous: prev.eventCounters.redeliveries,
+          type: "REDELIVERY",
+          color: "#38bdf8",
+          ts,
+          parse: (key) => {
+            const [topic, eventGroup, cause] = key.split("\u0001");
+            return { topic: topic || "unknown", group: eventGroup || "unknown", detail: normalizeReason(cause) };
+          }
+        });
+
+        pushCounterEvents(deltaEvents, {
+          current: dlqCountersByReason,
+          previous: prev.eventCounters.dlq,
+          type: "DLQ",
+          color: "#ef4444",
+          ts,
+          parse: (key) => {
+            const [topic, reason] = key.split("\u0001");
+            return { topic: topic || "dlq", group: "system", detail: normalizeReason(reason) };
+          }
+        });
+
+        if (totals.runCount > prevTotals.runCount) {
+          deltaEvents.push({ id: `r-${nowMs}`, type: "RUN", color: "#38bdf8", ts, topic: "workflow", group: "v2", count: totals.runCount - prevTotals.runCount });
+        }
       }
 
       if (deltaEvents.length === 0) {
-        deltaEvents.push({ id: `h-${nowMs}`, type: "HEARTBEAT", color: "#64748b", ts, topic: "node", group: "local" });
+        deltaEvents.push({ id: `h-${nowMs}`, type: "HEARTBEAT", color: "#64748b", ts, topic: "node", group: "local", count: 1 });
       }
 
       setEvents((prevEvents) => [...deltaEvents, ...prevEvents].slice(0, 40));
@@ -335,6 +489,15 @@ export function useDashboardData(activeTab) {
         at: nowMs,
         producedByTopic: Object.fromEntries(nextTopics.map((t) => [t.name, t.produced])),
         consumedByTopic: Object.fromEntries(nextTopics.map((t) => [t.name, t.consumed])),
+        inflightByTopic: Object.fromEntries(nextTopics.map((t) => [t.name, t.inflight])),
+        eventCounters: {
+          topicCreated: counterMap(metricRows, "topic_created_total", ["topic"]),
+          acks: counterMap(metricRows, "message_acks_total", ["topic", "group"]),
+          nacks: counterMap(metricRows, "message_nacks_total", ["topic", "group", "reason"]),
+          leaseTimeouts: counterMap(metricRows, "message_lease_timeouts_total", ["topic", "group"]),
+          redeliveries: counterMap(metricRows, "message_redeliveries_total", ["topic", "group", "cause"]),
+          dlq: counterMap(metricRows, "dlq_messages_total", ["topic", "reason"])
+        },
         totals
       };
 

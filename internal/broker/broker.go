@@ -449,6 +449,10 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 		}
 	}
 
+	if b.metrics != nil {
+		b.metrics.IncTopicCreated(name)
+	}
+
 	return nil
 }
 
@@ -836,6 +840,9 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 	if b.idem == nil || idk == "" {
 		err := b.ackLocked(topic, group, partition, offset)
 		b.mu.Unlock()
+		if err == nil && b.metrics != nil {
+			b.metrics.IncAck(topic, group)
+		}
 		return err
 	}
 
@@ -857,7 +864,11 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.ackLocked(topic, group, partition, offset)
+	err := b.ackLocked(topic, group, partition, offset)
+	if err == nil && b.metrics != nil {
+		b.metrics.IncAck(topic, group)
+	}
+	return err
 }
 
 func (b *InMemoryBroker) AckCumulativeIfOwner(ctx context.Context, topic, group string, partition int, offset int64, owner string) error {
@@ -1178,6 +1189,10 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 
 	// Push SentAt far enough back so redelivery sees it as expired *now*
 	e.SentAt = now.Add(-lease - time.Millisecond)
+
+	if b.metrics != nil {
+		b.metrics.IncNack(topic, group, reason)
+	}
 
 	// 5) Optional: resend now
 	b.redeliverExpiredLocked()
