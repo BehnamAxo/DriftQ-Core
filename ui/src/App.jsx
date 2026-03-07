@@ -131,7 +131,15 @@ export default function App() {
             <WorkflowsTab
               runs={runs}
               selectedRun={selectedRun}
-              onSelectRun={(id) => setSelectedRun((prev) => (prev === id ? null : id))}
+              onSelectRun={(id, options = {}) => {
+                setSelectedRun((prev) => {
+                  if (options.toggle === false) {
+                    return id;
+                  }
+
+                  return prev === id ? null : id;
+                });
+              }}
               onRunChanged={() => refresh(new AbortController().signal)}
             />
           ) : null

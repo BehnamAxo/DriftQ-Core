@@ -563,6 +563,10 @@ th.right {
   background: #00ff9d18;
 }
 
+.step.active {
+  box-shadow: inset 0 0 0 1px #38bdf8;
+}
+
 .step.failed {
   border-color: #ef4444;
   background: #ef444418;
@@ -573,13 +577,7 @@ th.right {
   border-top: 1px solid #1e293b;
   padding-top: 10px;
   display: grid;
-  gap: 5px;
-}
-
-.timeline div {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
+  gap: 12px;
 }
 
 .dq-workflow-actions {
@@ -587,9 +585,99 @@ th.right {
   padding-top: 12px;
   border-top: 1px solid #1e293b;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   gap: 10px;
   align-items: end;
+}
+
+.dq-workflow-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.dq-workflow-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.dq-workflow-summary {
+  gap: 10px;
+}
+
+.dq-workflow-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.dq-workflow-step-table {
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dq-table-row {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 0.6fr 0.8fr 0.8fr 1.2fr;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  border-top: 1px solid #1e293b;
+  align-items: center;
+}
+
+.dq-workflow-artifacts .dq-table-row {
+  grid-template-columns: 1.1fr 0.7fr 1fr 0.5fr 0.7fr 0.9fr;
+}
+
+.dq-table-row:first-child {
+  border-top: none;
+}
+
+.dq-table-head {
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  background: #0b1120;
+}
+
+.dq-workflow-action-buttons {
+  justify-content: flex-end;
+}
+
+.dq-workflow-artifacts {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #1e293b;
+}
+
+.dq-workflow-step-focus {
+  display: grid;
+  gap: 10px;
+}
+
+.dq-workflow-step-focus .dq-note {
+  margin: 0;
+}
+
+.dq-inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dq-inline-actions .mini-btn {
+  text-decoration: none;
+}
+
+.dq-artifact-preview {
+  margin-top: 2px;
 }
 
 .dq-footer {
@@ -644,6 +732,20 @@ th.right {
   }
 
   .dq-workflow-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .dq-workflow-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dq-workflow-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .dq-table-row,
+  .dq-workflow-artifacts .dq-table-row {
     grid-template-columns: 1fr;
   }
 
