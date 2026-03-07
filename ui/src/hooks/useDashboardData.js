@@ -244,10 +244,16 @@ export function useDashboardData(activeTab) {
               return {
                 id: `${m.topic}:${m.partition}:${m.offset}`,
                 topic: m.topic || effectiveDlq,
+                originalTopic: dlqMeta.original_topic || "",
+                originalPartition: safeNum(dlqMeta.original_partition),
+                originalOffset: safeNum(dlqMeta.original_offset),
                 reason: dlqMeta.last_error || m.last_error || "unknown",
                 retries: safeNum(dlqMeta.attempts || m.attempts),
                 failedAt: routedMs > 0 ? new Date(routedMs).toISOString() : "",
-                value: m.value || ""
+                key: m.key || "",
+                value: m.value || "",
+                envelope: m.envelope || null,
+                routing: m.routing || null
               };
             })
           );

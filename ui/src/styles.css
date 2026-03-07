@@ -184,6 +184,18 @@ body,
   grid-template-columns: minmax(0, 2fr) minmax(0, 1.5fr) auto;
 }
 
+.dq-form-grid.consume {
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.2fr) minmax(160px, 1.1fr) minmax(120px, 160px) auto;
+}
+
+.dq-form-grid.consume-actions {
+  grid-template-columns: minmax(0, 2fr) auto;
+}
+
+.dq-form-grid.redrive {
+  grid-template-columns: minmax(0, 2fr) auto;
+}
+
 .dq-input-stack {
   display: flex;
   flex-direction: column;
@@ -250,6 +262,10 @@ body,
   margin-top: 10px;
 }
 
+.dq-stack.top-gap {
+  margin-top: 12px;
+}
+
 .dq-form-actions .mini-btn[disabled] {
   opacity: 0.6;
   cursor: not-allowed;
@@ -265,6 +281,12 @@ body,
   font-family: inherit;
   font-size: 11px;
   cursor: pointer;
+}
+
+.mini-btn.danger {
+  color: #fca5a5;
+  border-color: #ef444455;
+  background: #7f1d1d22;
 }
 
 .dq-controls span {

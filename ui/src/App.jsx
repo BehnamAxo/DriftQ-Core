@@ -97,7 +97,11 @@ export default function App() {
           ) : null
         }
 
-        {activeTab === "Consumers" ? <ConsumersTab consumers={consumers} /> : null}
+        {
+          activeTab === "Consumers" ? (
+            <ConsumersTab consumers={consumers} onConsumerChanged={() => refresh(new AbortController().signal)} />
+          ) : null
+        }
 
         {
           activeTab === "Dead Letters" ? (
@@ -107,6 +111,8 @@ export default function App() {
               dlqMessages={dlqMessages}
               selectedDLQ={selectedDLQ}
               onToggleInspect={(id) => setSelectedDLQ((prev) => (prev === id ? null : id))}
+              topics={topics}
+              onRedrive={() => refresh(new AbortController().signal)}
             />
           ) : null
         }
