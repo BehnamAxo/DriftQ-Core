@@ -133,6 +133,19 @@ body,
   margin-bottom: 12px;
 }
 
+.dq-error.compact {
+  margin-bottom: 10px;
+}
+
+.dq-success {
+  color: #86efac;
+  background: #052e1633;
+  border: 1px solid #22c55e55;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+
 .dq-controls {
   display: flex;
   align-items: center;
@@ -158,6 +171,50 @@ body,
   padding: 6px 10px;
   min-width: 180px;
   font-family: inherit;
+}
+
+.dq-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(120px, 180px) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.dq-input-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dq-input-stack span {
+  color: #94a3b8;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.dq-input-stack input {
+  width: 100%;
+  background: #0d1220;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: inherit;
+}
+
+.dq-input-stack.small input {
+  max-width: 160px;
+}
+
+.dq-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dq-form-actions .mini-btn[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .dq-controls button,
@@ -455,5 +512,13 @@ th.right {
 
   .dq-split {
     grid-template-columns: 1fr;
+  }
+
+  .dq-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dq-input-stack.small input {
+    max-width: none;
   }
 }

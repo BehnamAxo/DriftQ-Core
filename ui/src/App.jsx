@@ -81,7 +81,11 @@ export default function App() {
           ) : null
         }
 
-        {activeTab === "Topics" ? <TopicsTab topics={topics} spark={spark} /> : null}
+        {
+          activeTab === "Topics"
+            ? <TopicsTab topics={topics} spark={spark} onTopicsChanged={() => refresh(new AbortController().signal)} />
+            : null
+        }
 
         {activeTab === "Producers" ? <ProducersTab producerReasons={producerReasons} /> : null}
 
