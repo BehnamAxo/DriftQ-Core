@@ -327,6 +327,13 @@ body,
   gap: 16px;
 }
 
+.dq-overview-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
 .dq-panel {
   background: #0d1220;
   border: 1px solid #1e293b;
@@ -345,6 +352,35 @@ body,
   color: #94a3b8;
   text-transform: uppercase;
   letter-spacing: 1px;
+}
+
+.dq-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.dq-kv-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  background: #0a0f1d;
+}
+
+.dq-kv-label {
+  color: #64748b;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.dq-kv-value {
+  color: #e2e8f0;
+  font-size: 12px;
+  word-break: break-word;
 }
 
 table {
@@ -586,6 +622,10 @@ th.right {
   }
 
   .dq-split {
+    grid-template-columns: 1fr;
+  }
+
+  .dq-kv-grid {
     grid-template-columns: 1fr;
   }
 

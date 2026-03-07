@@ -1,4 +1,17 @@
-export default function Header({ version, health, updatedAt }) {
+function displayAddr(config) {
+  const configured = (config?.addr || "").trim();
+  if (!configured) {
+    return window.location.host || "unknown";
+  }
+
+  if (configured.startsWith(":") || configured.startsWith("0.0.0.0:") || configured.startsWith("[::]:")) {
+    return window.location.host || configured;
+  }
+
+  return configured;
+}
+
+export default function Header({ version, health, updatedAt, config }) {
   return (
     <header className="dq-header">
       <div className="dq-logo-wrap">
@@ -12,7 +25,7 @@ export default function Header({ version, health, updatedAt }) {
 
       <div className="dq-status-wrap">
         <span className={`dq-dot ${health === "ok" ? "ok" : "warn"}`} />
-        <span className="dq-status-text">Connected - localhost:8080</span>
+        <span className="dq-status-text">Connected - {displayAddr(config)}</span>
         <span className="dq-status-text dim">updated {updatedAt}</span>
       </div>
     </header>

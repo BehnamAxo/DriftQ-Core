@@ -9,6 +9,21 @@ export function useDashboardData(activeTab) {
   const [group, setGroup] = useState("bench");
   const [health, setHealth] = useState("unknown");
   const [version, setVersion] = useState({ version: "unknown", commit: "unknown", wal_enabled: false });
+  const [config, setConfig] = useState({
+    addr: "",
+    wal_path: "",
+    access_log: false,
+    engine_store: "unknown",
+    engine_wal: "unknown",
+    artifacts_dir: "",
+    log_level: "unknown",
+    log_format: "unknown",
+    max_partition_bytes: 0,
+    max_partition_msgs: 0,
+    max_inflight: 0,
+    wal_sync_interval: "",
+    wal_buffer_bytes: 0
+  });
   const [updatedAt, setUpdatedAt] = useState("-");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -37,20 +52,33 @@ export function useDashboardData(activeTab) {
     async (signal) => {
       const selectedGroup = group.trim() || "bench";
       const errors = [];
-      const [healthRes, versionRes, topicsRes, lagRes, metricsRes, runsRes] = await Promise.allSettled([
+      const [healthRes, versionRes, configRes, topicsRes, lagRes, metricsRes, runsRes] = await Promise.allSettled([
         getJSON("/v1/healthz", signal),
         getJSON("/v1/version", signal),
+        getJSON("/v1/config", signal),
         getJSON("/debug/topics", signal),
         getJSON(`/debug/topics/lag?group=${encodeURIComponent(selectedGroup)}`, signal),
         getText("/metrics", signal),
         getJSON("/debug/runs?limit=10", signal)
       ]);
 
-      if (healthRes.status === "fulfilled") setHealth(healthRes.value.status || "unknown");
-      else errors.push(healthRes.reason?.message || "health failed");
+      if (healthRes.status === "fulfilled") {
+        setHealth(healthRes.value.status || "unknown");
+      } else {
+        errors.push(healthRes.reason?.message || "health failed");
+      }
 
-      if (versionRes.status === "fulfilled") setVersion(versionRes.value);
-      else errors.push(versionRes.reason?.message || "version failed");
+      if (versionRes.status === "fulfilled") {
+        setVersion(versionRes.value);
+      } else {
+        errors.push(versionRes.reason?.message || "version failed");
+      }
+
+      if (configRes.status === "fulfilled") {
+        setConfig(configRes.value);
+      } else {
+        errors.push(configRes.reason?.message || "config failed");
+      }
 
       const topicRows = topicsRes.status === "fulfilled" ? topicsRes.value.topics || [] : [];
       if (topicsRes.status !== "fulfilled") {
@@ -340,6 +368,7 @@ export function useDashboardData(activeTab) {
 
   return {
     consumers,
+    config,
     dlqMessages,
     dlqTopic,
     error,

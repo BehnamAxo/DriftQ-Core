@@ -38,6 +38,7 @@ var (
 
 type server struct {
 	broker broker.Broker
+	config v1.ConfigResponse
 }
 
 type topicDebugAdapter struct {
@@ -453,7 +454,24 @@ func main() {
 		)
 	}
 
-	s := &server{broker: b}
+	s := &server{
+		broker: b,
+		config: v1.ConfigResponse{
+			Addr:              *addr,
+			WalPath:           *walPath,
+			AccessLog:         *accessLog,
+			EngineStore:       strings.ToLower(strings.TrimSpace(*engineStore)),
+			EngineWAL:         *engineWAL,
+			ArtifactsDir:      *artifactsDir,
+			LogLevel:          strings.ToLower(strings.TrimSpace(*logLevel)),
+			LogFormat:         strings.ToLower(strings.TrimSpace(*logFormat)),
+			MaxPartitionBytes: b.MaxPartitionBytes(),
+			MaxPartitionMsgs:  b.MaxPartitionMsgs(),
+			MaxInFlight:       b.MaxInFlight(),
+			WALSyncInterval:   walSyncInterval.String(),
+			WALBufferBytes:    *walBufferBytes,
+		},
+	}
 
 	// v2 runner store (memory or durable file WAL)
 	var runStore engine.Store
@@ -555,6 +573,7 @@ func main() {
 	v1Mux.HandleFunc("/nack", s.requireMethod(http.MethodPost)(s.handleNack))
 	v1Mux.HandleFunc("/topics", s.method(s.handleTopicsList, s.handleTopicsCreate))
 	v1Mux.HandleFunc("/version", s.requireMethod(http.MethodGet)(s.handleVersion))
+	v1Mux.HandleFunc("/config", s.requireMethod(http.MethodGet)(s.handleConfig))
 
 	// mount v1 under /v1/*
 	rootMux.Handle("/v1/", http.StripPrefix("/v1", v1Mux))
@@ -698,6 +717,15 @@ func (s *server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		Commit:     commit,
 		WalEnabled: walOn,
 	})
+}
+
+func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		v1.MethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	v1.WriteJSON(w, http.StatusOK, s.config)
 }
 
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {

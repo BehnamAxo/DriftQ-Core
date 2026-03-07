@@ -1,7 +1,46 @@
 import Sparkline from "../Sparkline";
 import { fmt } from "../../utils/number";
 
+function formatBytes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = n;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+
+  const digits = size >= 10 || index === 0 ? 0 : 1;
+  return `${size.toFixed(digits)} ${units[index]}`;
+}
+
+function snapshotRows(config, version) {
+  return [
+    ["Listen Addr", config.addr || "unknown"],
+    ["WAL", version.wal_enabled ? "enabled" : "disabled"],
+    ["WAL Path", config.wal_path || "n/a"],
+    ["Store Engine", config.engine_store || "unknown"],
+    ["WAL Engine", config.engine_wal || "unknown"],
+    ["Log Mode", `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`],
+    ["Access Log", config.access_log ? "on" : "off"],
+    ["Max In-Flight", fmt(config.max_inflight)],
+    ["Max Partition Msgs", fmt(config.max_partition_msgs)],
+    ["Max Partition Bytes", formatBytes(config.max_partition_bytes)],
+    ["WAL Sync", config.wal_sync_interval || "n/a"],
+    ["WAL Buffer", formatBytes(config.wal_buffer_bytes)],
+    ["Artifacts Dir", config.artifacts_dir || "n/a"],
+    ["Version", version.version || "unknown"]
+  ];
+}
+
 export default function OverviewTab({
+  config,
+  version,
   totalProduced,
   totalConsumed,
   totalInflight,
@@ -30,6 +69,22 @@ export default function OverviewTab({
             <div className="dq-label">{label}</div>
           </div>
         ))}
+      </section>
+
+      <section className="dq-overview-grid">
+        <div className="dq-panel">
+          <h3>Broker Snapshot</h3>
+          <div className="dq-kv-grid">
+            {
+              snapshotRows(config, version).map(([label, value]) => (
+                <div className="dq-kv-row" key={label}>
+                  <span className="dq-kv-label">{label}</span>
+                  <span className="dq-kv-value">{value}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
       </section>
 
       <section className="dq-split">

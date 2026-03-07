@@ -15,6 +15,22 @@ type VersionResponse struct {
 	WalEnabled bool   `json:"wal_enabled"`
 }
 
+type ConfigResponse struct {
+	Addr              string `json:"addr"`
+	WalPath           string `json:"wal_path"`
+	AccessLog         bool   `json:"access_log"`
+	EngineStore       string `json:"engine_store"`
+	EngineWAL         string `json:"engine_wal"`
+	ArtifactsDir      string `json:"artifacts_dir"`
+	LogLevel          string `json:"log_level"`
+	LogFormat         string `json:"log_format"`
+	MaxPartitionBytes int    `json:"max_partition_bytes"`
+	MaxPartitionMsgs  int    `json:"max_partition_msgs"`
+	MaxInFlight       int    `json:"max_inflight"`
+	WALSyncInterval   string `json:"wal_sync_interval"`
+	WALBufferBytes    int    `json:"wal_buffer_bytes"`
+}
+
 type HealthzResponse struct {
 	Status string `json:"status"`
 }

@@ -19,6 +19,7 @@ export default function App() {
 
   const {
     consumers,
+    config,
     dlqMessages,
     dlqTopic,
     error,
@@ -45,7 +46,7 @@ export default function App() {
 
   return (
     <div className="dq-root">
-      <Header version={version} health={health} updatedAt={updatedAt} />
+      <Header version={version} health={health} updatedAt={updatedAt} config={config} />
 
       <TabsNav tabs={TABS} activeTab={activeTab} onSelect={setActiveTab} />
 
@@ -68,6 +69,8 @@ export default function App() {
         {
           activeTab === "Overview" ? (
             <OverviewTab
+              config={config}
+              version={version}
               totalProduced={totalProduced}
               totalConsumed={totalConsumed}
               totalInflight={totalInflight}
