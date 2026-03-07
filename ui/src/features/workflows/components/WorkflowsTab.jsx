@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { postJSON } from "../../utils/http";
-import { formatClock } from "../../utils/time";
+import { postJSON } from "../../../utils/http";
+import { formatClock } from "../../../utils/time";
 
 export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChanged }) {
   const [cancelReason, setCancelReason] = useState("dashboard cancel");

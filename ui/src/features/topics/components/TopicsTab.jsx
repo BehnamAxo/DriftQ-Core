@@ -1,6 +1,6 @@
-import Sparkline from "../Sparkline";
-import { fmt } from "../../utils/number";
-import { getJSON, postJSON } from "../../utils/http";
+import Sparkline from "../../shared/components/Sparkline";
+import { fmt } from "../../../utils/number";
+import { getJSON, postJSON } from "../../../utils/http";
 import { useEffect, useState } from "react";
 
 function parseMessageValue(raw) {

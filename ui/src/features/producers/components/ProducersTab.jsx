@@ -1,5 +1,5 @@
-import { fmt } from "../../utils/number";
-import { postJSON } from "../../utils/http";
+import { fmt } from "../../../utils/number";
+import { postJSON } from "../../../utils/http";
 import { useEffect, useState } from "react";
 
 export default function ProducersTab({ producerReasons, topics, onProduced }) {

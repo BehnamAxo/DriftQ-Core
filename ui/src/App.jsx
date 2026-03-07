@@ -1,15 +1,15 @@
-import ConsumersTab from "./components/tabs/ConsumersTab";
-import Controls from "./components/layout/Controls";
-import DeadLettersTab from "./components/tabs/DeadLettersTab";
-import Footer from "./components/layout/Footer";
-import Header from "./components/layout/Header";
-import OverviewTab from "./components/tabs/OverviewTab";
-import ProducersTab from "./components/tabs/ProducersTab";
-import TabsNav from "./components/layout/TabsNav";
-import TopicsTab from "./components/tabs/TopicsTab";
-import WorkflowsTab from "./components/tabs/WorkflowsTab";
+import ConsumersTab from "./features/consumers/components/ConsumersTab";
+import Controls from "./features/layout/components/Controls";
+import DeadLettersTab from "./features/deadLetters/components/DeadLettersTab";
+import Footer from "./features/layout/components/Footer";
+import Header from "./features/layout/components/Header";
+import OverviewTab from "./features/overview/components/OverviewTab";
+import ProducersTab from "./features/producers/components/ProducersTab";
+import TabsNav from "./features/layout/components/TabsNav";
+import TopicsTab from "./features/topics/components/TopicsTab";
+import WorkflowsTab from "./features/workflows/components/WorkflowsTab";
 import { TABS } from "./constants/dashboard";
-import { useDashboardData } from "./hooks/useDashboardData";
+import { useDashboardData } from "./features/dashboard/hooks/useDashboardData";
 import { useState } from "react";
 
 export default function App() {

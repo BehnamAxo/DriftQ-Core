@@ -1,5 +1,5 @@
-import Sparkline from "../Sparkline";
-import { fmt } from "../../utils/number";
+import Sparkline from "../../shared/components/Sparkline";
+import { fmt } from "../../../utils/number";
 
 function formatBytes(value) {
   const n = Number(value);

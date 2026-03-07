@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { fmt } from "../../utils/number";
-import { postJSON, readFirstNDJSON } from "../../utils/http";
+import { fmt } from "../../../utils/number";
+import { postJSON, readFirstNDJSON } from "../../../utils/http";
 
 function parseMessageValue(raw) {
   try {
