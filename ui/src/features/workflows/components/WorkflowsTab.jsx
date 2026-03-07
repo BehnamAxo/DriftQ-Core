@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getJSON, postJSON } from "../../../utils/http";
 import { formatClock } from "../../../utils/time";
 
@@ -14,7 +14,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
   const [actionSuccess, setActionSuccess] = useState("");
   const [artifactsByRun, setArtifactsByRun] = useState({});
   const [artifactErrors, setArtifactErrors] = useState({});
-  const [artifactsLoadingByRun, setArtifactsLoadingByRun] = useState({});
+  const [artifactStatusByRun, setArtifactStatusByRun] = useState({});
   const [preview, setPreview] = useState({
     runID: "",
     artifactID: "",
@@ -23,47 +23,78 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
     contentType: "",
     body: ""
   });
+  const artifactControllersRef = useRef({});
 
-  useEffect(() => {
-    if (!selectedRun || artifactsByRun[selectedRun] || artifactsLoadingByRun[selectedRun]) {
-      return;
+  const loadArtifacts = useCallback((runID, { force = false } = {}) => {
+    if (!runID) {
+      return () => {};
     }
 
-    let cancelled = false;
-    setArtifactsLoadingByRun((prev) => ({ ...prev, [selectedRun]: true }));
-    setArtifactErrors((prev) => ({ ...prev, [selectedRun]: "" }));
+    const artifactStatus = artifactStatusByRun[runID];
+    if (!force && (artifactStatus === "loading" || artifactStatus === "loaded" || artifactStatus === "error")) {
+      return () => {};
+    }
 
-    getJSON(`/debug/run-artifacts?run_id=${encodeURIComponent(selectedRun)}&limit=50`)
+    artifactControllersRef.current[runID]?.abort();
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("artifact list timed out")), 5000);
+    artifactControllersRef.current[runID] = controller;
+    setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "loading" }));
+    setArtifactErrors((prev) => ({ ...prev, [runID]: "" }));
+
+    getJSON(`/debug/run-artifacts?run_id=${encodeURIComponent(runID)}&limit=50`, controller.signal)
       .then((payload) => {
-        if (cancelled) {
+        if (controller.signal.aborted) {
           return;
         }
 
         setArtifactsByRun((prev) => ({
           ...prev,
-          [selectedRun]: Array.isArray(payload.artifacts) ? payload.artifacts : []
+          [runID]: Array.isArray(payload.artifacts) ? payload.artifacts : []
         }));
+        setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "loaded" }));
       })
       .catch((err) => {
-        if (cancelled) {
+        if (controller.signal.aborted) {
+          setArtifactErrors((prev) => ({
+            ...prev,
+            [runID]: err?.message || "failed to load artifacts"
+          }));
+          setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "error" }));
           return;
         }
 
         setArtifactErrors((prev) => ({
           ...prev,
-          [selectedRun]: err?.message || "failed to load artifacts"
+          [runID]: err?.message || "failed to load artifacts"
         }));
+        setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "error" }));
       })
       .finally(() => {
-        if (!cancelled) {
-          setArtifactsLoadingByRun((prev) => ({ ...prev, [selectedRun]: false }));
+        clearTimeout(timeout);
+        if (artifactControllersRef.current[runID] === controller) {
+          delete artifactControllersRef.current[runID];
         }
       });
 
     return () => {
-      cancelled = true;
+      clearTimeout(timeout);
+      controller.abort();
     };
-  }, [artifactsByRun, artifactsLoadingByRun, selectedRun]);
+  }, [artifactStatusByRun]);
+
+  useEffect(() => {
+    if (!selectedRun) {
+      return undefined;
+    }
+
+    return loadArtifacts(selectedRun);
+  }, [loadArtifacts, selectedRun]);
+
+  useEffect(() => () => {
+    Object.values(artifactControllersRef.current).forEach((controller) => controller.abort());
+  }, []);
 
   useEffect(() => {
     if (!selectedRun) {
@@ -119,10 +150,29 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
         from_step: fromStep,
         mode
       });
+      setArtifactsByRun((prev) => {
+        const next = { ...prev };
+        delete next[runID];
+        return next;
+      });
+      setArtifactStatusByRun((prev) => {
+        const next = { ...prev };
+        delete next[runID];
+        return next;
+      });
+      setArtifactErrors((prev) => {
+        const next = { ...prev };
+        delete next[runID];
+        return next;
+      });
       setActionSuccess(
-        fromStep ? `replayed run ${runID} from ${fromStep}` : `replayed run ${runID}`
+        fromStep
+          ? `replayed run ${runID} from ${fromStep} (${mode})`
+          : `replayed run ${runID} (${mode})`
       );
       await onRunChanged?.();
+      onSelectRun(runID, { toggle: false });
+      loadArtifacts(runID, { force: true });
     } catch (err) {
       setActionError(err?.message || "failed to replay run");
     } finally {
@@ -223,7 +273,12 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
       ...prev,
       [runID]: stepName
     }));
+    setReplayFromStep((prev) => ({
+      ...prev,
+      [runID]: stepName
+    }));
     onSelectRun(runID, { toggle: false });
+    loadArtifacts(runID);
   }
 
   return (
@@ -246,7 +301,16 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
           const selectedStepName = selectedStepByRun[r.id] || r.steps[0]?.name || "";
           const selectedStep = r.steps.find((step) => step.name === selectedStepName) || null;
           const artifactItems = artifactsByRun[r.id] || [];
-          const artifactsLoading = Boolean(artifactsLoadingByRun[r.id]);
+          const artifactStatus = artifactStatusByRun[r.id] || "idle";
+          const artifactsLoading = artifactStatus === "loading";
+          const replayFrom = replayFromStep[r.id] || "";
+          const selectedReplayStep = r.steps.find((step) => step.name === replayFrom) || null;
+          const replayHint =
+            replayMode[r.id] === "live"
+              ? "live replay forces the selected step and downstream steps to run again."
+              : selectedReplayStep
+                ? "time_travel reuses succeeded outputs. If this step already succeeded and there is nothing downstream to rerun, the replay will be a no-op."
+                : "time_travel reuses succeeded outputs when possible.";
 
           return (
           <div className="dq-panel run" key={r.id}>
@@ -382,8 +446,14 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                     <label className="dq-input-stack small">
                       <span>Replay From</span>
                       <select
-                        value={replayFromStep[r.id] || ""}
-                        onChange={(e) => setReplayFromStep((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                        value={replayFrom}
+                        onChange={(e) => {
+                          const nextStep = e.target.value;
+                          setReplayFromStep((prev) => ({ ...prev, [r.id]: nextStep }));
+                          if (nextStep) {
+                            setSelectedStepByRun((prev) => ({ ...prev, [r.id]: nextStep }));
+                          }
+                        }}
                         disabled={replayingRunID === r.id}
                       >
                         <option value="">entire run</option>
@@ -432,6 +502,8 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                       </button>
                     </div>
                   </div>
+
+                  <div className="dq-note">{replayHint}</div>
 
                   <div className="dq-workflow-artifacts">
                     <div className="row">
