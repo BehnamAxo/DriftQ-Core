@@ -10,13 +10,12 @@ function parseMessageValue(raw) {
   }
 }
 
-export default function ConsumersTab({ consumers, onConsumerChanged }) {
+export default function ConsumersTab({ consumers, pendingMessage, onPendingMessageChange, onConsumerChanged }) {
   const [selectedGroup, setSelectedGroup] = useState("");
   const [consumeTopic, setConsumeTopic] = useState("");
   const [owner, setOwner] = useState("debug-ui");
   const [leaseMs, setLeaseMs] = useState("10000");
   const [nackReason, setNackReason] = useState("debug reject");
-  const [pendingMessage, setPendingMessage] = useState(null);
   const [actionError, setActionError] = useState("");
   const [actionSuccess, setActionSuccess] = useState("");
   const [consuming, setConsuming] = useState(false);
@@ -45,6 +44,14 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
       setConsumeTopic(activeGroup.topics[0] || "");
     }
   }, [activeGroup, consumeTopic]);
+
+  useEffect(() => {
+    if (!pendingMessage?.group) {
+      return;
+    }
+
+    setSelectedGroup((prev) => prev || pendingMessage.group);
+  }, [pendingMessage?.group]);
 
   async function handleConsume(e) {
     e.preventDefault();
@@ -79,7 +86,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
         { timeoutMs: Math.max(parsedLease, 4000) }
       );
 
-      setPendingMessage({
+      onPendingMessageChange?.({
         topic,
         group: activeGroup.group,
         owner: trimmedOwner,
@@ -95,7 +102,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
       });
       setActionSuccess(`leased offset ${item.offset} from ${topic}`);
     } catch (err) {
-      setPendingMessage(null);
+      onPendingMessageChange?.(null);
       setActionError(err?.message || "failed to consume message");
     } finally {
       setConsuming(false);
@@ -120,7 +127,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
         offset: pendingMessage.offset
       });
       setActionSuccess(`acked offset ${pendingMessage.offset}`);
-      setPendingMessage(null);
+      onPendingMessageChange?.(null);
       await onConsumerChanged?.();
     } catch (err) {
       setActionError(err?.message || "failed to ack message");
@@ -148,7 +155,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
         reason: nackReason.trim()
       });
       setActionSuccess(`nacked offset ${pendingMessage.offset}`);
-      setPendingMessage(null);
+      onPendingMessageChange?.(null);
       await onConsumerChanged?.();
     } catch (err) {
       setActionError(err?.message || "failed to nack message");

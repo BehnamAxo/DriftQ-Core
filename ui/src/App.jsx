@@ -16,6 +16,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("Overview");
   const [selectedRun, setSelectedRun] = useState(null);
   const [selectedDLQ, setSelectedDLQ] = useState(null);
+  const [pendingConsumerMessage, setPendingConsumerMessage] = useState(null);
 
   const {
     consumers,
@@ -102,7 +103,12 @@ export default function App() {
 
         {
           activeTab === "Consumers" ? (
-            <ConsumersTab consumers={consumers} onConsumerChanged={() => refresh(new AbortController().signal)} />
+            <ConsumersTab
+              consumers={consumers}
+              pendingMessage={pendingConsumerMessage}
+              onPendingMessageChange={setPendingConsumerMessage}
+              onConsumerChanged={() => refresh(new AbortController().signal)}
+            />
           ) : null
         }
 
@@ -122,7 +128,12 @@ export default function App() {
 
         {
           activeTab === "Workflows (v2)" ? (
-            <WorkflowsTab runs={runs} selectedRun={selectedRun} onSelectRun={(id) => setSelectedRun((prev) => (prev === id ? null : id))} />
+            <WorkflowsTab
+              runs={runs}
+              selectedRun={selectedRun}
+              onSelectRun={(id) => setSelectedRun((prev) => (prev === id ? null : id))}
+              onRunChanged={() => refresh(new AbortController().signal)}
+            />
           ) : null
         }
       </main>

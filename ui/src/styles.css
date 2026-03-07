@@ -582,6 +582,16 @@ th.right {
   font-size: 12px;
 }
 
+.dq-workflow-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #1e293b;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .dq-footer {
   display: flex;
   justify-content: space-between;
@@ -630,6 +640,10 @@ th.right {
   }
 
   .dq-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dq-workflow-actions {
     grid-template-columns: 1fr;
   }
 

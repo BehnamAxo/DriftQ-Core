@@ -28,7 +28,9 @@ export function normalizeRun(detail) {
       const status =
         rawStatus === "succeeded"
           ? "completed"
-          : rawStatus === "failed" || rawStatus === "canceled"
+          : rawStatus === "canceled"
+            ? "canceled"
+            : rawStatus === "failed"
             ? "failed"
             : "running";
 
@@ -36,12 +38,13 @@ export function normalizeRun(detail) {
     });
 
   const rawRun = String(run.status || "").toLowerCase();
-  const status = rawRun === "succeeded" ? "completed" : rawRun === "failed" || rawRun === "canceled" ? "failed" : "running";
+  const status = rawRun === "succeeded" ? "completed" : rawRun === "canceled" ? "canceled" : rawRun === "failed" ? "failed" : "running";
 
   return {
     id: run.run_id,
     status,
     startedAt: run.started_at,
-    steps
+    steps,
+    cancelable: status === "running"
   };
 }
