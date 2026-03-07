@@ -87,7 +87,15 @@ export default function App() {
             : null
         }
 
-        {activeTab === "Producers" ? <ProducersTab producerReasons={producerReasons} /> : null}
+        {
+          activeTab === "Producers" ? (
+            <ProducersTab
+              producerReasons={producerReasons}
+              topics={topics}
+              onProduced={() => refresh(new AbortController().signal)}
+            />
+          ) : null
+        }
 
         {activeTab === "Consumers" ? <ConsumersTab consumers={consumers} /> : null}
 

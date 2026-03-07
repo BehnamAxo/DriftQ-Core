@@ -180,6 +180,10 @@ body,
   align-items: end;
 }
 
+.dq-form-grid.producer {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.5fr) auto;
+}
+
 .dq-input-stack {
   display: flex;
   flex-direction: column;
@@ -200,6 +204,36 @@ body,
   border-radius: 4px;
   padding: 8px 10px;
   font-family: inherit;
+}
+
+.dq-select {
+  width: 100%;
+  background: #0d1220;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: inherit;
+}
+
+.dq-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 112px;
+  background: #0d1220;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.dq-select:disabled,
+.dq-textarea:disabled,
+.dq-input-stack input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .dq-input-stack.small input {
@@ -359,6 +393,12 @@ th.right {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 10px;
+}
+
+.dq-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .mini-grid {

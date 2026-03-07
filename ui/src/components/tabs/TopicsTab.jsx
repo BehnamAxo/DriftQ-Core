@@ -1,7 +1,15 @@
 import Sparkline from "../Sparkline";
 import { fmt } from "../../utils/number";
-import { postJSON } from "../../utils/http";
-import { useState } from "react";
+import { getJSON, postJSON } from "../../utils/http";
+import { useEffect, useState } from "react";
+
+function parseMessageValue(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { raw };
+  }
+}
 
 export default function TopicsTab({ topics, spark, onTopicsChanged }) {
   const [name, setName] = useState("");
@@ -9,6 +17,26 @@ export default function TopicsTab({ topics, spark, onTopicsChanged }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [selectedTopic, setSelectedTopic] = useState("");
+  const [peekMessages, setPeekMessages] = useState([]);
+  const [peekLoading, setPeekLoading] = useState(false);
+  const [peekError, setPeekError] = useState("");
+  const [selectedMessageID, setSelectedMessageID] = useState("");
+
+  useEffect(() => {
+    if (!selectedTopic) {
+      return;
+    }
+
+    if (!topics.some((item) => item.name === selectedTopic)) {
+      setSelectedTopic("");
+      setPeekMessages([]);
+      setPeekError("");
+      setSelectedMessageID("");
+    }
+  }, [selectedTopic, topics]);
+
+  const selectedMessage = selectedMessageID ? peekMessages.find((item) => item.id === selectedMessageID) : null;
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -47,6 +75,42 @@ export default function TopicsTab({ topics, spark, onTopicsChanged }) {
       setError(err?.message || "failed to create topic");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function loadPeek(topicName) {
+    if (!topicName) {
+      return;
+    }
+
+    setSelectedTopic(topicName);
+    setPeekLoading(true);
+    setPeekError("");
+
+    try {
+      const payload = await getJSON(`/debug/topics/peek?topic=${encodeURIComponent(topicName)}&limit=12`);
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      const normalized = messages.map((message) => ({
+        id: `${topicName}:${message.partition}:${message.offset}`,
+        topic: message.topic || topicName,
+        partition: message.partition ?? 0,
+        offset: message.offset ?? 0,
+        attempts: message.attempts ?? 0,
+        lastError: message.last_error || "",
+        key: message.key || "",
+        value: message.value || "",
+        envelope: message.envelope || null,
+        routing: message.routing || null
+      }));
+
+      setPeekMessages(normalized);
+      setSelectedMessageID((prev) => (normalized.some((item) => item.id === prev) ? prev : normalized[0]?.id || ""));
+    } catch (err) {
+      setPeekMessages([]);
+      setSelectedMessageID("");
+      setPeekError(err?.message || "failed to load topic messages");
+    } finally {
+      setPeekLoading(false);
     }
   }
 
@@ -99,7 +163,12 @@ export default function TopicsTab({ topics, spark, onTopicsChanged }) {
             <div className="dq-panel topic" key={t.name}>
               <div className="row">
                 <strong>{t.name}</strong>
-                <span>{t.partitions}P</span>
+                <div className="dq-inline-actions">
+                  <span>{t.partitions}P</span>
+                  <button type="button" className="mini-btn" onClick={() => loadPeek(t.name)}>
+                    {selectedTopic === t.name ? "Refresh Peek" : "Inspect"}
+                  </button>
+                </div>
               </div>
               <Sparkline values={spark[t.name]} />
               <div className="mini-grid">
@@ -127,6 +196,90 @@ export default function TopicsTab({ topics, spark, onTopicsChanged }) {
           ))
         }
       </section>
+
+      {
+        selectedTopic ? (
+          <section className="dq-panel">
+            <div className="row">
+              <div>
+                <strong>Topic Inspector</strong>
+                <div className="dim">Recent messages for <code>{selectedTopic}</code>.</div>
+              </div>
+              <div className="dq-inline-actions">
+                <button type="button" className="mini-btn" onClick={() => loadPeek(selectedTopic)} disabled={peekLoading}>
+                  {peekLoading ? "Loading..." : "Refresh"}
+                </button>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={() => {
+                    setSelectedTopic("");
+                    setPeekMessages([]);
+                    setPeekError("");
+                    setSelectedMessageID("");
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {peekError ? <div className="dq-error compact">{peekError}</div> : null}
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Offset</th>
+                  <th>Partition</th>
+                  <th>Key</th>
+                  <th className="right">Attempts</th>
+                  <th>Last Error</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {peekMessages.map((message) => (
+                  <tr key={message.id}>
+                    <td>{fmt(message.offset)}</td>
+                    <td>{fmt(message.partition)}</td>
+                    <td>{message.key || "-"}</td>
+                    <td className="right">{fmt(message.attempts)}</td>
+                    <td className={message.lastError ? "amber" : "dim"}>{message.lastError || "-"}</td>
+                    <td>
+                      <button type="button" className="mini-btn" onClick={() => setSelectedMessageID(message.id)}>
+                        {selectedMessageID === message.id ? "Selected" : "Inspect"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {
+                  !peekLoading && peekMessages.length === 0 ? (
+                    <tr>
+                      <td colSpan={6}>no messages in this topic yet</td>
+                    </tr>
+                  ) : null
+                }
+              </tbody>
+            </table>
+
+            {
+              selectedMessage ? (
+                <div className="dq-stack">
+                  <div className="tags">
+                    <span>{selectedMessage.topic}</span>
+                    <span>partition {selectedMessage.partition}</span>
+                    <span>offset {selectedMessage.offset}</span>
+                    <span>attempts {selectedMessage.attempts}</span>
+                  </div>
+                  <pre className="dq-payload">{JSON.stringify(parseMessageValue(selectedMessage.value || ""), null, 2)}</pre>
+                  {selectedMessage.envelope ? <pre className="dq-payload">{JSON.stringify({ envelope: selectedMessage.envelope }, null, 2)}</pre> : null}
+                  {selectedMessage.routing ? <pre className="dq-payload">{JSON.stringify({ routing: selectedMessage.routing }, null, 2)}</pre> : null}
+                </div>
+              ) : null
+            }
+          </section>
+        ) : null
+      }
     </div>
   );
 }
