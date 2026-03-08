@@ -15,12 +15,16 @@ export default function Header({ version, health, updatedAt, config }) {
   return (
     <header className="dq-header">
       <div className="dq-logo-wrap">
-        <div className="dq-logo">
-          <span className="dq-logo-drift">Drift</span>
-          <span className="dq-logo-q">Q</span>
+        <div className="dq-brand-copy">
+          <div className="dq-logo">
+            <span className="dq-logo-drift">Drift</span>
+            <span className="dq-logo-q">Q</span>
+          </div>
+          <div className="dq-brand-meta">
+            <span className="dq-sub">Dashboard</span>
+            <span className="dq-version">{version.version || "dev"}</span>
+          </div>
         </div>
-        <span className="dq-sub">Dashboard</span>
-        <span className="dq-version">{version.version || "dev"}</span>
       </div>
 
       <div className="dq-status-wrap">

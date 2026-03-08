@@ -36,6 +36,13 @@ body,
   gap: 12px;
 }
 
+.dq-brand-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .dq-logo {
   font-size: 34px;
   font-weight: 700;
@@ -54,6 +61,12 @@ body,
 .dq-sub {
   color: #64748b;
   font-size: 13px;
+}
+
+.dq-brand-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .dq-version {
@@ -379,6 +392,11 @@ body,
   background: #0a0f1d;
 }
 
+.dq-kv-row-detailed {
+  gap: 8px;
+  padding: 10px 12px;
+}
+
 .dq-broker-snapshot {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -490,6 +508,11 @@ body,
   padding: 10px 12px 12px;
 }
 
+.dq-note-tight {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
 .dq-disclosure summary {
   cursor: pointer;
   color: #94a3b8;
@@ -524,6 +547,13 @@ body,
   color: #e2e8f0;
   font-size: 12px;
   word-break: break-word;
+}
+
+.dq-kv-description {
+  margin: 0;
+  color: #8aa0bf;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 table {
@@ -890,6 +920,13 @@ th.right {
   .dq-workflow-toolbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .dq-brand-copy,
+  .dq-brand-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
   }
 
   .dq-workflow-summary {

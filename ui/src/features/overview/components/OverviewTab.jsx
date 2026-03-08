@@ -19,15 +19,50 @@ function formatBytes(value) {
   return `${size.toFixed(digits)} ${units[index]}`;
 }
 
-function snapshotRows(config, version) {
+function snapshotRows(config) {
   return [
-    ["WAL Path", config.wal_path || "n/a"],
-    ["WAL Engine", config.engine_wal || "unknown"],
-    ["Log Mode", `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`],
-    ["Access Log", config.access_log ? "on" : "off"],
-    ["WAL Sync", config.wal_sync_interval || "n/a"],
-    ["WAL Buffer", formatBytes(config.wal_buffer_bytes)],
-    ["Artifacts Dir", config.artifacts_dir || "n/a"]
+    {
+      label: "WAL Path",
+      value: config.wal_path || "n/a",
+      description: "Filesystem location of the broker write-ahead log file.",
+      tooltip: "If WAL is enabled, broker writes are appended here so they can be replayed after a restart."
+    },
+    {
+      label: "WAL Engine",
+      value: config.engine_wal || "unknown",
+      description: "Durability backend used by the workflow engine side of DriftQ.",
+      tooltip: "This identifies which write-ahead log implementation the workflow engine is currently using."
+    },
+    {
+      label: "Log Mode",
+      value: `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`,
+      description: "Current log verbosity and output format for server logs.",
+      tooltip: "The first value is the log level and the second is the output format written by the server."
+    },
+    {
+      label: "Access Log",
+      value: config.access_log ? "enabled" : "disabled",
+      description: "Whether HTTP requests are written to the request log.",
+      tooltip: "When enabled, incoming API and UI requests are logged for debugging and audit trails."
+    },
+    {
+      label: "WAL Sync",
+      value: config.wal_sync_interval || "n/a",
+      description: "How often buffered WAL data is forced to durable storage.",
+      tooltip: "Shorter intervals improve durability but may reduce throughput because writes are flushed more often."
+    },
+    {
+      label: "WAL Buffer",
+      value: formatBytes(config.wal_buffer_bytes),
+      description: "Amount of WAL data that can be buffered before a flush.",
+      tooltip: "A larger buffer can improve throughput, but increases the amount of unwritten data held in memory."
+    },
+    {
+      label: "Artifacts Dir",
+      value: config.artifacts_dir || "n/a",
+      description: "Directory where workflow artifacts and generated outputs are stored.",
+      tooltip: "This is where files produced by workflow steps are persisted for later inspection or download."
+    }
   ];
 }
 
@@ -174,12 +209,19 @@ export default function OverviewTab({
 
           <details className="dq-disclosure">
             <summary>Advanced Broker Config</summary>
+            <p className="dq-note dq-note-tight">
+              Lower-frequency broker settings for durability, logging, and artifact storage.
+            </p>
             <div className="dq-kv-grid dq-kv-grid-compact">
               {
-                snapshotRows(config, version).map(([label, value]) => (
-                  <div className="dq-kv-row" key={label}>
-                    <span className="dq-kv-label">{label}</span>
-                    <span className="dq-kv-value">{value}</span>
+                snapshotRows(config).map((item) => (
+                  <div className="dq-kv-row dq-kv-row-detailed" key={item.label}>
+                    <div className="dq-summary-head">
+                      <span className="dq-kv-label">{item.label}</span>
+                      <HelpTip text={item.tooltip} />
+                    </div>
+                    <span className="dq-kv-value">{item.value}</span>
+                    <p className="dq-kv-description">{item.description}</p>
                   </div>
                 ))
               }
