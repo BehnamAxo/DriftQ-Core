@@ -406,6 +406,10 @@ th {
   letter-spacing: 0.8px;
 }
 
+.dq-row-active td {
+  background: #00ff9d10;
+}
+
 td.right,
 th.right {
   text-align: right;

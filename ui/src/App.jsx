@@ -17,7 +17,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("Overview");
   const [selectedRun, setSelectedRun] = useState(null);
   const [selectedDLQ, setSelectedDLQ] = useState(null);
-  const [pendingConsumerMessage, setPendingConsumerMessage] = useState(null);
 
   const {
     consumers,
@@ -106,8 +105,6 @@ export default function App() {
           activeTab === "Consumers" ? (
             <ConsumersTab
               consumers={consumers}
-              pendingMessage={pendingConsumerMessage}
-              onPendingMessageChange={setPendingConsumerMessage}
               onConsumerChanged={() => refresh(new AbortController().signal)}
             />
           ) : null

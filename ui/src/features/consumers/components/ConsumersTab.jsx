@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fmt } from "../../../utils/number";
-import { postJSON, readFirstNDJSON } from "../../../utils/http";
+import { postJSON, streamNDJSON } from "../../../utils/http";
 import { formatClock } from "../../../utils/time";
 
 function parseMessageValue(raw) {
@@ -11,7 +11,26 @@ function parseMessageValue(raw) {
   }
 }
 
-export default function ConsumersTab({ consumers, pendingMessage, onPendingMessageChange, onConsumerChanged }) {
+function toStreamMessage(item, session) {
+  return {
+    id: `${session.group}:${session.topic}:${item.partition}:${item.offset}`,
+    topic: session.topic,
+    group: session.group,
+    owner: session.owner,
+    leaseMs: session.leaseMs,
+    partition: item.partition,
+    offset: item.offset,
+    attempts: item.attempts,
+    key: item.key || "",
+    value: item.value || "",
+    lastError: item.last_error || "",
+    envelope: item.envelope || null,
+    routing: item.routing || null,
+    receivedAt: Date.now()
+  };
+}
+
+export default function ConsumersTab({ consumers, onConsumerChanged }) {
   const [selectedGroup, setSelectedGroup] = useState("");
   const [consumeTopic, setConsumeTopic] = useState("");
   const [owner, setOwner] = useState("debug-ui");
@@ -19,9 +38,14 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
   const [nackReason, setNackReason] = useState("debug reject");
   const [actionError, setActionError] = useState("");
   const [actionSuccess, setActionSuccess] = useState("");
-  const [consuming, setConsuming] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [acking, setAcking] = useState(false);
   const [nacking, setNacking] = useState(false);
+  const [streamSession, setStreamSession] = useState(null);
+  const [streamMessages, setStreamMessages] = useState([]);
+  const [selectedMessageID, setSelectedMessageID] = useState("");
+  const [receivedCount, setReceivedCount] = useState(0);
+  const streamControllerRef = useRef(null);
 
   const activeGroup = useMemo(() => {
     if (!consumers.length) {
@@ -47,15 +71,50 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
   }, [activeGroup, consumeTopic]);
 
   useEffect(() => {
-    if (!pendingMessage?.group) {
+    if (!selectedMessageID) {
+      if (streamMessages[0]) {
+        setSelectedMessageID(streamMessages[0].id);
+      }
       return;
     }
 
-    setSelectedGroup((prev) => prev || pendingMessage.group);
-  }, [pendingMessage?.group]);
+    if (!streamMessages.some((message) => message.id === selectedMessageID)) {
+      setSelectedMessageID(streamMessages[0]?.id || "");
+    }
+  }, [selectedMessageID, streamMessages]);
 
-  async function handleConsume(e) {
+  useEffect(() => () => {
+    if (streamControllerRef.current) {
+      streamControllerRef.current.abort(new Error("stream stopped"));
+      streamControllerRef.current = null;
+    }
+  }, []);
+
+  const selectedMessage = useMemo(
+    () => streamMessages.find((message) => message.id === selectedMessageID) || null,
+    [selectedMessageID, streamMessages]
+  );
+
+  function stopStream(successMessage = "temporary stream stopped") {
+    const controller = streamControllerRef.current;
+    if (!controller) {
+      return;
+    }
+
+    streamControllerRef.current = null;
+    controller.abort(new Error("stream stopped"));
+    setStreaming(false);
+    setActionError("");
+    setActionSuccess(successMessage);
+  }
+
+  async function handleStreamSubmit(e) {
     e.preventDefault();
+
+    if (streaming) {
+      stopStream();
+      return;
+    }
 
     if (!activeGroup) {
       return;
@@ -77,41 +136,69 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
       return;
     }
 
-    setConsuming(true);
+    const session = {
+      topic,
+      group: activeGroup.group,
+      owner: trimmedOwner,
+      leaseMs: parsedLease
+    };
+
+    const controller = new AbortController();
+    streamControllerRef.current = controller;
+
+    setStreaming(true);
+    setStreamSession(session);
+    setStreamMessages([]);
+    setSelectedMessageID("");
+    setReceivedCount(0);
     setActionError("");
-    setActionSuccess("");
+    setActionSuccess(`streaming ${topic} for ${activeGroup.group}`);
 
     try {
-      const item = await readFirstNDJSON(
+      await streamNDJSON(
         `/v1/consume?topic=${encodeURIComponent(topic)}&group=${encodeURIComponent(activeGroup.group)}&owner=${encodeURIComponent(trimmedOwner)}&lease_ms=${parsedLease}`,
-        { timeoutMs: Math.max(parsedLease, 4000) }
+        {
+          signal: controller.signal,
+          onMessage: (item) => {
+            const nextMessage = toStreamMessage(item, session);
+            setReceivedCount((value) => value + 1);
+            setStreamMessages((prev) => {
+              const remaining = prev.filter((message) => message.id !== nextMessage.id);
+              return [nextMessage, ...remaining].slice(0, 25);
+            });
+            setSelectedMessageID((current) => current || nextMessage.id);
+          }
+        }
       );
 
-      onPendingMessageChange?.({
-        topic,
-        group: activeGroup.group,
-        owner: trimmedOwner,
-        leaseMs: parsedLease,
-        partition: item.partition,
-        offset: item.offset,
-        attempts: item.attempts,
-        key: item.key || "",
-        value: item.value || "",
-        lastError: item.last_error || "",
-        envelope: item.envelope || null,
-        routing: item.routing || null
-      });
-      setActionSuccess(`leased offset ${item.offset} from ${topic}`);
+      if (streamControllerRef.current === controller) {
+        streamControllerRef.current = null;
+        setStreaming(false);
+        setActionSuccess("temporary stream ended");
+      }
     } catch (err) {
-      onPendingMessageChange?.(null);
-      setActionError(err?.message || "failed to consume message");
-    } finally {
-      setConsuming(false);
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      if (streamControllerRef.current === controller) {
+        streamControllerRef.current = null;
+      }
+      setStreaming(false);
+      setActionError(err?.message || "failed to consume stream");
     }
   }
 
+  function clearStreamBuffer() {
+    setStreamMessages([]);
+    setSelectedMessageID("");
+    setReceivedCount(0);
+    setActionError("");
+    setActionSuccess("stream buffer cleared");
+  }
+
   async function handleAck() {
-    if (!pendingMessage) {
+    if (!selectedMessage) {
       return;
     }
 
@@ -121,14 +208,14 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
 
     try {
       await postJSON("/v1/ack", {
-        topic: pendingMessage.topic,
-        group: pendingMessage.group,
-        owner: pendingMessage.owner,
-        partition: pendingMessage.partition,
-        offset: pendingMessage.offset
+        topic: selectedMessage.topic,
+        group: selectedMessage.group,
+        owner: selectedMessage.owner,
+        partition: selectedMessage.partition,
+        offset: selectedMessage.offset
       });
-      setActionSuccess(`acked offset ${pendingMessage.offset}`);
-      onPendingMessageChange?.(null);
+      setActionSuccess(`acked offset ${selectedMessage.offset}`);
+      setStreamMessages((prev) => prev.filter((message) => message.id !== selectedMessage.id));
       await onConsumerChanged?.();
     } catch (err) {
       setActionError(err?.message || "failed to ack message");
@@ -138,7 +225,7 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
   }
 
   async function handleNack() {
-    if (!pendingMessage) {
+    if (!selectedMessage) {
       return;
     }
 
@@ -148,15 +235,15 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
 
     try {
       await postJSON("/v1/nack", {
-        topic: pendingMessage.topic,
-        group: pendingMessage.group,
-        owner: pendingMessage.owner,
-        partition: pendingMessage.partition,
-        offset: pendingMessage.offset,
+        topic: selectedMessage.topic,
+        group: selectedMessage.group,
+        owner: selectedMessage.owner,
+        partition: selectedMessage.partition,
+        offset: selectedMessage.offset,
         reason: nackReason.trim()
       });
-      setActionSuccess(`nacked offset ${pendingMessage.offset}`);
-      onPendingMessageChange?.(null);
+      setActionSuccess(`nacked offset ${selectedMessage.offset}`);
+      setStreamMessages((prev) => prev.filter((message) => message.id !== selectedMessage.id));
       await onConsumerChanged?.();
     } catch (err) {
       setActionError(err?.message || "failed to nack message");
@@ -205,8 +292,8 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
               </div>
             </div>
             <div className="dq-form-actions top-gap">
-              <button type="button" className="mini-btn" onClick={() => setSelectedGroup(c.group)}>
-                {activeGroup?.group === c.group ? "Inspecting" : "Inspect"}
+              <button type="button" className="mini-btn" onClick={() => setSelectedGroup(c.group)} disabled={streaming}>
+                {streaming && activeGroup?.group === c.group ? "Streaming" : activeGroup?.group === c.group ? "Inspecting" : "Inspect"}
               </button>
             </div>
           </div>
@@ -324,9 +411,10 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
       <section className="dq-panel">
         <div className="row">
           <div>
-            <strong>Debug Consume</strong>
-            <div className="dim">Lease one message for inspection, then ack or nack it from the dashboard.</div>
+            <strong>Temporary Consumer Stream</strong>
+            <div className="dim">Open a live leased stream for one group/topic/owner tuple, then inspect and ack or nack messages as they arrive.</div>
           </div>
+          <span className={streaming ? "green" : "dim"}>{streaming ? "live" : "stopped"}</span>
         </div>
 
         {actionError ? <div className="dq-error compact">{actionError}</div> : null}
@@ -335,7 +423,7 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
         {
           activeGroup ? (
             <div className="dq-stack">
-              <form className="dq-form-grid consume" onSubmit={handleConsume}>
+              <form className="dq-form-grid consume" onSubmit={handleStreamSubmit}>
                 <label className="dq-input-stack">
                   <span>Group</span>
                   <input value={activeGroup.group} disabled />
@@ -343,7 +431,7 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
 
                 <label className="dq-input-stack">
                   <span>Topic</span>
-                  <select className="dq-select" value={consumeTopic} onChange={(e) => setConsumeTopic(e.target.value)} disabled={!activeGroup.topics.length || consuming}>
+                  <select className="dq-select" value={consumeTopic} onChange={(e) => setConsumeTopic(e.target.value)} disabled={!activeGroup.topics.length || streaming}>
                     {!activeGroup.topics.length ? <option value="">No topics available</option> : null}
                     {activeGroup.topics.map((topic) => (
                       <option key={topic} value={topic}>
@@ -355,55 +443,123 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
 
                 <label className="dq-input-stack">
                   <span>Owner</span>
-                  <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="debug-ui" autoComplete="off" />
+                  <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="debug-ui" autoComplete="off" disabled={streaming} />
                 </label>
 
                 <label className="dq-input-stack small">
                   <span>Lease Ms</span>
-                  <input type="number" min="1" step="1" value={leaseMs} onChange={(e) => setLeaseMs(e.target.value)} />
+                  <input type="number" min="1" step="1" value={leaseMs} onChange={(e) => setLeaseMs(e.target.value)} disabled={streaming} />
                 </label>
 
                 <div className="dq-form-actions">
-                  <button type="submit" className="mini-btn" disabled={consuming || !consumeTopic}>
-                    {consuming ? "Leasing..." : "Consume Next"}
+                  <button type="submit" className={`mini-btn ${streaming ? "danger" : ""}`} disabled={!streaming && !consumeTopic}>
+                    {streaming ? "Stop Stream" : "Start Stream"}
+                  </button>
+                  <button type="button" className="mini-btn" onClick={clearStreamBuffer} disabled={streaming || !streamMessages.length}>
+                    Clear Buffer
                   </button>
                 </div>
               </form>
 
               {
-                pendingMessage ? (
+                streamSession ? (
+                  <div className="tags">
+                    <span>{streamSession.topic}</span>
+                    <span>group {streamSession.group}</span>
+                    <span>owner {streamSession.owner}</span>
+                    <span>lease {fmt(streamSession.leaseMs)}ms</span>
+                    <span>{streaming ? "live stream" : "last session"}</span>
+                    <span>{fmt(receivedCount)} received</span>
+                    <span>{fmt(streamMessages.length)} buffered</span>
+                  </div>
+                ) : null
+              }
+
+              {
+                streamMessages.length ? (
                   <div className="dq-stack">
-                    <div className="tags">
-                      <span>{pendingMessage.topic}</span>
-                      <span>group {pendingMessage.group}</span>
-                      <span>owner {pendingMessage.owner}</span>
-                      <span>partition {pendingMessage.partition}</span>
-                      <span>offset {pendingMessage.offset}</span>
-                      <span>attempts {pendingMessage.attempts}</span>
-                    </div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th className="right">Partition</th>
+                          <th className="right">Offset</th>
+                          <th className="right">Attempts</th>
+                          <th>Received</th>
+                          <th>Error</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {
+                          streamMessages.map((message) => (
+                            <tr key={message.id} className={selectedMessageID === message.id ? "dq-row-active" : ""}>
+                              <td className="right">{fmt(message.partition)}</td>
+                              <td className="right">{fmt(message.offset)}</td>
+                              <td className="right">{fmt(message.attempts)}</td>
+                              <td>{formatClock(message.receivedAt)}</td>
+                              <td className="dim">{message.lastError || "-"}</td>
+                              <td className="right">
+                                <button type="button" className="mini-btn" onClick={() => setSelectedMessageID(message.id)}>
+                                  {selectedMessageID === message.id ? "Inspecting" : "Inspect"}
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        }
+                      </tbody>
+                    </table>
 
-                    <pre className="dq-payload">{JSON.stringify(parseMessageValue(pendingMessage.value || ""), null, 2)}</pre>
-                    {pendingMessage.envelope ? <pre className="dq-payload">{JSON.stringify({ envelope: pendingMessage.envelope }, null, 2)}</pre> : null}
-                    {pendingMessage.routing ? <pre className="dq-payload">{JSON.stringify({ routing: pendingMessage.routing }, null, 2)}</pre> : null}
-
-                    <div className="dq-form-grid consume-actions">
-                      <label className="dq-input-stack">
-                        <span>Nack Reason</span>
-                        <input value={nackReason} onChange={(e) => setNackReason(e.target.value)} placeholder="debug reject" />
-                      </label>
-
-                      <div className="dq-form-actions">
-                        <button type="button" className="mini-btn" onClick={handleAck} disabled={acking || nacking}>
-                          {acking ? "Acking..." : "Ack"}
-                        </button>
-                        <button type="button" className="mini-btn danger" onClick={handleNack} disabled={acking || nacking}>
-                          {nacking ? "Nacking..." : "Nack"}
-                        </button>
+                    <div className="row">
+                      <div>
+                        <strong>Streamed Message Detail</strong>
+                        <div className="dim">{selectedMessage ? `${selectedMessage.topic}:${selectedMessage.partition}:${selectedMessage.offset}` : "Select a streamed message to inspect it."}</div>
                       </div>
                     </div>
+
+                    {
+                      selectedMessage ? (
+                        <div className="dq-stack">
+                          <div className="tags">
+                            <span>{selectedMessage.topic}</span>
+                            <span>group {selectedMessage.group}</span>
+                            <span>owner {selectedMessage.owner}</span>
+                            <span>partition {selectedMessage.partition}</span>
+                            <span>offset {selectedMessage.offset}</span>
+                            <span>attempts {selectedMessage.attempts}</span>
+                            <span>received {formatClock(selectedMessage.receivedAt)}</span>
+                          </div>
+
+                          <pre className="dq-payload">{JSON.stringify(parseMessageValue(selectedMessage.value || ""), null, 2)}</pre>
+                          {selectedMessage.envelope ? <pre className="dq-payload">{JSON.stringify({ envelope: selectedMessage.envelope }, null, 2)}</pre> : null}
+                          {selectedMessage.routing ? <pre className="dq-payload">{JSON.stringify({ routing: selectedMessage.routing }, null, 2)}</pre> : null}
+
+                          <div className="dq-form-grid consume-actions">
+                            <label className="dq-input-stack">
+                              <span>Nack Reason</span>
+                              <input value={nackReason} onChange={(e) => setNackReason(e.target.value)} placeholder="debug reject" />
+                            </label>
+
+                            <div className="dq-form-actions">
+                              <button type="button" className="mini-btn" onClick={handleAck} disabled={acking || nacking}>
+                                {acking ? "Acking..." : "Ack"}
+                              </button>
+                              <button type="button" className="mini-btn danger" onClick={handleNack} disabled={acking || nacking}>
+                                {nacking ? "Nacking..." : "Nack"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="dq-note">No streamed message selected.</p>
+                      )
+                    }
                   </div>
                 ) : (
-                  <p className="dq-note">No leased message yet. Use `Consume Next` to fetch one message into the inspector.</p>
+                  <p className="dq-note">
+                    {streaming
+                      ? "Stream is open and waiting for messages."
+                      : "No streamed messages yet. Start the temporary stream to watch messages arrive live."}
+                  </p>
                 )
               }
             </div>

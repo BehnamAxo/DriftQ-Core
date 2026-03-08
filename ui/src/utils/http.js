@@ -54,6 +54,63 @@ export async function postJSON(path, body, signal) {
   return res.json();
 }
 
+export async function streamNDJSON(path, { signal, onMessage } = {}) {
+  const res = await fetch(path, { signal });
+  if (!res.ok) {
+    throw await buildError(path, res);
+  }
+
+  if (!res.body) {
+    throw new Error("streaming body unavailable");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex < 0) {
+          break;
+        }
+
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) {
+          continue;
+        }
+
+        onMessage?.(JSON.parse(line));
+      }
+    }
+
+    const tail = buffer.trim();
+    if (tail) {
+      onMessage?.(JSON.parse(tail));
+    }
+  } catch (err) {
+    if (signal?.aborted) {
+      const reason = signal.reason;
+      if (reason instanceof Error && reason.message) {
+        throw reason;
+      }
+      throw new Error("stream cancelled");
+    }
+    throw err;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function readFirstNDJSON(path, { signal, timeoutMs = 4000 } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("consume timed out")), timeoutMs);
