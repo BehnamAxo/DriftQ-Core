@@ -466,6 +466,10 @@ body,
   letter-spacing: 1px;
 }
 
+.dq-topic-throughput-panel {
+  min-height: 0;
+}
+
 .dq-kv-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -668,6 +672,20 @@ th {
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.8px;
+}
+
+.dq-topic-throughput-scroll {
+  max-height: 452px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.dq-topic-throughput-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0d1220;
 }
 
 .dq-row-active td {

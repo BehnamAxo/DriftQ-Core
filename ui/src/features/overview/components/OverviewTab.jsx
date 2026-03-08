@@ -257,34 +257,36 @@ export default function OverviewTab({
       </section>
 
       <section className="dq-split">
-        <div className="dq-panel">
+        <div className="dq-panel dq-topic-throughput-panel">
           <h3>{OVERVIEW_COPY.TOPIC_THROUGHPUT}</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>{OVERVIEW_COPY.TABLE_HEADERS.TOPIC}</th>
-                <th className="right">{OVERVIEW_COPY.TABLE_HEADERS.RATE}</th>
-                <th className="right">{OVERVIEW_COPY.TABLE_HEADERS.LAG}</th>
-                <th>{OVERVIEW_COPY.TABLE_HEADERS.TREND}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {
-                topics.map((t) => (
-                  <tr key={t.name}>
-                    <td>{t.name}</td>
-                    <td className="right">
-                      <span className="green">^ {t.rateIn}</span> <span className="blue">v {t.rateOut}</span>
-                    </td>
-                    <td className={`right ${t.lag > 100 ? "red" : t.lag > 30 ? "amber" : "green2"}`}>{fmt(t.lag)}</td>
-                    <td>
-                      <Sparkline values={spark[t.name]} />
-                    </td>
-                  </tr>
-                ))
-              }
-            </tbody>
-          </table>
+          <div className="dq-topic-throughput-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{OVERVIEW_COPY.TABLE_HEADERS.TOPIC}</th>
+                  <th className="right">{OVERVIEW_COPY.TABLE_HEADERS.RATE}</th>
+                  <th className="right">{OVERVIEW_COPY.TABLE_HEADERS.LAG}</th>
+                  <th>{OVERVIEW_COPY.TABLE_HEADERS.TREND}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {
+                  topics.map((t) => (
+                    <tr key={t.name}>
+                      <td>{t.name}</td>
+                      <td className="right">
+                        <span className="green">^ {t.rateIn}</span> <span className="blue">v {t.rateOut}</span>
+                      </td>
+                      <td className={`right ${t.lag > 100 ? "red" : t.lag > 30 ? "amber" : "green2"}`}>{fmt(t.lag)}</td>
+                      <td>
+                        <Sparkline values={spark[t.name]} />
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
         </div>
         <div className="dq-panel">
           <h3>{OVERVIEW_COPY.LIVE_EVENT_STREAM}</h3>
