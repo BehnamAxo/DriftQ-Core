@@ -1,3 +1,4 @@
+import { API_PATHS, COMMON_TEXT, DEAD_LETTERS_COPY, TOPIC_PREFIX } from "../../../constants/ui";
 import { fmt } from "../../../utils/number";
 import { formatClock } from "../../../utils/time";
 import { postJSON } from "../../../utils/http";
@@ -32,25 +33,25 @@ export default function DeadLettersTab({
   onRedrive
 }) {
   const selectedMessage = selectedDLQ ? dlqMessages.find((m) => m.id === selectedDLQ) : null;
-  const [targetTopic, setTargetTopic] = useState("");
+  const [targetTopic, setTargetTopic] = useState(COMMON_TEXT.EMPTY);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [error, setError] = useState(COMMON_TEXT.EMPTY);
+  const [success, setSuccess] = useState(COMMON_TEXT.EMPTY);
 
   const topicOptions = useMemo(() => topics.map((topic) => topic.name).sort(), [topics]);
 
   useEffect(() => {
     if (!selectedMessage) {
-      setTargetTopic("");
-      setError("");
-      setSuccess("");
+      setTargetTopic(COMMON_TEXT.EMPTY);
+      setError(COMMON_TEXT.EMPTY);
+      setSuccess(COMMON_TEXT.EMPTY);
       return;
     }
 
-    const preferred = selectedMessage.originalTopic || selectedMessage.topic.replace(/^dlq\./, "");
+    const preferred = selectedMessage.originalTopic || selectedMessage.topic.replace(new RegExp(`^${TOPIC_PREFIX.DLQ.replace(".", "\\.")}`), COMMON_TEXT.EMPTY);
     setTargetTopic(preferred);
-    setError("");
-    setSuccess("");
+    setError(COMMON_TEXT.EMPTY);
+    setSuccess(COMMON_TEXT.EMPTY);
   }, [selectedMessage]);
 
   async function handleRedrive() {
@@ -60,20 +61,20 @@ export default function DeadLettersTab({
 
     const topic = targetTopic.trim();
     if (!topic) {
-      setError("pick a target topic");
-      setSuccess("");
+      setError(DEAD_LETTERS_COPY.PICK_TARGET_TOPIC);
+      setSuccess(COMMON_TEXT.EMPTY);
       return;
     }
 
     setSubmitting(true);
-    setError("");
-    setSuccess("");
+    setError(COMMON_TEXT.EMPTY);
+    setSuccess(COMMON_TEXT.EMPTY);
 
     try {
       const body = {
         topic,
-        key: selectedMessage.key || "",
-        value: selectedMessage.value || ""
+        key: selectedMessage.key || COMMON_TEXT.EMPTY,
+        value: selectedMessage.value || COMMON_TEXT.EMPTY
       };
 
       const envelope = sanitizeEnvelope(selectedMessage.envelope);
@@ -81,11 +82,11 @@ export default function DeadLettersTab({
         body.envelope = envelope;
       }
 
-      await postJSON("/v1/produce", body);
-      setSuccess(`re-driven to ${topic}`);
+      await postJSON(API_PATHS.PRODUCE, body);
+      setSuccess(`${DEAD_LETTERS_COPY.REDRIVE_PREFIX} ${topic}`);
       await onRedrive?.();
     } catch (err) {
-      setError(err?.message || "failed to re-drive DLQ message");
+      setError(err?.message || DEAD_LETTERS_COPY.REDRIVE_FAILED);
     } finally {
       setSubmitting(false);
     }
@@ -93,20 +94,20 @@ export default function DeadLettersTab({
 
   return (
     <section className="dq-panel">
-      <h3>DLQ Topic</h3>
+      <h3>{DEAD_LETTERS_COPY.DLQ_TOPIC}</h3>
       <div className="dq-controls inline">
-        <input value={dlqTopic} onChange={(e) => onDlqTopicChange(e.target.value)} placeholder="dlq.my-topic" />
+        <input value={dlqTopic} onChange={(e) => onDlqTopicChange(e.target.value)} placeholder={DEAD_LETTERS_COPY.INPUT_PLACEHOLDER} />
       </div>
 
       <table>
         <thead>
           <tr>
-            <th>ID</th>
-            <th>DLQ Topic</th>
-            <th>Original Topic</th>
-            <th>Reason</th>
-            <th className="right">Retries</th>
-            <th>Failed At</th>
+            <th>{DEAD_LETTERS_COPY.TABLE_HEADERS.ID}</th>
+            <th>{DEAD_LETTERS_COPY.TABLE_HEADERS.DLQ_TOPIC}</th>
+            <th>{DEAD_LETTERS_COPY.TABLE_HEADERS.ORIGINAL_TOPIC}</th>
+            <th>{DEAD_LETTERS_COPY.TABLE_HEADERS.REASON}</th>
+            <th className="right">{DEAD_LETTERS_COPY.TABLE_HEADERS.RETRIES}</th>
+            <th>{DEAD_LETTERS_COPY.TABLE_HEADERS.FAILED_AT}</th>
             <th></th>
           </tr>
         </thead>
@@ -116,13 +117,13 @@ export default function DeadLettersTab({
               <tr key={m.id}>
                 <td>{m.id}</td>
                 <td>{m.topic}</td>
-                <td>{m.originalTopic || "-"}</td>
+                <td>{m.originalTopic || COMMON_TEXT.DASH}</td>
                 <td className="amber">{m.reason}</td>
                 <td className="right red">{fmt(m.retries)}</td>
-                <td>{m.failedAt ? formatClock(m.failedAt) : "-"}</td>
+                <td>{m.failedAt ? formatClock(m.failedAt) : COMMON_TEXT.DASH}</td>
                 <td>
                   <button type="button" className="mini-btn" onClick={() => onToggleInspect(m.id)}>
-                    {selectedDLQ === m.id ? "Close" : "Inspect"}
+                    {selectedDLQ === m.id ? DEAD_LETTERS_COPY.CLOSE : DEAD_LETTERS_COPY.INSPECT}
                   </button>
                 </td>
               </tr>
@@ -131,7 +132,7 @@ export default function DeadLettersTab({
           {
             dlqMessages.length === 0 ? (
               <tr>
-                <td colSpan={7}>no DLQ messages</td>
+                <td colSpan={7}>{DEAD_LETTERS_COPY.NO_MESSAGES}</td>
               </tr>
             ) : null
           }
@@ -142,7 +143,7 @@ export default function DeadLettersTab({
         selectedMessage ? (
           <div className="dq-stack top-gap">
             <p className="dq-note">
-              Re-drive republishes this payload to another topic. It does not remove the original message from the DLQ because the broker does not expose delete semantics here.
+              {DEAD_LETTERS_COPY.REDRIVE_NOTE}
             </p>
 
             {error ? <div className="dq-error compact">{error}</div> : null}
@@ -150,17 +151,17 @@ export default function DeadLettersTab({
 
             <div className="tags">
               <span>{selectedMessage.topic}</span>
-              <span>original {selectedMessage.originalTopic || "-"}</span>
-              <span>partition {selectedMessage.originalPartition}</span>
-              <span>offset {selectedMessage.originalOffset}</span>
-              <span>attempts {selectedMessage.retries}</span>
+              <span>{DEAD_LETTERS_COPY.ORIGINAL_PREFIX} {selectedMessage.originalTopic || COMMON_TEXT.DASH}</span>
+              <span>{DEAD_LETTERS_COPY.PARTITION_PREFIX} {selectedMessage.originalPartition}</span>
+              <span>{DEAD_LETTERS_COPY.OFFSET_PREFIX} {selectedMessage.originalOffset}</span>
+              <span>{DEAD_LETTERS_COPY.ATTEMPTS_PREFIX} {selectedMessage.retries}</span>
             </div>
 
             <div className="dq-form-grid redrive">
               <label className="dq-input-stack">
-                <span>Target Topic</span>
+                <span>{DEAD_LETTERS_COPY.TARGET_TOPIC}</span>
                 <select className="dq-select" value={targetTopic} onChange={(e) => setTargetTopic(e.target.value)} disabled={!topicOptions.length || submitting}>
-                  {!topicOptions.length ? <option value="">No topics available</option> : null}
+                  {!topicOptions.length ? <option value={COMMON_TEXT.EMPTY}>{COMMON_TEXT.NO_TOPICS_AVAILABLE}</option> : null}
                   {topicOptions.map((topic) => (
                     <option key={topic} value={topic}>
                       {topic}
@@ -171,7 +172,7 @@ export default function DeadLettersTab({
 
               <div className="dq-form-actions">
                 <button type="button" className="mini-btn" onClick={handleRedrive} disabled={submitting || !targetTopic}>
-                  {submitting ? "Re-driving..." : "Re-drive Message"}
+                  {submitting ? DEAD_LETTERS_COPY.REDRIVING : DEAD_LETTERS_COPY.REDRIVE_BUTTON}
                 </button>
               </div>
             </div>

@@ -1,9 +1,10 @@
+import { COMMON_TEXT } from "../../../constants/ui";
 import { safeNum } from "../../../utils/number";
 
 export function buildTopics(topicRows, selectedLagRows, dlqByTopic, prev, sparkRef, nowMs) {
   const lagByTopic = new Map();
   for (const row of selectedLagRows) {
-    const topic = row.topic || "unknown";
+    const topic = row.topic || COMMON_TEXT.UNKNOWN;
     const current = lagByTopic.get(topic) || {
       lag: 0,
       inflight: 0,

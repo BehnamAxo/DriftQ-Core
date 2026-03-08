@@ -1,8 +1,9 @@
+import { API_PATHS, COMMON_TEXT, CONSUMER_STATUS, METRIC_NAME } from "../../../constants/ui";
 import { safeNum } from "../../../utils/number";
 
 export async function loadConsumerLagDetails(metricRows, selectedGroup, signal, getJSON) {
-  const lagMetrics = metricRows.filter((row) => row.name === "consumer_lag");
-  const inflightMetrics = metricRows.filter((row) => row.name === "inflight_messages");
+  const lagMetrics = metricRows.filter((row) => row.name === METRIC_NAME.CONSUMER_LAG);
+  const inflightMetrics = metricRows.filter((row) => row.name === METRIC_NAME.INFLIGHT_MESSAGES);
   const groups = new Set([selectedGroup]);
 
   for (const row of lagMetrics) {
@@ -22,7 +23,7 @@ export async function loadConsumerLagDetails(metricRows, selectedGroup, signal, 
   await Promise.all(
     groupList.map(async (group) => {
       try {
-        const payload = await getJSON(`/debug/topics/lag?group=${encodeURIComponent(group)}`, signal);
+        const payload = await getJSON(API_PATHS.topicLag(group), signal);
         lagDetails[group] = Array.isArray(payload.rows) ? payload.rows : [];
       } catch {
         lagDetails[group] = [];
@@ -77,14 +78,14 @@ export function buildConsumers(groupList, lagDetails) {
       stalledCount,
       rows: rows
         .map((row) => ({
-          topic: row.topic || "unknown",
+          topic: row.topic || COMMON_TEXT.UNKNOWN,
           partition: safeNum(row.partition),
           headOffset: Math.max(0, safeNum(row.head_offset)),
           committedOffset: Math.max(0, safeNum(row.committed_offset)),
           inflight: safeNum(row.inflight),
           lag: safeNum(row.lag),
           leaseOwners: Array.isArray(row.lease_owners) ? row.lease_owners : [],
-          lastOwner: row.last_owner || "",
+          lastOwner: row.last_owner || COMMON_TEXT.EMPTY,
           lastDeliveredAt: safeNum(row.last_delivered_at_ms),
           oldestLeaseAge: safeNum(row.oldest_lease_age_ms),
           leaseDurationMs: safeNum(row.lease_duration_ms),
@@ -98,7 +99,7 @@ export function buildConsumers(groupList, lagDetails) {
           return a.partition - b.partition;
         }),
       topicSummaries,
-      status: rows.some((row) => safeNum(row.inflight) > 0) ? "connected" : rows.some((row) => safeNum(row.lag) > 0) ? "backlog" : "idle"
+      status: rows.some((row) => safeNum(row.inflight) > 0) ? CONSUMER_STATUS.CONNECTED : rows.some((row) => safeNum(row.lag) > 0) ? CONSUMER_STATUS.BACKLOG : CONSUMER_STATUS.IDLE
     };
   });
 }

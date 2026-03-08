@@ -1,17 +1,19 @@
+import { COMMON_TEXT, CONTROLS_COPY } from "../../../constants/ui";
+
 export default function Controls({ group, onGroupChange, onGroupBlur, onRefresh, loading, tick }) {
   return (
     <div className="dq-controls">
-      <label>Group</label>
+      <label>{CONTROLS_COPY.GROUP_LABEL}</label>
       <input
         value={group}
         onChange={(e) => onGroupChange(e.target.value)}
         onBlur={onGroupBlur}
-        placeholder="bench"
+        placeholder={CONTROLS_COPY.groupPlaceholder}
       />
       <button type="button" onClick={onRefresh}>
-        Refresh
+        {CONTROLS_COPY.REFRESH_BUTTON}
       </button>
-      <span>{loading ? "loading..." : `tick #${tick}`}</span>
+      <span>{loading ? COMMON_TEXT.LOADING : CONTROLS_COPY.tickLabel(tick)}</span>
     </div>
   );
 }

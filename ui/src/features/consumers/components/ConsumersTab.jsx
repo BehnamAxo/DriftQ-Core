@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { API_PATHS, COMMON_TEXT, CONSUMER_STATUS, CONSUMERS_COPY, DEFAULTS, UI_LIMITS } from "../../../constants/ui";
 import { fmt } from "../../../utils/number";
-import { postJSON, streamNDJSON } from "../../../utils/http";
 import { formatClock } from "../../../utils/time";
+import { postJSON, streamNDJSON } from "../../../utils/http";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function parseMessageValue(raw) {
   try {
@@ -31,19 +32,19 @@ function toStreamMessage(item, session) {
 }
 
 export default function ConsumersTab({ consumers, onConsumerChanged }) {
-  const [selectedGroup, setSelectedGroup] = useState("");
-  const [consumeTopic, setConsumeTopic] = useState("");
-  const [owner, setOwner] = useState("debug-ui");
-  const [leaseMs, setLeaseMs] = useState("10000");
-  const [nackReason, setNackReason] = useState("debug reject");
-  const [actionError, setActionError] = useState("");
-  const [actionSuccess, setActionSuccess] = useState("");
+  const [selectedGroup, setSelectedGroup] = useState(COMMON_TEXT.EMPTY);
+  const [consumeTopic, setConsumeTopic] = useState(COMMON_TEXT.EMPTY);
+  const [owner, setOwner] = useState(DEFAULTS.CONSUMER_OWNER);
+  const [leaseMs, setLeaseMs] = useState(DEFAULTS.CONSUMER_LEASE_MS);
+  const [nackReason, setNackReason] = useState(DEFAULTS.CONSUMER_NACK_REASON);
+  const [actionError, setActionError] = useState(COMMON_TEXT.EMPTY);
+  const [actionSuccess, setActionSuccess] = useState(COMMON_TEXT.EMPTY);
   const [streaming, setStreaming] = useState(false);
   const [acking, setAcking] = useState(false);
   const [nacking, setNacking] = useState(false);
   const [streamSession, setStreamSession] = useState(null);
   const [streamMessages, setStreamMessages] = useState([]);
-  const [selectedMessageID, setSelectedMessageID] = useState("");
+  const [selectedMessageID, setSelectedMessageID] = useState(COMMON_TEXT.EMPTY);
   const [receivedCount, setReceivedCount] = useState(0);
   const streamControllerRef = useRef(null);
 
@@ -61,7 +62,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
 
   useEffect(() => {
     if (!activeGroup) {
-      setConsumeTopic("");
+      setConsumeTopic(COMMON_TEXT.EMPTY);
       return;
     }
 
@@ -79,13 +80,13 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
     }
 
     if (!streamMessages.some((message) => message.id === selectedMessageID)) {
-      setSelectedMessageID(streamMessages[0]?.id || "");
+      setSelectedMessageID(streamMessages[0]?.id || COMMON_TEXT.EMPTY);
     }
   }, [selectedMessageID, streamMessages]);
 
   useEffect(() => () => {
     if (streamControllerRef.current) {
-      streamControllerRef.current.abort(new Error("stream stopped"));
+      streamControllerRef.current.abort(new Error(CONSUMERS_COPY.STREAM_STOPPED));
       streamControllerRef.current = null;
     }
   }, []);
@@ -95,16 +96,16 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
     [selectedMessageID, streamMessages]
   );
 
-  function stopStream(successMessage = "temporary stream stopped") {
+  function stopStream(successMessage = CONSUMERS_COPY.TEMP_STREAM_STOPPED) {
     const controller = streamControllerRef.current;
     if (!controller) {
       return;
     }
 
     streamControllerRef.current = null;
-    controller.abort(new Error("stream stopped"));
+    controller.abort(new Error(CONSUMERS_COPY.STREAM_STOPPED));
     setStreaming(false);
-    setActionError("");
+    setActionError(COMMON_TEXT.EMPTY);
     setActionSuccess(successMessage);
   }
 
@@ -125,14 +126,14 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
     const parsedLease = Math.max(1, Number.parseInt(leaseMs, 10) || 10000);
 
     if (!topic) {
-      setActionError("pick a topic to consume from");
-      setActionSuccess("");
+      setActionError(CONSUMERS_COPY.PICK_TOPIC);
+      setActionSuccess(COMMON_TEXT.EMPTY);
       return;
     }
 
     if (!trimmedOwner) {
-      setActionError("owner is required");
-      setActionSuccess("");
+      setActionError(CONSUMERS_COPY.OWNER_REQUIRED);
+      setActionSuccess(COMMON_TEXT.EMPTY);
       return;
     }
 
@@ -149,14 +150,19 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
     setStreaming(true);
     setStreamSession(session);
     setStreamMessages([]);
-    setSelectedMessageID("");
+    setSelectedMessageID(COMMON_TEXT.EMPTY);
     setReceivedCount(0);
-    setActionError("");
-    setActionSuccess(`streaming ${topic} for ${activeGroup.group}`);
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(`${CONSUMERS_COPY.STREAMING_PREFIX} ${topic} ${CONSUMERS_COPY.STREAMING_FOR} ${activeGroup.group}`);
 
     try {
       await streamNDJSON(
-        `/v1/consume?topic=${encodeURIComponent(topic)}&group=${encodeURIComponent(activeGroup.group)}&owner=${encodeURIComponent(trimmedOwner)}&lease_ms=${parsedLease}`,
+        API_PATHS.consume({
+          topic,
+          group: activeGroup.group,
+          owner: trimmedOwner,
+          leaseMs: parsedLease
+        }),
         {
           signal: controller.signal,
           onMessage: (item) => {
@@ -164,7 +170,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
             setReceivedCount((value) => value + 1);
             setStreamMessages((prev) => {
               const remaining = prev.filter((message) => message.id !== nextMessage.id);
-              return [nextMessage, ...remaining].slice(0, 25);
+              return [nextMessage, ...remaining].slice(0, UI_LIMITS.STREAM_BUFFER_LIMIT);
             });
             setSelectedMessageID((current) => current || nextMessage.id);
           }
@@ -174,7 +180,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
       if (streamControllerRef.current === controller) {
         streamControllerRef.current = null;
         setStreaming(false);
-        setActionSuccess("temporary stream ended");
+        setActionSuccess(CONSUMERS_COPY.TEMP_STREAM_ENDED);
       }
     } catch (err) {
       if (controller.signal.aborted) {
@@ -185,16 +191,16 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
         streamControllerRef.current = null;
       }
       setStreaming(false);
-      setActionError(err?.message || "failed to consume stream");
+      setActionError(err?.message || CONSUMERS_COPY.CONSUME_STREAM_FAILED);
     }
   }
 
   function clearStreamBuffer() {
     setStreamMessages([]);
-    setSelectedMessageID("");
+    setSelectedMessageID(COMMON_TEXT.EMPTY);
     setReceivedCount(0);
-    setActionError("");
-    setActionSuccess("stream buffer cleared");
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(CONSUMERS_COPY.STREAM_BUFFER_CLEARED);
   }
 
   async function handleAck() {
@@ -203,22 +209,22 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
     }
 
     setAcking(true);
-    setActionError("");
-    setActionSuccess("");
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(COMMON_TEXT.EMPTY);
 
     try {
-      await postJSON("/v1/ack", {
+      await postJSON(API_PATHS.ACK, {
         topic: selectedMessage.topic,
         group: selectedMessage.group,
         owner: selectedMessage.owner,
         partition: selectedMessage.partition,
         offset: selectedMessage.offset
       });
-      setActionSuccess(`acked offset ${selectedMessage.offset}`);
+      setActionSuccess(`${CONSUMERS_COPY.ACKED_OFFSET_PREFIX} ${selectedMessage.offset}`);
       setStreamMessages((prev) => prev.filter((message) => message.id !== selectedMessage.id));
       await onConsumerChanged?.();
     } catch (err) {
-      setActionError(err?.message || "failed to ack message");
+      setActionError(err?.message || CONSUMERS_COPY.ACK_FAILED);
     } finally {
       setAcking(false);
     }
@@ -230,11 +236,11 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
     }
 
     setNacking(true);
-    setActionError("");
-    setActionSuccess("");
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(COMMON_TEXT.EMPTY);
 
     try {
-      await postJSON("/v1/nack", {
+      await postJSON(API_PATHS.NACK, {
         topic: selectedMessage.topic,
         group: selectedMessage.group,
         owner: selectedMessage.owner,
@@ -242,11 +248,11 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
         offset: selectedMessage.offset,
         reason: nackReason.trim()
       });
-      setActionSuccess(`nacked offset ${selectedMessage.offset}`);
+      setActionSuccess(`${CONSUMERS_COPY.NACKED_OFFSET_PREFIX} ${selectedMessage.offset}`);
       setStreamMessages((prev) => prev.filter((message) => message.id !== selectedMessage.id));
       await onConsumerChanged?.();
     } catch (err) {
-      setActionError(err?.message || "failed to nack message");
+      setActionError(err?.message || CONSUMERS_COPY.NACK_FAILED);
     } finally {
       setNacking(false);
     }
@@ -259,7 +265,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
           <div className={`dq-panel ${activeGroup?.group === c.group ? "selected" : ""}`} key={c.group}>
             <div className="row">
               <strong>{c.group}</strong>
-              <span className={c.status === "connected" ? "green" : c.status === "backlog" ? "amber" : "dim"}>{c.status}</span>
+              <span className={c.status === CONSUMER_STATUS.CONNECTED ? "green" : c.status === CONSUMER_STATUS.BACKLOG ? "amber" : "dim"}>{c.status}</span>
             </div>
             <div className="tags">
               {
@@ -267,33 +273,33 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                   <span key={t}>{t}</span>
                 ))
               }
-              {c.topics.length === 0 ? <span>no topics</span> : null}
+              {c.topics.length === 0 ? <span>{CONSUMERS_COPY.NO_TOPICS}</span> : null}
             </div>
             <div className="mini-grid">
               <div>
                 <b>{fmt(c.activeLease)}</b>
-                <small>active leases</small>
+                <small>{CONSUMERS_COPY.ACTIVE_LEASES}</small>
               </div>
               <div>
                 <b>{fmt(c.totalLag)}</b>
-                <small>lag</small>
+                <small>{CONSUMERS_COPY.LAG}</small>
               </div>
               <div>
                 <b>{fmt(c.partitions)}</b>
-                <small>partitions</small>
+                <small>{CONSUMERS_COPY.PARTITIONS}</small>
               </div>
               <div>
                 <b>{fmt(c.owners.length)}</b>
-                <small>owners</small>
+                <small>{CONSUMERS_COPY.OWNERS}</small>
               </div>
               <div>
                 <b>{fmt(c.stalledCount)}</b>
-                <small>stalled</small>
+                <small>{CONSUMERS_COPY.STALLED}</small>
               </div>
             </div>
             <div className="dq-form-actions top-gap">
               <button type="button" className="mini-btn" onClick={() => setSelectedGroup(c.group)} disabled={streaming}>
-                {streaming && activeGroup?.group === c.group ? "Streaming" : activeGroup?.group === c.group ? "Inspecting" : "Inspect"}
+                {streaming && activeGroup?.group === c.group ? CONSUMERS_COPY.STREAMING : activeGroup?.group === c.group ? CONSUMERS_COPY.INSPECTING : CONSUMERS_COPY.INSPECT}
               </button>
             </div>
           </div>
@@ -303,9 +309,9 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
       <section className="dq-panel">
         <div className="row">
           <div>
-            <strong>Consumer Group Detail</strong>
+            <strong>{CONSUMERS_COPY.DETAIL_TITLE}</strong>
             <div className="dim">
-              {activeGroup ? `Deep view for ${activeGroup.group}.` : "No consumer groups detected yet."}
+              {activeGroup ? `${CONSUMERS_COPY.DETAIL_PREFIX} ${activeGroup.group}.` : CONSUMERS_COPY.DETAIL_EMPTY}
             </div>
           </div>
         </div>
@@ -319,29 +325,29 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                     <div className="dq-panel topic" key={topic.topic}>
                       <div className="row">
                         <strong>{topic.topic}</strong>
-                        <span>{fmt(topic.partitions)} partitions</span>
+                        <span>{fmt(topic.partitions)} {CONSUMERS_COPY.PARTITIONS}</span>
                       </div>
                       <div className="mini-grid">
                         <div>
                           <b>{fmt(topic.lag)}</b>
-                          <small>lag</small>
+                          <small>{CONSUMERS_COPY.LAG}</small>
                         </div>
                         <div>
                           <b>{fmt(topic.inflight)}</b>
-                          <small>inflight</small>
+                          <small>{CONSUMERS_COPY.INFLIGHT}</small>
                         </div>
                         <div>
                           <b>{fmt(topic.committed)}</b>
-                          <small>committed</small>
+                          <small>{CONSUMERS_COPY.TABLE_HEADERS.COMMITTED}</small>
                         </div>
                         <div>
                           <b>{fmt(topic.head)}</b>
-                          <small>head</small>
+                          <small>{CONSUMERS_COPY.TABLE_HEADERS.HEAD}</small>
                         </div>
                       </div>
                       <div className="tags">
-                        {topic.owners.length ? topic.owners.map((ownerName) => <span key={`${topic.topic}-${ownerName}`}>{ownerName}</span>) : <span>no active owner</span>}
-                        <span>last delivery {topic.lastDeliveredAt ? formatClock(topic.lastDeliveredAt) : "-"}</span>
+                        {topic.owners.length ? topic.owners.map((ownerName) => <span key={`${topic.topic}-${ownerName}`}>{ownerName}</span>) : <span>{CONSUMERS_COPY.NO_ACTIVE_OWNER}</span>}
+                        <span>{CONSUMERS_COPY.LAST_DELIVERY_PREFIX} {topic.lastDeliveredAt ? formatClock(topic.lastDeliveredAt) : COMMON_TEXT.DASH}</span>
                       </div>
                     </div>
                   ))
@@ -351,16 +357,16 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
               <table>
                 <thead>
                   <tr>
-                    <th>Topic</th>
-                    <th className="right">Partition</th>
-                    <th>Owner</th>
-                    <th>Last Delivery</th>
-                    <th className="right">Lease Age</th>
-                    <th className="right">Head</th>
-                    <th className="right">Committed</th>
-                    <th className="right">Lag</th>
-                    <th className="right">Inflight</th>
-                    <th>State</th>
+                    <th>{CONSUMERS_COPY.TABLE_HEADERS.TOPIC}</th>
+                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.PARTITION}</th>
+                    <th>{CONSUMERS_COPY.TABLE_HEADERS.OWNER}</th>
+                    <th>{CONSUMERS_COPY.TABLE_HEADERS.LAST_DELIVERY}</th>
+                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.LEASE_AGE}</th>
+                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.HEAD}</th>
+                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.COMMITTED}</th>
+                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.LAG}</th>
+                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.INFLIGHT}</th>
+                    <th>{CONSUMERS_COPY.TABLE_HEADERS.STATE}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -369,10 +375,10 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                       <tr key={`${row.topic}:${row.partition}`}>
                         <td>{row.topic}</td>
                         <td className="right">{fmt(row.partition)}</td>
-                        <td>{row.leaseOwners.join(", ") || row.lastOwner || "-"}</td>
-                        <td>{row.lastDeliveredAt ? formatClock(row.lastDeliveredAt) : "-"}</td>
+                        <td>{row.leaseOwners.join(", ") || row.lastOwner || COMMON_TEXT.DASH}</td>
+                        <td>{row.lastDeliveredAt ? formatClock(row.lastDeliveredAt) : COMMON_TEXT.DASH}</td>
                         <td className={`right ${row.stalled ? "red" : row.oldestLeaseAge > 0 ? "amber" : "dim"}`}>
-                          {row.oldestLeaseAge > 0 ? `${fmt(row.oldestLeaseAge)}ms` : "-"}
+                          {row.oldestLeaseAge > 0 ? `${fmt(row.oldestLeaseAge)}ms` : COMMON_TEXT.DASH}
                         </td>
                         <td className="right">{fmt(row.headOffset)}</td>
                         <td className="right">{fmt(row.committedOffset)}</td>
@@ -381,12 +387,12 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                         <td>
                           {
                             row.stalled
-                            ? <span className="red">stalled</span>
+                            ? <span className="red">{CONSUMERS_COPY.STATE_LABELS.STALLED}</span>
                             : row.inflight > 0
-                              ? <span className="green">leased</span>
+                              ? <span className="green">{CONSUMERS_COPY.STATE_LABELS.LEASED}</span>
                               : row.lag > 0
-                                ? <span className="amber">waiting</span>
-                                : <span className="dim">caught up</span>
+                                ? <span className="amber">{CONSUMERS_COPY.STATE_LABELS.WAITING}</span>
+                                : <span className="dim">{CONSUMERS_COPY.STATE_LABELS.CAUGHT_UP}</span>
                           }
                         </td>
                       </tr>
@@ -395,7 +401,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                   {
                     activeGroup.rows.length === 0 ? (
                       <tr>
-                        <td colSpan={10}>no partition detail available for this consumer group</td>
+                        <td colSpan={10}>{CONSUMERS_COPY.NO_PARTITION_DETAIL}</td>
                       </tr>
                     ) : null
                   }
@@ -403,7 +409,7 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
               </table>
             </div>
           ) : (
-            <p className="dq-note">No consumer groups to inspect yet.</p>
+            <p className="dq-note">{CONSUMERS_COPY.NO_CONSUMER_GROUPS}</p>
           )
         }
       </section>
@@ -411,10 +417,10 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
       <section className="dq-panel">
         <div className="row">
           <div>
-            <strong>Temporary Consumer Stream</strong>
-            <div className="dim">Open a live leased stream for one group/topic/owner tuple, then inspect and ack or nack messages as they arrive.</div>
+            <strong>{CONSUMERS_COPY.TEMP_STREAM_TITLE}</strong>
+            <div className="dim">{CONSUMERS_COPY.TEMP_STREAM_DESCRIPTION}</div>
           </div>
-          <span className={streaming ? "green" : "dim"}>{streaming ? "live" : "stopped"}</span>
+          <span className={streaming ? "green" : "dim"}>{streaming ? CONSUMERS_COPY.LIVE : CONSUMERS_COPY.STOPPED}</span>
         </div>
 
         {actionError ? <div className="dq-error compact">{actionError}</div> : null}
@@ -425,14 +431,14 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
             <div className="dq-stack">
               <form className="dq-form-grid consume" onSubmit={handleStreamSubmit}>
                 <label className="dq-input-stack">
-                  <span>Group</span>
+                  <span>{CONSUMERS_COPY.GROUP}</span>
                   <input value={activeGroup.group} disabled />
                 </label>
 
                 <label className="dq-input-stack">
-                  <span>Topic</span>
+                  <span>{CONSUMERS_COPY.TOPIC}</span>
                   <select className="dq-select" value={consumeTopic} onChange={(e) => setConsumeTopic(e.target.value)} disabled={!activeGroup.topics.length || streaming}>
-                    {!activeGroup.topics.length ? <option value="">No topics available</option> : null}
+                    {!activeGroup.topics.length ? <option value={COMMON_TEXT.EMPTY}>{COMMON_TEXT.NO_TOPICS_AVAILABLE}</option> : null}
                     {activeGroup.topics.map((topic) => (
                       <option key={topic} value={topic}>
                         {topic}
@@ -442,21 +448,21 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                 </label>
 
                 <label className="dq-input-stack">
-                  <span>Owner</span>
-                  <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="debug-ui" autoComplete="off" disabled={streaming} />
+                  <span>{CONSUMERS_COPY.OWNER}</span>
+                  <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder={CONSUMERS_COPY.OWNER_PLACEHOLDER} autoComplete="off" disabled={streaming} />
                 </label>
 
                 <label className="dq-input-stack small">
-                  <span>Lease Ms</span>
+                  <span>{CONSUMERS_COPY.LEASE_MS}</span>
                   <input type="number" min="1" step="1" value={leaseMs} onChange={(e) => setLeaseMs(e.target.value)} disabled={streaming} />
                 </label>
 
                 <div className="dq-form-actions">
                   <button type="submit" className={`mini-btn ${streaming ? "danger" : ""}`} disabled={!streaming && !consumeTopic}>
-                    {streaming ? "Stop Stream" : "Start Stream"}
+                    {streaming ? CONSUMERS_COPY.STOP_STREAM : CONSUMERS_COPY.START_STREAM}
                   </button>
                   <button type="button" className="mini-btn" onClick={clearStreamBuffer} disabled={streaming || !streamMessages.length}>
-                    Clear Buffer
+                    {CONSUMERS_COPY.CLEAR_BUFFER}
                   </button>
                 </div>
               </form>
@@ -465,12 +471,12 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                 streamSession ? (
                   <div className="tags">
                     <span>{streamSession.topic}</span>
-                    <span>group {streamSession.group}</span>
-                    <span>owner {streamSession.owner}</span>
-                    <span>lease {fmt(streamSession.leaseMs)}ms</span>
-                    <span>{streaming ? "live stream" : "last session"}</span>
-                    <span>{fmt(receivedCount)} received</span>
-                    <span>{fmt(streamMessages.length)} buffered</span>
+                    <span>{CONSUMERS_COPY.GROUP_PREFIX} {streamSession.group}</span>
+                    <span>{CONSUMERS_COPY.OWNER_PREFIX} {streamSession.owner}</span>
+                    <span>{CONSUMERS_COPY.LEASE_PREFIX} {fmt(streamSession.leaseMs)}ms</span>
+                    <span>{streaming ? CONSUMERS_COPY.LIVE_STREAM : CONSUMERS_COPY.LAST_SESSION}</span>
+                    <span>{fmt(receivedCount)} {CONSUMERS_COPY.RECEIVED}</span>
+                    <span>{fmt(streamMessages.length)} {CONSUMERS_COPY.BUFFERED}</span>
                   </div>
                 ) : null
               }
@@ -481,11 +487,11 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                     <table>
                       <thead>
                         <tr>
-                          <th className="right">Partition</th>
-                          <th className="right">Offset</th>
-                          <th className="right">Attempts</th>
-                          <th>Received</th>
-                          <th>Error</th>
+                          <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.PARTITION}</th>
+                          <th className="right">{CONSUMERS_COPY.OFFSET}</th>
+                          <th className="right">{CONSUMERS_COPY.ATTEMPTS}</th>
+                          <th>{CONSUMERS_COPY.RECEIVED_AT}</th>
+                          <th>{CONSUMERS_COPY.ERROR}</th>
                           <th></th>
                         </tr>
                       </thead>
@@ -497,10 +503,10 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                               <td className="right">{fmt(message.offset)}</td>
                               <td className="right">{fmt(message.attempts)}</td>
                               <td>{formatClock(message.receivedAt)}</td>
-                              <td className="dim">{message.lastError || "-"}</td>
+                              <td className="dim">{message.lastError || COMMON_TEXT.DASH}</td>
                               <td className="right">
                                 <button type="button" className="mini-btn" onClick={() => setSelectedMessageID(message.id)}>
-                                  {selectedMessageID === message.id ? "Inspecting" : "Inspect"}
+                                  {selectedMessageID === message.id ? CONSUMERS_COPY.INSPECTING : CONSUMERS_COPY.INSPECT}
                                 </button>
                               </td>
                             </tr>
@@ -511,8 +517,8 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
 
                     <div className="row">
                       <div>
-                        <strong>Streamed Message Detail</strong>
-                        <div className="dim">{selectedMessage ? `${selectedMessage.topic}:${selectedMessage.partition}:${selectedMessage.offset}` : "Select a streamed message to inspect it."}</div>
+                        <strong>{CONSUMERS_COPY.STREAMED_DETAIL_TITLE}</strong>
+                        <div className="dim">{selectedMessage ? `${selectedMessage.topic}:${selectedMessage.partition}:${selectedMessage.offset}` : CONSUMERS_COPY.STREAMED_DETAIL_EMPTY}</div>
                       </div>
                     </div>
 
@@ -521,12 +527,12 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
                         <div className="dq-stack">
                           <div className="tags">
                             <span>{selectedMessage.topic}</span>
-                            <span>group {selectedMessage.group}</span>
-                            <span>owner {selectedMessage.owner}</span>
-                            <span>partition {selectedMessage.partition}</span>
-                            <span>offset {selectedMessage.offset}</span>
-                            <span>attempts {selectedMessage.attempts}</span>
-                            <span>received {formatClock(selectedMessage.receivedAt)}</span>
+                            <span>{CONSUMERS_COPY.GROUP_PREFIX} {selectedMessage.group}</span>
+                            <span>{CONSUMERS_COPY.OWNER_PREFIX} {selectedMessage.owner}</span>
+                            <span>{CONSUMERS_COPY.TABLE_HEADERS.PARTITION.toLowerCase()} {selectedMessage.partition}</span>
+                            <span>{CONSUMERS_COPY.OFFSET.toLowerCase()} {selectedMessage.offset}</span>
+                            <span>{CONSUMERS_COPY.ATTEMPTS.toLowerCase()} {selectedMessage.attempts}</span>
+                            <span>{CONSUMERS_COPY.RECEIVED.toLowerCase()} {formatClock(selectedMessage.receivedAt)}</span>
                           </div>
 
                           <pre className="dq-payload">{JSON.stringify(parseMessageValue(selectedMessage.value || ""), null, 2)}</pre>
@@ -535,36 +541,36 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
 
                           <div className="dq-form-grid consume-actions">
                             <label className="dq-input-stack">
-                              <span>Nack Reason</span>
-                              <input value={nackReason} onChange={(e) => setNackReason(e.target.value)} placeholder="debug reject" />
+                              <span>{CONSUMERS_COPY.NACK_REASON}</span>
+                              <input value={nackReason} onChange={(e) => setNackReason(e.target.value)} placeholder={CONSUMERS_COPY.NACK_REASON_PLACEHOLDER} />
                             </label>
 
                             <div className="dq-form-actions">
                               <button type="button" className="mini-btn" onClick={handleAck} disabled={acking || nacking}>
-                                {acking ? "Acking..." : "Ack"}
+                                {acking ? CONSUMERS_COPY.ACKING : CONSUMERS_COPY.ACK}
                               </button>
                               <button type="button" className="mini-btn danger" onClick={handleNack} disabled={acking || nacking}>
-                                {nacking ? "Nacking..." : "Nack"}
+                                {nacking ? CONSUMERS_COPY.NACKING : CONSUMERS_COPY.NACK}
                               </button>
                             </div>
                           </div>
                         </div>
                       ) : (
-                        <p className="dq-note">No streamed message selected.</p>
+                        <p className="dq-note">{CONSUMERS_COPY.NO_STREAMED_MESSAGE}</p>
                       )
                     }
                   </div>
                 ) : (
                   <p className="dq-note">
                     {streaming
-                      ? "Stream is open and waiting for messages."
-                      : "No streamed messages yet. Start the temporary stream to watch messages arrive live."}
+                      ? CONSUMERS_COPY.STREAM_WAITING
+                      : CONSUMERS_COPY.STREAM_EMPTY}
                   </p>
                 )
               }
             </div>
           ) : (
-            <p className="dq-note">Create or attach a consumer group first so there is something to inspect.</p>
+            <p className="dq-note">{CONSUMERS_COPY.ATTACH_GROUP_FIRST}</p>
           )
         }
       </section>

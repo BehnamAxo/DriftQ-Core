@@ -1,3 +1,5 @@
+import { COMMON_TEXT, HTTP } from "../constants/ui";
+
 async function buildError(path, res) {
   let message = `${path} failed: ${res.status}`;
 
@@ -37,8 +39,8 @@ export async function getText(path, signal) {
 
 export async function postJSON(path, body, signal) {
   const res = await fetch(path, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
+    method: HTTP.METHOD_POST,
+    headers: { [HTTP.CONTENT_TYPE_HEADER]: HTTP.CONTENT_TYPE_JSON },
     body: JSON.stringify(body),
     signal
   });
@@ -61,12 +63,12 @@ export async function streamNDJSON(path, { signal, onMessage } = {}) {
   }
 
   if (!res.body) {
-    throw new Error("streaming body unavailable");
+    throw new Error(HTTP.STREAMING_BODY_UNAVAILABLE);
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  let buffer = COMMON_TEXT.EMPTY;
 
   try {
     while (true) {
@@ -103,7 +105,7 @@ export async function streamNDJSON(path, { signal, onMessage } = {}) {
       if (reason instanceof Error && reason.message) {
         throw reason;
       }
-      throw new Error("stream cancelled");
+      throw new Error(HTTP.STREAM_CANCELLED);
     }
     throw err;
   } finally {
@@ -113,9 +115,9 @@ export async function streamNDJSON(path, { signal, onMessage } = {}) {
 
 export async function readFirstNDJSON(path, { signal, timeoutMs = 4000 } = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error("consume timed out")), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(new Error(HTTP.CONSUME_TIMED_OUT)), timeoutMs);
 
-  const relayAbort = () => controller.abort(signal?.reason || new Error("request aborted"));
+  const relayAbort = () => controller.abort(signal?.reason || new Error(HTTP.REQUEST_ABORTED));
   if (signal) {
     if (signal.aborted) {
       relayAbort();
@@ -131,12 +133,12 @@ export async function readFirstNDJSON(path, { signal, timeoutMs = 4000 } = {}) {
     }
 
     if (!res.body) {
-      throw new Error("streaming body unavailable");
+      throw new Error(HTTP.STREAMING_BODY_UNAVAILABLE);
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
+    let buffer = COMMON_TEXT.EMPTY;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -157,14 +159,14 @@ export async function readFirstNDJSON(path, { signal, timeoutMs = 4000 } = {}) {
       }
     }
 
-    throw new Error("no message received");
+    throw new Error(HTTP.NO_MESSAGE_RECEIVED);
   } catch (err) {
     if (controller.signal.aborted) {
       const reason = controller.signal.reason;
       if (reason instanceof Error && reason.message) {
         throw reason;
       }
-      throw new Error("consume cancelled");
+      throw new Error(HTTP.CONSUME_CANCELLED);
     }
     throw err;
   } finally {

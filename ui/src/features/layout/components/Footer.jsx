@@ -1,8 +1,10 @@
+import { APP_COPY, CONTROLS_COPY } from "../../../constants/ui";
+
 export default function Footer({ tick }) {
   return (
     <footer className="dq-footer">
-      <span>DriftQ Dashboard - embedded at :8080/ui</span>
-      <span>tick #{tick}</span>
+      <span>{APP_COPY.FOOTER_LABEL}</span>
+      <span>{CONTROLS_COPY.tickLabel(tick)}</span>
     </footer>
   );
 }

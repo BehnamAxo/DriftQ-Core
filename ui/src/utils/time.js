@@ -1,3 +1,5 @@
+import { COMMON_TEXT, TIME } from "../constants/ui";
+
 const CLOCK_OPTIONS = {
   hour12: false,
   hour: "2-digit",
@@ -6,18 +8,18 @@ const CLOCK_OPTIONS = {
 };
 
 export function nowClock() {
-  return new Date().toLocaleTimeString("en-US", CLOCK_OPTIONS);
+  return new Date().toLocaleTimeString(TIME.LOCALE, CLOCK_OPTIONS);
 }
 
 export function formatClock(value) {
   if (!value) {
-    return "-";
+    return COMMON_TEXT.DASH;
   }
 
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return "-";
+    return COMMON_TEXT.DASH;
   }
 
-  return date.toLocaleTimeString("en-US", CLOCK_OPTIONS);
+  return date.toLocaleTimeString(TIME.LOCALE, CLOCK_OPTIONS);
 }

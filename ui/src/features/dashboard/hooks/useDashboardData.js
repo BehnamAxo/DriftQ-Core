@@ -1,21 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getJSON, getText } from "../../../utils/http";
-import { metricsByName, parsePrometheus } from "../../../utils/metrics";
-import { safeNum } from "../../../utils/number";
-import { nowClock } from "../../../utils/time";
-import { normalizeRun } from "../../workflows/utils/workflow";
-import { loadConsumerLagDetails, buildConsumers } from "../utils/consumers";
+import {
+  API_PATHS,
+  APP_TAB,
+  COMMON_TEXT,
+  DASHBOARD_COPY,
+  DEFAULTS,
+  HEALTH_STATUS,
+  METRIC_NAME,
+  PROMISE_STATUS,
+  TOPIC_PREFIX,
+  UI_LIMITS
+} from "../../../constants/ui";
 import { buildDashboardEvents } from "../utils/events";
 import { buildTopics } from "../utils/topics";
+import { getJSON, getText } from "../../../utils/http";
+import { loadConsumerLagDetails, buildConsumers } from "../utils/consumers";
+import { metricsByName, parsePrometheus } from "../../../utils/metrics";
+import { normalizeRun } from "../../workflows/utils/workflow";
+import { nowClock } from "../../../utils/time";
+import { safeNum } from "../../../utils/number";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 function normalizeRefreshError(err) {
-  const message = String(err?.message || "").trim();
+  const message = String(err?.message || COMMON_TEXT.EMPTY).trim();
   if (!message) {
-    return "refresh failed";
+    return DASHBOARD_COPY.REFRESH_FAILED;
   }
 
-  if (message === "Failed to fetch" || message.includes("NetworkError")) {
-    return "Disconnected from broker. Retrying...";
+  if (message === DASHBOARD_COPY.NETWORK_FETCH_FAILED || message.includes(DASHBOARD_COPY.NETWORK_ERROR_TOKEN)) {
+    return DASHBOARD_COPY.DISCONNECTED_RETRYING;
   }
 
   return message;
@@ -35,26 +47,12 @@ function summarizeRefreshErrors(errors) {
 }
 
 export function useDashboardData(activeTab) {
-  const [group, setGroup] = useState("bench");
-  const [health, setHealth] = useState("unknown");
-  const [version, setVersion] = useState({ version: "unknown", commit: "unknown", wal_enabled: false });
-  const [config, setConfig] = useState({
-    addr: "",
-    wal_path: "",
-    access_log: false,
-    engine_store: "unknown",
-    engine_wal: "unknown",
-    artifacts_dir: "",
-    log_level: "unknown",
-    log_format: "unknown",
-    max_partition_bytes: 0,
-    max_partition_msgs: 0,
-    max_inflight: 0,
-    wal_sync_interval: "",
-    wal_buffer_bytes: 0
-  });
-  const [updatedAt, setUpdatedAt] = useState("-");
-  const [error, setError] = useState("");
+  const [group, setGroup] = useState(DEFAULTS.GROUP);
+  const [health, setHealth] = useState(HEALTH_STATUS.UNKNOWN);
+  const [version, setVersion] = useState(DEFAULTS.VERSION);
+  const [config, setConfig] = useState(DEFAULTS.CONFIG);
+  const [updatedAt, setUpdatedAt] = useState(DEFAULTS.UPDATED_AT);
+  const [error, setError] = useState(COMMON_TEXT.EMPTY);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
 
@@ -67,7 +65,7 @@ export function useDashboardData(activeTab) {
   const [events, setEvents] = useState([]);
   const [runs, setRuns] = useState([]);
 
-  const [dlqTopic, setDlqTopic] = useState("");
+  const [dlqTopic, setDlqTopic] = useState(COMMON_TEXT.EMPTY);
   const [dlqMessages, setDlqMessages] = useState([]);
 
   const prevRef = useRef({
@@ -88,62 +86,62 @@ export function useDashboardData(activeTab) {
 
   const refresh = useCallback(
     async (signal) => {
-      const selectedGroup = group.trim() || "bench";
+      const selectedGroup = group.trim() || DEFAULTS.GROUP;
       const errors = [];
       const results = await Promise.allSettled([
-        getJSON("/v1/healthz", signal),
-        getJSON("/v1/version", signal),
-        getJSON("/v1/config", signal),
-        getJSON("/debug/topics", signal),
-        getJSON(`/debug/topics/lag?group=${encodeURIComponent(selectedGroup)}`, signal),
-        getText("/metrics", signal),
-        getJSON("/debug/runs?limit=10", signal)
+        getJSON(API_PATHS.HEALTH, signal),
+        getJSON(API_PATHS.VERSION, signal),
+        getJSON(API_PATHS.CONFIG, signal),
+        getJSON(API_PATHS.TOPICS, signal),
+        getJSON(API_PATHS.topicLag(selectedGroup), signal),
+        getText(API_PATHS.METRICS, signal),
+        getJSON(API_PATHS.runs(UI_LIMITS.RUN_LIST_LIMIT), signal)
       ]);
       const [healthRes, versionRes, configRes, topicsRes, lagRes, metricsRes, runsRes] = results;
-      const successCount = results.filter((result) => result.status === "fulfilled").length;
+      const successCount = results.filter((result) => result.status === PROMISE_STATUS.FULFILLED).length;
 
-      if (healthRes.status === "fulfilled") {
-        setHealth(healthRes.value.status || "unknown");
+      if (healthRes.status === PROMISE_STATUS.FULFILLED) {
+        setHealth(healthRes.value.status || HEALTH_STATUS.UNKNOWN);
       } else {
-        errors.push(healthRes.reason?.message || "health failed");
-        setHealth(successCount === 0 ? "disconnected" : "degraded");
+        errors.push(healthRes.reason?.message || DASHBOARD_COPY.HEALTH_FAILED);
+        setHealth(successCount === 0 ? HEALTH_STATUS.DISCONNECTED : HEALTH_STATUS.DEGRADED);
       }
 
-      if (versionRes.status === "fulfilled") {
+      if (versionRes.status === PROMISE_STATUS.FULFILLED) {
         setVersion(versionRes.value);
       } else {
-        errors.push(versionRes.reason?.message || "version failed");
+        errors.push(versionRes.reason?.message || DASHBOARD_COPY.VERSION_FAILED);
       }
 
-      if (configRes.status === "fulfilled") {
+      if (configRes.status === PROMISE_STATUS.FULFILLED) {
         setConfig(configRes.value);
       } else {
-        errors.push(configRes.reason?.message || "config failed");
+        errors.push(configRes.reason?.message || DASHBOARD_COPY.CONFIG_FAILED);
       }
 
-      const topicRows = topicsRes.status === "fulfilled" ? topicsRes.value.topics || [] : [];
-      if (topicsRes.status !== "fulfilled") {
-        errors.push(topicsRes.reason?.message || "topics failed");
+      const topicRows = topicsRes.status === PROMISE_STATUS.FULFILLED ? topicsRes.value.topics || [] : [];
+      if (topicsRes.status !== PROMISE_STATUS.FULFILLED) {
+        errors.push(topicsRes.reason?.message || DASHBOARD_COPY.TOPICS_FAILED);
       }
 
-      const selectedLagRows = lagRes.status === "fulfilled" ? lagRes.value.rows || [] : [];
-      if (lagRes.status !== "fulfilled") {
-        errors.push(lagRes.reason?.message || "lag failed");
+      const selectedLagRows = lagRes.status === PROMISE_STATUS.FULFILLED ? lagRes.value.rows || [] : [];
+      if (lagRes.status !== PROMISE_STATUS.FULFILLED) {
+        errors.push(lagRes.reason?.message || DASHBOARD_COPY.LAG_FAILED);
       }
 
-      const metricRows = metricsRes.status === "fulfilled" ? parsePrometheus(metricsRes.value) : [];
-      if (metricsRes.status !== "fulfilled") {
-        errors.push(metricsRes.reason?.message || "metrics failed");
+      const metricRows = metricsRes.status === PROMISE_STATUS.FULFILLED ? parsePrometheus(metricsRes.value) : [];
+      if (metricsRes.status !== PROMISE_STATUS.FULFILLED) {
+        errors.push(metricsRes.reason?.message || DASHBOARD_COPY.METRICS_FAILED);
       }
 
-      const rejected = metricsByName(metricRows, "produce_rejected_total")
-        .map((row) => ({ reason: row.labels.reason || "unknown", value: safeNum(row.value) }))
+      const rejected = metricsByName(metricRows, METRIC_NAME.PRODUCE_REJECTED_TOTAL)
+        .map((row) => ({ reason: row.labels.reason || COMMON_TEXT.UNKNOWN, value: safeNum(row.value) }))
         .sort((a, b) => b.value - a.value);
       setProducerReasons(rejected);
 
       const dlqByTopic = new Map();
-      for (const row of metricsByName(metricRows, "dlq_messages_total")) {
-        const topic = row.labels.topic || "";
+      for (const row of metricsByName(metricRows, METRIC_NAME.DLQ_MESSAGES_TOTAL)) {
+        const topic = row.labels.topic || COMMON_TEXT.EMPTY;
         dlqByTopic.set(topic, (dlqByTopic.get(topic) || 0) + safeNum(row.value));
       }
 
@@ -157,16 +155,16 @@ export function useDashboardData(activeTab) {
       const { groupList, lagDetails } = await loadConsumerLagDetails(metricRows, selectedGroup, signal, getJSON);
       setConsumers(buildConsumers(groupList, lagDetails));
 
-      const runIDs = runsRes.status === "fulfilled" ? runsRes.value.runs || [] : [];
-      if (runsRes.status !== "fulfilled") {
-        errors.push(runsRes.reason?.message || "runs failed");
+      const runIDs = runsRes.status === PROMISE_STATUS.FULFILLED ? runsRes.value.runs || [] : [];
+      if (runsRes.status !== PROMISE_STATUS.FULFILLED) {
+        errors.push(runsRes.reason?.message || DASHBOARD_COPY.RUNS_FAILED);
       }
 
-      if (activeTab === "Workflows (v2)" || activeTab === "Overview") {
+      if (activeTab === APP_TAB.WORKFLOWS || activeTab === APP_TAB.OVERVIEW) {
         const details = await Promise.all(
-          runIDs.slice(0, 6).map(async (id) => {
+          runIDs.slice(0, UI_LIMITS.WORKFLOW_PREVIEW_RUNS).map(async (id) => {
             try {
-              return await getJSON(`/debug/run?run_id=${encodeURIComponent(id)}`, signal);
+              return await getJSON(API_PATHS.runDetail(id), signal);
             } catch {
               return null;
             }
@@ -175,15 +173,15 @@ export function useDashboardData(activeTab) {
         setRuns(details.map(normalizeRun).filter(Boolean));
       }
 
-      const dlqTopics = topicRows.map((topic) => topic.topic).filter((topic) => topic.startsWith("dlq."));
-      const effectiveDlq = dlqTopic || dlqTopics[0] || "";
+      const dlqTopics = topicRows.map((topic) => topic.topic).filter((topic) => topic.startsWith(TOPIC_PREFIX.DLQ));
+      const effectiveDlq = dlqTopic || dlqTopics[0] || COMMON_TEXT.EMPTY;
       if (effectiveDlq !== dlqTopic) {
         setDlqTopic(effectiveDlq);
       }
 
-      if (activeTab === "Dead Letters" && effectiveDlq) {
+      if (activeTab === APP_TAB.DEAD_LETTERS && effectiveDlq) {
         try {
-          const payload = await getJSON(`/debug/topics/peek?topic=${encodeURIComponent(effectiveDlq)}&limit=50`, signal);
+          const payload = await getJSON(API_PATHS.topicPeek(effectiveDlq, UI_LIMITS.DLQ_PEEK_LIMIT), signal);
           const messages = Array.isArray(payload.messages) ? payload.messages : [];
 
           setDlqMessages(
@@ -193,21 +191,21 @@ export function useDashboardData(activeTab) {
               return {
                 id: `${message.topic}:${message.partition}:${message.offset}`,
                 topic: message.topic || effectiveDlq,
-                originalTopic: dlqMeta.original_topic || "",
+                originalTopic: dlqMeta.original_topic || COMMON_TEXT.EMPTY,
                 originalPartition: safeNum(dlqMeta.original_partition),
                 originalOffset: safeNum(dlqMeta.original_offset),
-                reason: dlqMeta.last_error || message.last_error || "unknown",
+                reason: dlqMeta.last_error || message.last_error || COMMON_TEXT.UNKNOWN,
                 retries: safeNum(dlqMeta.attempts || message.attempts),
-                failedAt: routedMs > 0 ? new Date(routedMs).toISOString() : "",
-                key: message.key || "",
-                value: message.value || "",
+                failedAt: routedMs > 0 ? new Date(routedMs).toISOString() : COMMON_TEXT.EMPTY,
+                key: message.key || COMMON_TEXT.EMPTY,
+                value: message.value || COMMON_TEXT.EMPTY,
                 envelope: message.envelope || null,
                 routing: message.routing || null
               };
             })
           );
         } catch (err) {
-          errors.push(err?.message || "dlq peek failed");
+          errors.push(err?.message || DASHBOARD_COPY.DLQ_PEEK_FAILED);
           setDlqMessages([]);
         }
       } else if (!effectiveDlq) {
@@ -260,7 +258,7 @@ export function useDashboardData(activeTab) {
     const timer = setInterval(() => {
       const pollController = new AbortController();
       refresh(pollController.signal);
-    }, 4000);
+    }, UI_LIMITS.REFRESH_INTERVAL_MS);
 
     return () => {
       controller.abort();

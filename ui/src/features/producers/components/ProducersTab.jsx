@@ -1,19 +1,20 @@
+import { API_PATHS, COMMON_TEXT, PRODUCERS_COPY } from "../../../constants/ui";
 import { fmt } from "../../../utils/number";
 import { postJSON } from "../../../utils/http";
 import { useEffect, useState } from "react";
 
 export default function ProducersTab({ producerReasons, topics, onProduced }) {
-  const [topic, setTopic] = useState("");
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("");
+  const [topic, setTopic] = useState(COMMON_TEXT.EMPTY);
+  const [key, setKey] = useState(COMMON_TEXT.EMPTY);
+  const [value, setValue] = useState(COMMON_TEXT.EMPTY);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [error, setError] = useState(COMMON_TEXT.EMPTY);
+  const [success, setSuccess] = useState(COMMON_TEXT.EMPTY);
   const hasTopics = topics.length > 0;
 
   useEffect(() => {
     if (!hasTopics) {
-      setTopic("");
+      setTopic(COMMON_TEXT.EMPTY);
       return;
     }
 
@@ -27,33 +28,33 @@ export default function ProducersTab({ producerReasons, topics, onProduced }) {
 
     const trimmedTopic = topic.trim();
     if (!trimmedTopic) {
-      setError("topic is required");
-      setSuccess("");
+      setError(PRODUCERS_COPY.TOPIC_REQUIRED);
+      setSuccess(COMMON_TEXT.EMPTY);
       return;
     }
 
     if (!value) {
-      setError("message value is required");
-      setSuccess("");
+      setError(PRODUCERS_COPY.MESSAGE_VALUE_REQUIRED);
+      setSuccess(COMMON_TEXT.EMPTY);
       return;
     }
 
     setSubmitting(true);
-    setError("");
-    setSuccess("");
+    setError(COMMON_TEXT.EMPTY);
+    setSuccess(COMMON_TEXT.EMPTY);
 
     try {
-      await postJSON("/v1/produce", {
+      await postJSON(API_PATHS.PRODUCE, {
         topic: trimmedTopic,
         key: key.trim(),
         value
       });
-      setSuccess(`produced to ${trimmedTopic}`);
-      setValue("");
-      setKey("");
+      setSuccess(`${PRODUCERS_COPY.PRODUCED_TO_PREFIX} ${trimmedTopic}`);
+      setValue(COMMON_TEXT.EMPTY);
+      setKey(COMMON_TEXT.EMPTY);
       await onProduced?.();
     } catch (err) {
-      setError(err?.message || "failed to produce message");
+      setError(err?.message || PRODUCERS_COPY.PRODUCE_FAILED);
     } finally {
       setSubmitting(false);
     }
@@ -64,30 +65,30 @@ export default function ProducersTab({ producerReasons, topics, onProduced }) {
       <section className="dq-panel">
         <div className="row">
           <div>
-            <strong>Produce Message</strong>
-            <div className="dim">Send a test message without leaving the dashboard.</div>
+            <strong>{PRODUCERS_COPY.PRODUCE_MESSAGE}</strong>
+            <div className="dim">{PRODUCERS_COPY.PRODUCE_DESCRIPTION}</div>
           </div>
         </div>
 
         {error ? <div className="dq-error compact">{error}</div> : null}
         {success ? <div className="dq-success">{success}</div> : null}
-        {!hasTopics ? <div className="dq-note">Create a topic first in the Topics tab, then come back here to send a message.</div> : null}
+        {!hasTopics ? <div className="dq-note">{PRODUCERS_COPY.CREATE_TOPIC_FIRST}</div> : null}
 
         <form className="dq-stack" onSubmit={handleProduce}>
           <div className="dq-form-grid producer">
             <label className="dq-input-stack">
-              <span>Topic</span>
+              <span>{PRODUCERS_COPY.TOPIC}</span>
               <select
                 className="dq-select"
                 value={topic}
                 onChange={(e) => {
                   setTopic(e.target.value);
-                  setError("");
-                  setSuccess("");
+                  setError(COMMON_TEXT.EMPTY);
+                  setSuccess(COMMON_TEXT.EMPTY);
                 }}
                 disabled={!hasTopics || submitting}
               >
-                {!hasTopics ? <option value="">No topics available</option> : null}
+                {!hasTopics ? <option value={COMMON_TEXT.EMPTY}>{COMMON_TEXT.NO_TOPICS_AVAILABLE}</option> : null}
                 {topics.map((item) => (
                   <option key={item.name} value={item.name}>
                     {item.name}
@@ -97,29 +98,29 @@ export default function ProducersTab({ producerReasons, topics, onProduced }) {
             </label>
 
             <label className="dq-input-stack">
-              <span>Key</span>
+              <span>{PRODUCERS_COPY.KEY}</span>
               <input
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
-                placeholder="optional-key"
+                placeholder={PRODUCERS_COPY.KEY_PLACEHOLDER}
                 autoComplete="off"
               />
             </label>
 
             <div className="dq-form-actions">
               <button type="submit" className="mini-btn" disabled={submitting || !hasTopics}>
-                {submitting ? "Sending..." : "Send Message"}
+                {submitting ? PRODUCERS_COPY.SENDING : PRODUCERS_COPY.SEND_MESSAGE}
               </button>
             </div>
           </div>
 
           <label className="dq-input-stack">
-            <span>Value</span>
+            <span>{PRODUCERS_COPY.VALUE}</span>
             <textarea
               className="dq-textarea"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder='{"hello":"driftq"}'
+              placeholder={PRODUCERS_COPY.VALUE_PLACEHOLDER}
               rows={5}
             />
           </label>
@@ -128,14 +129,14 @@ export default function ProducersTab({ producerReasons, topics, onProduced }) {
 
       <section className="dq-panel">
         <p className="dq-note">
-          Producer identity is not currently exposed by DriftQ API. This tab uses real broker counters from <code>/metrics</code>.
+          {PRODUCERS_COPY.COUNTER_NOTE} <code>{API_PATHS.METRICS}</code>.
         </p>
-        <h3>Produce Rejections by Reason</h3>
+        <h3>{PRODUCERS_COPY.REJECTIONS_BY_REASON}</h3>
         <table>
           <thead>
             <tr>
-              <th>Reason</th>
-              <th className="right">Count</th>
+              <th>{PRODUCERS_COPY.REASON}</th>
+              <th className="right">{PRODUCERS_COPY.COUNT}</th>
             </tr>
           </thead>
           <tbody>
@@ -151,7 +152,7 @@ export default function ProducersTab({ producerReasons, topics, onProduced }) {
             {
               producerReasons.length === 0 ? (
                 <tr>
-                  <td colSpan={2}>no rejection metrics yet</td>
+                  <td colSpan={2}>{PRODUCERS_COPY.NO_REJECTION_METRICS}</td>
                 </tr>
               ) : null
             }

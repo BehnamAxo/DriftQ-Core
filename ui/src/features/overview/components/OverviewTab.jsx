@@ -1,13 +1,14 @@
 import Sparkline from "../../shared/components/Sparkline";
+import { COMMON_TEXT, OVERVIEW_COPY } from "../../../constants/ui";
 import { fmt } from "../../../utils/number";
 
 function formatBytes(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) {
-    return "0 B";
+    return `0 ${OVERVIEW_COPY.BYTE_UNITS[0]}`;
   }
 
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const units = OVERVIEW_COPY.BYTE_UNITS;
   let size = n;
   let index = 0;
   while (size >= 1024 && index < units.length - 1) {
@@ -22,46 +23,46 @@ function formatBytes(value) {
 function snapshotRows(config) {
   return [
     {
-      label: "WAL Path",
-      value: config.wal_path || "n/a",
-      description: "Filesystem location of the broker write-ahead log file.",
-      tooltip: "If WAL is enabled, broker writes are appended here so they can be replayed after a restart."
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_PATH_LABEL,
+      value: config.wal_path || COMMON_TEXT.NOT_AVAILABLE,
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_PATH_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_PATH_TOOLTIP
     },
     {
-      label: "WAL Engine",
-      value: config.engine_wal || "unknown",
-      description: "Durability backend used by the workflow engine side of DriftQ.",
-      tooltip: "This identifies which write-ahead log implementation the workflow engine is currently using."
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_ENGINE_LABEL,
+      value: config.engine_wal || COMMON_TEXT.UNKNOWN,
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_ENGINE_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_ENGINE_TOOLTIP
     },
     {
-      label: "Log Mode",
-      value: `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`,
-      description: "Current log verbosity and output format for server logs.",
-      tooltip: "The first value is the log level and the second is the output format written by the server."
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.LOG_MODE_LABEL,
+      value: `${config.log_level || COMMON_TEXT.UNKNOWN} / ${config.log_format || COMMON_TEXT.UNKNOWN}`,
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.LOG_MODE_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.LOG_MODE_TOOLTIP
     },
     {
-      label: "Access Log",
-      value: config.access_log ? "enabled" : "disabled",
-      description: "Whether HTTP requests are written to the request log.",
-      tooltip: "When enabled, incoming API and UI requests are logged for debugging and audit trails."
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.ACCESS_LOG_LABEL,
+      value: config.access_log ? OVERVIEW_COPY.SNAPSHOT_ROWS.ACCESS_LOG_ENABLED : OVERVIEW_COPY.SNAPSHOT_ROWS.ACCESS_LOG_DISABLED,
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.ACCESS_LOG_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.ACCESS_LOG_TOOLTIP
     },
     {
-      label: "WAL Sync",
-      value: config.wal_sync_interval || "n/a",
-      description: "How often buffered WAL data is forced to durable storage.",
-      tooltip: "Shorter intervals improve durability but may reduce throughput because writes are flushed more often."
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_SYNC_LABEL,
+      value: config.wal_sync_interval || COMMON_TEXT.NOT_AVAILABLE,
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_SYNC_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_SYNC_TOOLTIP
     },
     {
-      label: "WAL Buffer",
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_BUFFER_LABEL,
       value: formatBytes(config.wal_buffer_bytes),
-      description: "Amount of WAL data that can be buffered before a flush.",
-      tooltip: "A larger buffer can improve throughput, but increases the amount of unwritten data held in memory."
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_BUFFER_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.WAL_BUFFER_TOOLTIP
     },
     {
-      label: "Artifacts Dir",
-      value: config.artifacts_dir || "n/a",
-      description: "Directory where workflow artifacts and generated outputs are stored.",
-      tooltip: "This is where files produced by workflow steps are persisted for later inspection or download."
+      label: OVERVIEW_COPY.SNAPSHOT_ROWS.ARTIFACTS_DIR_LABEL,
+      value: config.artifacts_dir || COMMON_TEXT.NOT_AVAILABLE,
+      description: OVERVIEW_COPY.SNAPSHOT_ROWS.ARTIFACTS_DIR_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_ROWS.ARTIFACTS_DIR_TOOLTIP
     }
   ];
 }
@@ -69,7 +70,7 @@ function snapshotRows(config) {
 function HelpTip({ text }) {
   return (
     <span className="dq-help" tabIndex={0} aria-label={text}>
-      <span className="dq-help-trigger">?</span>
+      <span className="dq-help-trigger">{OVERVIEW_COPY.HELP_TRIGGER}</span>
       <span className="dq-help-tooltip" role="tooltip">{text}</span>
     </span>
   );
@@ -118,66 +119,69 @@ function compressEvents(events) {
 function snapshotSummary(config, version) {
   return [
     {
-      label: "Endpoint",
-      description: "Where this DriftQ node is listening for API and dashboard traffic.",
-      tooltip: "This is the network address clients use to talk to the broker and open the embedded UI.",
-      value: `Listening on ${config.addr || "unknown"}`,
+      label: OVERVIEW_COPY.SNAPSHOT_SUMMARY.ENDPOINT_LABEL,
+      description: OVERVIEW_COPY.SNAPSHOT_SUMMARY.ENDPOINT_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_SUMMARY.ENDPOINT_TOOLTIP,
+      value: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.ENDPOINT_VALUE_PREFIX} ${config.addr || COMMON_TEXT.UNKNOWN}`,
       meta: [
         {
-          label: `Build ${version.version || "unknown"}`,
-          detail: "Version of the running DriftQ server build."
+          label: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.BUILD_PREFIX} ${version.version || COMMON_TEXT.UNKNOWN}`,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.BUILD_DETAIL
         },
         {
-          label: version.wal_enabled ? "Durability WAL enabled" : "Durability in-memory only",
-          detail: "Whether broker writes are persisted to the write-ahead log."
+          label: version.wal_enabled ? OVERVIEW_COPY.SNAPSHOT_SUMMARY.WAL_ENABLED : OVERVIEW_COPY.SNAPSHOT_SUMMARY.WAL_DISABLED,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.WAL_DETAIL
         }
       ]
     },
     {
-      label: "Storage",
-      description: "How broker and workflow state are stored while the node is running.",
-      tooltip: "This summarizes the active storage engine, durability backend, and where artifacts are written.",
-      value: `State stored in ${config.engine_store || "unknown"}`,
+      label: OVERVIEW_COPY.SNAPSHOT_SUMMARY.STORAGE_LABEL,
+      description: OVERVIEW_COPY.SNAPSHOT_SUMMARY.STORAGE_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_SUMMARY.STORAGE_TOOLTIP,
+      value: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.STORAGE_VALUE_PREFIX} ${config.engine_store || COMMON_TEXT.UNKNOWN}`,
       meta: [
         {
-          label: `Engine WAL ${config.engine_wal || "unknown"}`,
-          detail: "Workflow engine write-ahead log backend."
+          label: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.ENGINE_WAL_PREFIX} ${config.engine_wal || COMMON_TEXT.UNKNOWN}`,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.ENGINE_WAL_DETAIL
         },
         {
-          label: `Artifacts ${config.artifacts_dir || "n/a"}`,
-          detail: "Directory used to store workflow outputs and artifacts."
+          label: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.ARTIFACTS_PREFIX} ${config.artifacts_dir || COMMON_TEXT.NOT_AVAILABLE}`,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.ARTIFACTS_DETAIL
         }
       ]
     },
     {
-      label: "Limits",
-      description: "Active safety caps that bound how much work the broker will accept at once.",
-      tooltip: "These caps prevent too many unacked leases or oversized partitions from overwhelming the broker.",
-      value: `Allows ${fmt(config.max_inflight)} unacked messages in flight`,
+      label: OVERVIEW_COPY.SNAPSHOT_SUMMARY.LIMITS_LABEL,
+      description: OVERVIEW_COPY.SNAPSHOT_SUMMARY.LIMITS_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_SUMMARY.LIMITS_TOOLTIP,
+      value: OVERVIEW_COPY.SNAPSHOT_SUMMARY.LIMITS_VALUE_TEMPLATE(fmt(config.max_inflight)),
       meta: [
         {
-          label: `Partition cap ${fmt(config.max_partition_msgs)} msgs`,
-          detail: "Maximum number of messages allowed in a single partition."
+          label: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.PARTITION_MSGS_PREFIX} ${fmt(config.max_partition_msgs)} ${OVERVIEW_COPY.SNAPSHOT_SUMMARY.PARTITION_MSGS_SUFFIX}`,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.PARTITION_MSGS_DETAIL
         },
         {
-          label: `Partition cap ${formatBytes(config.max_partition_bytes)}`,
-          detail: "Maximum total bytes allowed in a single partition."
+          label: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.PARTITION_MSGS_PREFIX} ${formatBytes(config.max_partition_bytes)}`,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.PARTITION_BYTES_DETAIL
         }
       ]
     },
     {
-      label: "Runtime",
-      description: "How the server logs activity and flushes durable writes while it is running.",
-      tooltip: "This combines the current log verbosity, output format, request logging, and WAL sync cadence.",
-      value: `Logs at ${config.log_level || "unknown"} level in ${config.log_format || "unknown"} format`,
+      label: OVERVIEW_COPY.SNAPSHOT_SUMMARY.RUNTIME_LABEL,
+      description: OVERVIEW_COPY.SNAPSHOT_SUMMARY.RUNTIME_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SNAPSHOT_SUMMARY.RUNTIME_TOOLTIP,
+      value: OVERVIEW_COPY.SNAPSHOT_SUMMARY.RUNTIME_VALUE_TEMPLATE(
+        config.log_level || COMMON_TEXT.UNKNOWN,
+        config.log_format || COMMON_TEXT.UNKNOWN
+      ),
       meta: [
         {
-          label: config.access_log ? "HTTP access logging enabled" : "HTTP access logging disabled",
-          detail: "Whether incoming HTTP requests are written to the access log."
+          label: config.access_log ? OVERVIEW_COPY.SNAPSHOT_SUMMARY.ACCESS_LOG_ENABLED : OVERVIEW_COPY.SNAPSHOT_SUMMARY.ACCESS_LOG_DISABLED,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.ACCESS_LOG_DETAIL
         },
         {
-          label: `WAL flush interval ${config.wal_sync_interval || "n/a"}`,
-          detail: "How often buffered WAL writes are forced to durable storage."
+          label: `${OVERVIEW_COPY.SNAPSHOT_SUMMARY.WAL_FLUSH_PREFIX} ${config.wal_sync_interval || COMMON_TEXT.NOT_AVAILABLE}`,
+          detail: OVERVIEW_COPY.SNAPSHOT_SUMMARY.WAL_FLUSH_DETAIL
         }
       ]
     }
@@ -198,40 +202,40 @@ export default function OverviewTab({
   events
 }) {
   const primaryMetrics = [
-    { label: "Messages Produced", value: fmt(totalProduced), tone: "green" },
-    { label: "Messages Consumed", value: fmt(totalConsumed), tone: "blue" },
-    { label: "In-Flight", value: fmt(totalInflight), tone: "amber" },
-    { label: "Dead Letters", value: fmt(totalDLQ), tone: "red" }
+    { label: OVERVIEW_COPY.PRIMARY_METRICS.PRODUCED, value: fmt(totalProduced), tone: "green" },
+    { label: OVERVIEW_COPY.PRIMARY_METRICS.CONSUMED, value: fmt(totalConsumed), tone: "blue" },
+    { label: OVERVIEW_COPY.PRIMARY_METRICS.IN_FLIGHT, value: fmt(totalInflight), tone: "amber" },
+    { label: OVERVIEW_COPY.PRIMARY_METRICS.DEAD_LETTERS, value: fmt(totalDLQ), tone: "red" }
   ];
 
   const secondaryMetrics = [
     {
-      label: "Active Producers",
-      value: "Not tracked",
+      label: OVERVIEW_COPY.SECONDARY_METRICS.ACTIVE_PRODUCERS,
+      value: OVERVIEW_COPY.SECONDARY_METRICS.NOT_TRACKED,
       tone: "muted",
       unavailable: true,
-      description: "Producer-count tracking is not exposed by the broker yet.",
-      tooltip: "This card will become numeric once the backend exposes producer tracking."
+      description: OVERVIEW_COPY.SECONDARY_METRICS.ACTIVE_PRODUCERS_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SECONDARY_METRICS.ACTIVE_PRODUCERS_TOOLTIP
     },
     {
-      label: "Consumer Groups",
+      label: OVERVIEW_COPY.SECONDARY_METRICS.CONSUMER_GROUPS,
       value: fmt(consumersCount),
       tone: "green2",
-      description: "Distinct consumer groups visible in the current dashboard snapshot."
+      description: OVERVIEW_COPY.SECONDARY_METRICS.CONSUMER_GROUPS_DESCRIPTION
     },
     {
-      label: "Deduplicated",
-      value: "Not tracked",
+      label: OVERVIEW_COPY.SECONDARY_METRICS.DEDUPLICATED,
+      value: OVERVIEW_COPY.SECONDARY_METRICS.NOT_TRACKED,
       tone: "muted",
       unavailable: true,
-      description: "Deduplication totals are not exposed by the broker yet.",
-      tooltip: "This card will become numeric once the backend publishes deduplication counters."
+      description: OVERVIEW_COPY.SECONDARY_METRICS.DEDUPLICATED_DESCRIPTION,
+      tooltip: OVERVIEW_COPY.SECONDARY_METRICS.DEDUPLICATED_TOOLTIP
     },
     {
-      label: "Backpressure Rejected",
+      label: OVERVIEW_COPY.SECONDARY_METRICS.BACKPRESSURE_REJECTED,
       value: fmt(totalRejected),
       tone: totalRejected > 20 ? "red" : "amber",
-      description: "Produce requests rejected because broker safety limits were hit."
+      description: OVERVIEW_COPY.SECONDARY_METRICS.BACKPRESSURE_REJECTED_DESCRIPTION
     }
   ];
 
@@ -254,14 +258,14 @@ export default function OverviewTab({
 
       <section className="dq-split">
         <div className="dq-panel">
-          <h3>Topic Throughput</h3>
+          <h3>{OVERVIEW_COPY.TOPIC_THROUGHPUT}</h3>
           <table>
             <thead>
               <tr>
-                <th>Topic</th>
-                <th className="right">Rate</th>
-                <th className="right">Lag</th>
-                <th>Trend</th>
+                <th>{OVERVIEW_COPY.TABLE_HEADERS.TOPIC}</th>
+                <th className="right">{OVERVIEW_COPY.TABLE_HEADERS.RATE}</th>
+                <th className="right">{OVERVIEW_COPY.TABLE_HEADERS.LAG}</th>
+                <th>{OVERVIEW_COPY.TABLE_HEADERS.TREND}</th>
               </tr>
             </thead>
             <tbody>
@@ -283,8 +287,8 @@ export default function OverviewTab({
           </table>
         </div>
         <div className="dq-panel">
-          <h3>Live Event Stream</h3>
-          {eventStreamIdle ? <p className="dq-note">Waiting for broker activity. Produce, consume, ack, or nack a message to see live events here.</p> : null}
+          <h3>{OVERVIEW_COPY.LIVE_EVENT_STREAM}</h3>
+          {eventStreamIdle ? <p className="dq-note">{OVERVIEW_COPY.EVENTS_IDLE_NOTE}</p> : null}
           <div className="dq-events">
             {
               recentEvents.map((e) => (
@@ -304,9 +308,9 @@ export default function OverviewTab({
 
       <section className="dq-overview-grid">
         <div className="dq-panel">
-          <h3>Broker Snapshot</h3>
+          <h3>{OVERVIEW_COPY.BROKER_SNAPSHOT}</h3>
           <p className="dq-note">
-            Quick read of where this node is listening, how it stores state, and which runtime limits are active.
+            {OVERVIEW_COPY.SNAPSHOT_NOTE}
           </p>
           <div className="dq-broker-snapshot">
             {
@@ -333,9 +337,9 @@ export default function OverviewTab({
           </div>
 
           <details className="dq-disclosure">
-            <summary>Advanced Broker Config</summary>
+            <summary>{OVERVIEW_COPY.ADVANCED_CONFIG}</summary>
             <p className="dq-note dq-note-tight">
-              Lower-frequency broker settings for durability, logging, and artifact storage.
+              {OVERVIEW_COPY.ADVANCED_CONFIG_NOTE}
             </p>
             <div className="dq-kv-grid dq-kv-grid-compact">
               {

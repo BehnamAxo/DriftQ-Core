@@ -1,25 +1,26 @@
+import { COMMON_TEXT, WORKFLOW_STATUS } from "../../../constants/ui";
 import { safeNum } from "../../../utils/number";
 
 function normalizeStatus(rawStatus) {
-  const value = String(rawStatus || "").toLowerCase();
+  const value = String(rawStatus || COMMON_TEXT.EMPTY).toLowerCase();
 
-  if (value === "succeeded") {
-    return "completed";
+  if (value === WORKFLOW_STATUS.SUCCEEDED) {
+    return WORKFLOW_STATUS.COMPLETED;
   }
 
-  if (value === "canceled") {
-    return "canceled";
+  if (value === WORKFLOW_STATUS.CANCELED) {
+    return WORKFLOW_STATUS.CANCELED;
   }
 
-  if (value === "failed") {
-    return "failed";
+  if (value === WORKFLOW_STATUS.FAILED) {
+    return WORKFLOW_STATUS.FAILED;
   }
 
-  if (value === "waiting") {
-    return "waiting";
+  if (value === WORKFLOW_STATUS.WAITING) {
+    return WORKFLOW_STATUS.WAITING;
   }
 
-  return "running";
+  return WORKFLOW_STATUS.RUNNING;
 }
 
 export function normalizeRun(detail) {
@@ -50,13 +51,13 @@ export function normalizeRun(detail) {
       return {
         name: node.node_id || "node",
         status,
-        rawStatus: String(node.status || "").toLowerCase(),
+        rawStatus: String(node.status || COMMON_TEXT.EMPTY).toLowerCase(),
         duration,
         attempts: safeNum(node.attempt),
-        replayable: status !== "running",
-        startedAt: node.started_at || "",
-        endedAt: node.ended_at || "",
-        error: node.error || "",
+        replayable: status !== WORKFLOW_STATUS.RUNNING,
+        startedAt: node.started_at || COMMON_TEXT.EMPTY,
+        endedAt: node.ended_at || COMMON_TEXT.EMPTY,
+        error: node.error || COMMON_TEXT.EMPTY,
         hasInput: Boolean(node.has_input),
         hasOutput: Boolean(node.has_output),
         inputBytes: safeNum(node.input_bytes),
@@ -78,16 +79,16 @@ export function normalizeRun(detail) {
 
   return {
     id: run.run_id,
-    workflowId: run.workflow_id || "",
+    workflowId: run.workflow_id || COMMON_TEXT.EMPTY,
     status,
-    rawStatus: String(run.status || "").toLowerCase(),
+    rawStatus: String(run.status || COMMON_TEXT.EMPTY).toLowerCase(),
     startedAt: run.started_at,
-    endedAt: run.ended_at || "",
+    endedAt: run.ended_at || COMMON_TEXT.EMPTY,
     duration,
-    terminalReason: run.terminal_reason || "",
+    terminalReason: run.terminal_reason || COMMON_TEXT.EMPTY,
     terminalMeta: run.terminal_meta || null,
     steps,
     counts,
-    cancelable: status === "running" || status === "waiting"
+    cancelable: status === WORKFLOW_STATUS.RUNNING || status === WORKFLOW_STATUS.WAITING
   };
 }

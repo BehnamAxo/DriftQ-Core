@@ -1,27 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { getJSON, postJSON } from "../../../utils/http";
+import { API_PATHS, COMMON_TEXT, DEFAULTS, WORKFLOW_REPLAY_MODE, WORKFLOW_STATUS, WORKFLOWS_COPY, UI_LIMITS } from "../../../constants/ui";
 import { formatClock } from "../../../utils/time";
+import { getJSON, postJSON } from "../../../utils/http";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChanged }) {
-  const [cancelReason, setCancelReason] = useState("dashboard cancel");
+  const [cancelReason, setCancelReason] = useState(DEFAULTS.WORKFLOW_CANCEL_REASON);
   const [replayFromStep, setReplayFromStep] = useState({});
   const [replayMode, setReplayMode] = useState({});
   const [selectedStepByRun, setSelectedStepByRun] = useState({});
-  const [cancelingRunID, setCancelingRunID] = useState("");
-  const [replayingRunID, setReplayingRunID] = useState("");
+  const [cancelingRunID, setCancelingRunID] = useState(COMMON_TEXT.EMPTY);
+  const [replayingRunID, setReplayingRunID] = useState(COMMON_TEXT.EMPTY);
   const [startingDemoRun, setStartingDemoRun] = useState(false);
-  const [actionError, setActionError] = useState("");
-  const [actionSuccess, setActionSuccess] = useState("");
+  const [actionError, setActionError] = useState(COMMON_TEXT.EMPTY);
+  const [actionSuccess, setActionSuccess] = useState(COMMON_TEXT.EMPTY);
   const [artifactsByRun, setArtifactsByRun] = useState({});
   const [artifactErrors, setArtifactErrors] = useState({});
   const [artifactStatusByRun, setArtifactStatusByRun] = useState({});
   const [preview, setPreview] = useState({
-    runID: "",
-    artifactID: "",
+    runID: COMMON_TEXT.EMPTY,
+    artifactID: COMMON_TEXT.EMPTY,
     loading: false,
-    error: "",
-    contentType: "",
-    body: ""
+    error: COMMON_TEXT.EMPTY,
+    contentType: COMMON_TEXT.EMPTY,
+    body: COMMON_TEXT.EMPTY
   });
   const artifactControllersRef = useRef({});
 
@@ -38,12 +39,12 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
     artifactControllersRef.current[runID]?.abort();
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error("artifact list timed out")), 5000);
+    const timeout = setTimeout(() => controller.abort(new Error(WORKFLOWS_COPY.ARTIFACT_LIST_TIMED_OUT)), UI_LIMITS.WORKFLOW_ARTIFACT_TIMEOUT_MS);
     artifactControllersRef.current[runID] = controller;
-    setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "loading" }));
-    setArtifactErrors((prev) => ({ ...prev, [runID]: "" }));
+    setArtifactStatusByRun((prev) => ({ ...prev, [runID]: WORKFLOW_STATUS.LOADING }));
+    setArtifactErrors((prev) => ({ ...prev, [runID]: COMMON_TEXT.EMPTY }));
 
-    getJSON(`/debug/run-artifacts?run_id=${encodeURIComponent(runID)}&limit=50`, controller.signal)
+    getJSON(API_PATHS.runArtifacts(runID, UI_LIMITS.WORKFLOW_ARTIFACT_LIMIT), controller.signal)
       .then((payload) => {
         if (controller.signal.aborted) {
           return;
@@ -53,23 +54,23 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
           ...prev,
           [runID]: Array.isArray(payload.artifacts) ? payload.artifacts : []
         }));
-        setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "loaded" }));
+        setArtifactStatusByRun((prev) => ({ ...prev, [runID]: WORKFLOW_STATUS.LOADED }));
       })
       .catch((err) => {
         if (controller.signal.aborted) {
           setArtifactErrors((prev) => ({
             ...prev,
-            [runID]: err?.message || "failed to load artifacts"
+            [runID]: err?.message || WORKFLOWS_COPY.LOAD_ARTIFACTS_FAILED
           }));
-          setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "error" }));
+          setArtifactStatusByRun((prev) => ({ ...prev, [runID]: WORKFLOW_STATUS.ERROR }));
           return;
         }
 
         setArtifactErrors((prev) => ({
           ...prev,
-          [runID]: err?.message || "failed to load artifacts"
+          [runID]: err?.message || WORKFLOWS_COPY.LOAD_ARTIFACTS_FAILED
         }));
-        setArtifactStatusByRun((prev) => ({ ...prev, [runID]: "error" }));
+        setArtifactStatusByRun((prev) => ({ ...prev, [runID]: WORKFLOW_STATUS.ERROR }));
       })
       .finally(() => {
         clearTimeout(timeout);
@@ -120,32 +121,32 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
 
   async function handleCancel(runID) {
     setCancelingRunID(runID);
-    setActionError("");
-    setActionSuccess("");
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(COMMON_TEXT.EMPTY);
 
     try {
-      await postJSON("/debug/run-cancel", {
+      await postJSON(API_PATHS.RUN_CANCEL, {
         run_id: runID,
         reason: cancelReason.trim()
       });
-      setActionSuccess(`canceled run ${runID}`);
+      setActionSuccess(`${WORKFLOWS_COPY.CANCELED_RUN_PREFIX} ${runID}`);
       await onRunChanged?.();
     } catch (err) {
-      setActionError(err?.message || "failed to cancel run");
+      setActionError(err?.message || WORKFLOWS_COPY.CANCEL_FAILED);
     } finally {
-      setCancelingRunID("");
+      setCancelingRunID(COMMON_TEXT.EMPTY);
     }
   }
 
   async function handleReplay(runID) {
     setReplayingRunID(runID);
-    setActionError("");
-    setActionSuccess("");
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(COMMON_TEXT.EMPTY);
 
     try {
-      const fromStep = replayFromStep[runID]?.trim() || "";
-      const mode = replayMode[runID] || "time_travel";
-      await postJSON("/debug/run-replay", {
+      const fromStep = replayFromStep[runID]?.trim() || COMMON_TEXT.EMPTY;
+      const mode = replayMode[runID] || WORKFLOW_REPLAY_MODE.TIME_TRAVEL;
+      await postJSON(API_PATHS.RUN_REPLAY, {
         run_id: runID,
         from_step: fromStep,
         mode
@@ -167,30 +168,30 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
       });
       setActionSuccess(
         fromStep
-          ? `replayed run ${runID} from ${fromStep} (${mode})`
-          : `replayed run ${runID} (${mode})`
+          ? `${WORKFLOWS_COPY.REPLAYED_RUN_PREFIX} ${runID} ${WORKFLOWS_COPY.FROM} ${fromStep} (${mode})`
+          : `${WORKFLOWS_COPY.REPLAYED_RUN_PREFIX} ${runID} (${mode})`
       );
       await onRunChanged?.();
       onSelectRun(runID, { toggle: false });
       loadArtifacts(runID, { force: true });
     } catch (err) {
-      setActionError(err?.message || "failed to replay run");
+      setActionError(err?.message || WORKFLOWS_COPY.REPLAY_FAILED);
     } finally {
-      setReplayingRunID("");
+      setReplayingRunID(COMMON_TEXT.EMPTY);
     }
   }
 
   async function handleStartDemoRun() {
     setStartingDemoRun(true);
-    setActionError("");
-    setActionSuccess("");
+    setActionError(COMMON_TEXT.EMPTY);
+    setActionSuccess(COMMON_TEXT.EMPTY);
 
     try {
-      const payload = await postJSON("/debug/run-demo", { x: 1 });
-      setActionSuccess(`started demo run ${payload?.run_id || ""}`.trim());
+      const payload = await postJSON(API_PATHS.RUN_DEMO, { x: 1 });
+      setActionSuccess(`${WORKFLOWS_COPY.STARTED_DEMO_RUN_PREFIX} ${payload?.run_id || COMMON_TEXT.EMPTY}`.trim());
       await onRunChanged?.();
     } catch (err) {
-      setActionError(err?.message || "failed to start demo run");
+      setActionError(err?.message || WORKFLOWS_COPY.START_DEMO_FAILED);
     } finally {
       setStartingDemoRun(false);
     }
@@ -201,18 +202,18 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
       runID,
       artifactID: artifact.artifact_id,
       loading: true,
-      error: "",
-      contentType: artifact.content_type || "",
-      body: ""
+      error: COMMON_TEXT.EMPTY,
+      contentType: artifact.content_type || COMMON_TEXT.EMPTY,
+      body: COMMON_TEXT.EMPTY
     });
 
     try {
-      const res = await fetch(`/debug/artifact-get?artifact_id=${encodeURIComponent(artifact.artifact_id)}`);
+      const res = await fetch(API_PATHS.artifactGet(artifact.artifact_id));
       if (!res.ok) {
-        throw new Error(`artifact preview failed: ${res.status}`);
+        throw new Error(`${WORKFLOWS_COPY.ARTIFACT_PREVIEW_FAILED_PREFIX} ${res.status}`);
       }
 
-      const contentType = res.headers.get("Content-Type") || artifact.content_type || "";
+      const contentType = res.headers.get("Content-Type") || artifact.content_type || COMMON_TEXT.EMPTY;
       const lowerType = contentType.toLowerCase();
       if (
         lowerType.includes("json") ||
@@ -225,7 +226,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
           runID,
           artifactID: artifact.artifact_id,
           loading: false,
-          error: "",
+          error: COMMON_TEXT.EMPTY,
           contentType,
           body
         });
@@ -236,36 +237,36 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
         runID,
         artifactID: artifact.artifact_id,
         loading: false,
-        error: "binary artifact preview is not supported inline",
+        error: WORKFLOWS_COPY.BINARY_PREVIEW_UNSUPPORTED,
         contentType,
-        body: ""
+        body: COMMON_TEXT.EMPTY
       });
     } catch (err) {
       setPreview({
         runID,
         artifactID: artifact.artifact_id,
         loading: false,
-        error: err?.message || "failed to preview artifact",
-        contentType: artifact.content_type || "",
-        body: ""
+        error: err?.message || WORKFLOWS_COPY.PREVIEW_FAILED,
+        contentType: artifact.content_type || COMMON_TEXT.EMPTY,
+        body: COMMON_TEXT.EMPTY
       });
     }
   }
 
   function renderStatus(value) {
-    const status = String(value || "").toLowerCase();
+    const status = String(value || COMMON_TEXT.EMPTY).toLowerCase();
     const className =
-      status === "completed"
+      status === WORKFLOW_STATUS.COMPLETED
         ? "green"
-        : status === "failed"
+        : status === WORKFLOW_STATUS.FAILED
           ? "red"
-          : status === "canceled"
+          : status === WORKFLOW_STATUS.CANCELED
             ? "amber"
-            : status === "waiting"
+            : status === WORKFLOW_STATUS.WAITING
               ? "amber"
               : "blue";
 
-    return <span className={className}>{status || "unknown"}</span>;
+    return <span className={className}>{status || WORKFLOWS_COPY.STEP_STATUS_EMPTY}</span>;
   }
 
   function handleStepSelect(runID, stepName) {
@@ -288,11 +289,11 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
 
       <div className="dq-panel dq-workflow-toolbar">
         <div>
-          <strong>Workflow Controls</strong>
-          <p className="dq-note">Inspect runs, replay from a step, cancel active work, and inspect artifacts.</p>
+          <strong>{WORKFLOWS_COPY.CONTROLS_TITLE}</strong>
+          <p className="dq-note">{WORKFLOWS_COPY.CONTROLS_DESCRIPTION}</p>
         </div>
         <button type="button" className="mini-btn" onClick={handleStartDemoRun} disabled={startingDemoRun}>
-          {startingDemoRun ? "Starting..." : "Run Demo"}
+          {startingDemoRun ? WORKFLOWS_COPY.STARTING : WORKFLOWS_COPY.RUN_DEMO}
         </button>
       </div>
 
@@ -301,16 +302,16 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
           const selectedStepName = selectedStepByRun[r.id] || r.steps[0]?.name || "";
           const selectedStep = r.steps.find((step) => step.name === selectedStepName) || null;
           const artifactItems = artifactsByRun[r.id] || [];
-          const artifactStatus = artifactStatusByRun[r.id] || "idle";
-          const artifactsLoading = artifactStatus === "loading";
-          const replayFrom = replayFromStep[r.id] || "";
+          const artifactStatus = artifactStatusByRun[r.id] || WORKFLOW_STATUS.IDLE;
+          const artifactsLoading = artifactStatus === WORKFLOW_STATUS.LOADING;
+          const replayFrom = replayFromStep[r.id] || COMMON_TEXT.EMPTY;
           const selectedReplayStep = r.steps.find((step) => step.name === replayFrom) || null;
           const replayHint =
-            replayMode[r.id] === "live"
-              ? "live replay forces the selected step and downstream steps to run again."
+            replayMode[r.id] === WORKFLOW_REPLAY_MODE.LIVE
+              ? WORKFLOWS_COPY.LIVE_REPLAY_HINT
               : selectedReplayStep
-                ? "time_travel reuses succeeded outputs. If this step already succeeded and there is nothing downstream to rerun, the replay will be a no-op."
-                : "time_travel reuses succeeded outputs when possible.";
+                ? WORKFLOWS_COPY.TIME_TRAVEL_SELECTED_HINT
+                : WORKFLOWS_COPY.TIME_TRAVEL_HINT;
 
           return (
           <div className="dq-panel run" key={r.id}>
@@ -319,12 +320,12 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
               <div className="dq-workflow-header-actions">
                 {renderStatus(r.status)}
                 <button type="button" className="mini-btn" onClick={() => onSelectRun(r.id)}>
-                  {selectedRun === r.id ? "Hide" : "Inspect"}
+                  {selectedRun === r.id ? WORKFLOWS_COPY.HIDE : WORKFLOWS_COPY.INSPECT}
                 </button>
               </div>
             </div>
             <div className="dim small">
-              workflow {r.workflowId || "-"} | started {formatClock(r.startedAt)}
+              {WORKFLOWS_COPY.WORKFLOW_PREFIX} {r.workflowId || COMMON_TEXT.DASH} | {WORKFLOWS_COPY.STARTED_PREFIX} {formatClock(r.startedAt)}
             </div>
             <div className="steps">
               {
@@ -336,7 +337,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                     onClick={() => handleStepSelect(r.id, s.name)}
                   >
                     <span>{s.name}</span>
-                    <small>{s.duration ? `${Math.round(s.duration)}ms` : `attempt ${s.attempts || 1}`}</small>
+                    <small>{s.duration ? `${Math.round(s.duration)}ms` : `${WORKFLOWS_COPY.STEP_ACTION_ATTEMPT_PREFIX} ${s.attempts || 1}`}</small>
                   </button>
                 ))
               }
@@ -346,47 +347,47 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                 <div className="timeline">
                   <div className="dq-workflow-summary dq-kv-grid">
                     <div className="dq-kv-row">
-                      <span className="dq-kv-label">Status</span>
+                      <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.STATUS}</span>
                       <strong className="dq-kv-value">{r.status}</strong>
                     </div>
                     <div className="dq-kv-row">
-                      <span className="dq-kv-label">Workflow</span>
-                      <strong className="dq-kv-value">{r.workflowId || "-"}</strong>
+                      <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.WORKFLOW}</span>
+                      <strong className="dq-kv-value">{r.workflowId || COMMON_TEXT.DASH}</strong>
                     </div>
                     <div className="dq-kv-row">
-                      <span className="dq-kv-label">Started</span>
+                      <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.STARTED}</span>
                       <strong className="dq-kv-value">{formatClock(r.startedAt)}</strong>
                     </div>
                     <div className="dq-kv-row">
-                      <span className="dq-kv-label">Ended</span>
+                      <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.ENDED}</span>
                       <strong className="dq-kv-value">{formatClock(r.endedAt)}</strong>
                     </div>
                     <div className="dq-kv-row">
-                      <span className="dq-kv-label">Duration</span>
-                      <strong className="dq-kv-value">{r.duration ? `${Math.round(r.duration)}ms` : "-"}</strong>
+                      <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.DURATION}</span>
+                      <strong className="dq-kv-value">{r.duration ? `${Math.round(r.duration)}ms` : COMMON_TEXT.DASH}</strong>
                     </div>
                     <div className="dq-kv-row">
-                      <span className="dq-kv-label">Terminal Reason</span>
-                      <strong className="dq-kv-value">{r.terminalReason || "-"}</strong>
+                      <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.TERMINAL_REASON}</span>
+                      <strong className="dq-kv-value">{r.terminalReason || COMMON_TEXT.DASH}</strong>
                     </div>
                   </div>
 
                   <div className="dq-workflow-counts">
-                    <span className="green">done {r.counts.completed || 0}</span>
-                    <span className="blue">running {r.counts.running || 0}</span>
-                    <span className="amber">waiting {r.counts.waiting || 0}</span>
-                    <span className="red">failed {r.counts.failed || 0}</span>
-                    <span className="amber">canceled {r.counts.canceled || 0}</span>
+                    <span className="green">{WORKFLOWS_COPY.COUNTS.DONE} {r.counts.completed || 0}</span>
+                    <span className="blue">{WORKFLOWS_COPY.COUNTS.RUNNING} {r.counts.running || 0}</span>
+                    <span className="amber">{WORKFLOWS_COPY.COUNTS.WAITING} {r.counts.waiting || 0}</span>
+                    <span className="red">{WORKFLOWS_COPY.COUNTS.FAILED} {r.counts.failed || 0}</span>
+                    <span className="amber">{WORKFLOWS_COPY.COUNTS.CANCELED} {r.counts.canceled || 0}</span>
                   </div>
 
                   <div className="dq-workflow-step-table">
                     <div className="dq-table-row dq-table-head">
-                      <span>Step</span>
-                      <span>Status</span>
-                      <span>Attempts</span>
-                      <span>Duration</span>
-                      <span>Bytes</span>
-                      <span>Error</span>
+                      <span>{WORKFLOWS_COPY.STEP_TABLE_HEADERS.STEP}</span>
+                      <span>{WORKFLOWS_COPY.STEP_TABLE_HEADERS.STATUS}</span>
+                      <span>{WORKFLOWS_COPY.STEP_TABLE_HEADERS.ATTEMPTS}</span>
+                      <span>{WORKFLOWS_COPY.STEP_TABLE_HEADERS.DURATION}</span>
+                      <span>{WORKFLOWS_COPY.STEP_TABLE_HEADERS.BYTES}</span>
+                      <span>{WORKFLOWS_COPY.STEP_TABLE_HEADERS.ERROR}</span>
                     </div>
                     {
                       r.steps.map((s) => (
@@ -394,9 +395,9 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                           <span>{s.name}</span>
                           <span>{s.status}</span>
                           <span>{s.attempts || 1}</span>
-                          <span>{s.duration ? `${Math.round(s.duration)}ms` : "-"}</span>
+                          <span>{s.duration ? `${Math.round(s.duration)}ms` : COMMON_TEXT.DASH}</span>
                           <span>{`${s.inputBytes}/${s.outputBytes}`}</span>
-                          <span className="dim">{s.error || "-"}</span>
+                          <span className="dim">{s.error || COMMON_TEXT.DASH}</span>
                         </div>
                       ))
                     }
@@ -406,37 +407,37 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                     selectedStep ? (
                       <div className="dq-panel dq-workflow-step-focus">
                         <div className="row">
-                          <strong>Step Detail</strong>
+                          <strong>{WORKFLOWS_COPY.STEP_DETAIL_TITLE}</strong>
                           <span className="dim small">{selectedStep.name}</span>
                         </div>
                         <div className="dq-workflow-summary dq-kv-grid">
                           <div className="dq-kv-row">
-                            <span className="dq-kv-label">Status</span>
+                            <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.STATUS}</span>
                             <strong className="dq-kv-value">{selectedStep.status}</strong>
                           </div>
                           <div className="dq-kv-row">
-                            <span className="dq-kv-label">Attempts</span>
+                            <span className="dq-kv-label">{WORKFLOWS_COPY.STEP_TABLE_HEADERS.ATTEMPTS}</span>
                             <strong className="dq-kv-value">{selectedStep.attempts || 1}</strong>
                           </div>
                           <div className="dq-kv-row">
-                            <span className="dq-kv-label">Duration</span>
-                            <strong className="dq-kv-value">{selectedStep.duration ? `${Math.round(selectedStep.duration)}ms` : "-"}</strong>
+                            <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.DURATION}</span>
+                            <strong className="dq-kv-value">{selectedStep.duration ? `${Math.round(selectedStep.duration)}ms` : COMMON_TEXT.DASH}</strong>
                           </div>
                           <div className="dq-kv-row">
-                            <span className="dq-kv-label">Started</span>
+                            <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.STARTED}</span>
                             <strong className="dq-kv-value">{formatClock(selectedStep.startedAt)}</strong>
                           </div>
                           <div className="dq-kv-row">
-                            <span className="dq-kv-label">Ended</span>
+                            <span className="dq-kv-label">{WORKFLOWS_COPY.SUMMARY_LABELS.ENDED}</span>
                             <strong className="dq-kv-value">{formatClock(selectedStep.endedAt)}</strong>
                           </div>
                           <div className="dq-kv-row">
-                            <span className="dq-kv-label">I/O Bytes</span>
+                            <span className="dq-kv-label">{WORKFLOWS_COPY.IO_BYTES}</span>
                             <strong className="dq-kv-value">{`${selectedStep.inputBytes}/${selectedStep.outputBytes}`}</strong>
                           </div>
                         </div>
                         <div className="dq-note">
-                          {selectedStep.error ? `error: ${selectedStep.error}` : "No step error recorded."}
+                          {selectedStep.error ? `${WORKFLOWS_COPY.STEP_ERROR_PREFIX} ${selectedStep.error}` : WORKFLOWS_COPY.NO_STEP_ERROR}
                         </div>
                       </div>
                     ) : null
@@ -444,7 +445,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
 
                   <div className="dq-workflow-actions">
                     <label className="dq-input-stack small">
-                      <span>Replay From</span>
+                      <span>{WORKFLOWS_COPY.REPLAY_FROM}</span>
                       <select
                         value={replayFrom}
                         onChange={(e) => {
@@ -456,29 +457,29 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                         }}
                         disabled={replayingRunID === r.id}
                       >
-                        <option value="">entire run</option>
+                        <option value={COMMON_TEXT.EMPTY}>{WORKFLOWS_COPY.ENTIRE_RUN}</option>
                         {r.steps.map((step) => <option key={`${r.id}-replay-${step.name}`} value={step.name}>{step.name}</option>)}
                       </select>
                     </label>
 
                     <label className="dq-input-stack small">
-                      <span>Replay Mode</span>
+                      <span>{WORKFLOWS_COPY.REPLAY_MODE}</span>
                       <select
-                        value={replayMode[r.id] || "time_travel"}
+                        value={replayMode[r.id] || WORKFLOW_REPLAY_MODE.TIME_TRAVEL}
                         onChange={(e) => setReplayMode((prev) => ({ ...prev, [r.id]: e.target.value }))}
                         disabled={replayingRunID === r.id}
                       >
-                        <option value="time_travel">time_travel</option>
-                        <option value="live">live</option>
+                        <option value={WORKFLOW_REPLAY_MODE.TIME_TRAVEL}>{WORKFLOW_REPLAY_MODE.TIME_TRAVEL}</option>
+                        <option value={WORKFLOW_REPLAY_MODE.LIVE}>{WORKFLOW_REPLAY_MODE.LIVE}</option>
                       </select>
                     </label>
 
                     <label className="dq-input-stack">
-                      <span>Cancel Reason</span>
+                      <span>{WORKFLOWS_COPY.CANCEL_REASON}</span>
                       <input
                         value={cancelReason}
                         onChange={(e) => setCancelReason(e.target.value)}
-                        placeholder="dashboard cancel"
+                        placeholder={WORKFLOWS_COPY.CANCEL_REASON_PLACEHOLDER}
                         disabled={!r.cancelable || cancelingRunID === r.id}
                       />
                     </label>
@@ -490,7 +491,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                         onClick={() => handleReplay(r.id)}
                         disabled={replayingRunID === r.id}
                       >
-                        {replayingRunID === r.id ? "Replaying..." : "Replay Run"}
+                        {replayingRunID === r.id ? WORKFLOWS_COPY.REPLAYING : WORKFLOWS_COPY.REPLAY_RUN}
                       </button>
                       <button
                         type="button"
@@ -498,7 +499,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                         onClick={() => handleCancel(r.id)}
                         disabled={!r.cancelable || cancelingRunID === r.id}
                       >
-                        {cancelingRunID === r.id ? "Canceling..." : "Cancel Run"}
+                        {cancelingRunID === r.id ? WORKFLOWS_COPY.CANCELING : WORKFLOWS_COPY.CANCEL_RUN}
                       </button>
                     </div>
                   </div>
@@ -507,9 +508,9 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
 
                   <div className="dq-workflow-artifacts">
                     <div className="row">
-                      <strong>Artifacts</strong>
+                      <strong>{WORKFLOWS_COPY.ARTIFACTS}</strong>
                       <span className="dim small">
-                        {artifactsLoading ? "loading..." : `${artifactItems.length} items`}
+                        {artifactsLoading ? WORKFLOWS_COPY.LOADING : `${artifactItems.length} ${WORKFLOWS_COPY.ITEMS}`}
                       </span>
                     </div>
 
@@ -519,19 +520,19 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                       artifactItems.length > 0 ? (
                         <div className="dq-workflow-step-table">
                           <div className="dq-table-row dq-table-head">
-                            <span>Artifact</span>
-                            <span>Node</span>
-                            <span>Type</span>
-                            <span>Size</span>
-                            <span>Created</span>
-                            <span>Actions</span>
+                            <span>{WORKFLOWS_COPY.ARTIFACT_HEADERS.ARTIFACT}</span>
+                            <span>{WORKFLOWS_COPY.ARTIFACT_HEADERS.NODE}</span>
+                            <span>{WORKFLOWS_COPY.ARTIFACT_HEADERS.TYPE}</span>
+                            <span>{WORKFLOWS_COPY.ARTIFACT_HEADERS.SIZE}</span>
+                            <span>{WORKFLOWS_COPY.ARTIFACT_HEADERS.CREATED}</span>
+                            <span>{WORKFLOWS_COPY.ARTIFACT_HEADERS.ACTIONS}</span>
                           </div>
                           {
                             artifactItems.map((artifact) => (
                               <div key={artifact.artifact_id} className="dq-table-row">
                                 <span>{artifact.original_name || artifact.artifact_id}</span>
-                                <span>{artifact.node_id || "-"}</span>
-                                <span>{artifact.content_type || "-"}</span>
+                                <span>{artifact.node_id || COMMON_TEXT.DASH}</span>
+                                <span>{artifact.content_type || COMMON_TEXT.DASH}</span>
                                 <span>{artifact.size || 0}</span>
                                 <span>{formatClock(artifact.created_at)}</span>
                                 <span className="dq-inline-actions">
@@ -540,15 +541,15 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                                     className="mini-btn"
                                     onClick={() => handlePreviewArtifact(r.id, artifact)}
                                   >
-                                    Preview
+                                    {WORKFLOWS_COPY.PREVIEW}
                                   </button>
                                   <a
                                     className="mini-btn"
-                                    href={`/debug/artifact-get?artifact_id=${encodeURIComponent(artifact.artifact_id)}`}
+                                    href={API_PATHS.artifactGet(artifact.artifact_id)}
                                     target="_blank"
                                     rel="noreferrer"
                                   >
-                                    Open
+                                    {WORKFLOWS_COPY.OPEN}
                                   </a>
                                 </span>
                               </div>
@@ -556,7 +557,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                           }
                         </div>
                       ) : !artifactsLoading ? (
-                        <div className="dim small">No artifacts recorded for this run yet.</div>
+                        <div className="dim small">{WORKFLOWS_COPY.NO_ARTIFACTS}</div>
                       ) : null
                     }
 
@@ -564,10 +565,10 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                       preview.runID === r.id && preview.artifactID ? (
                         <div className="dq-panel dq-artifact-preview">
                           <div className="row">
-                            <strong>Artifact Preview</strong>
-                            <span className="dim small">{preview.contentType || "unknown type"}</span>
+                            <strong>{WORKFLOWS_COPY.ARTIFACT_PREVIEW}</strong>
+                            <span className="dim small">{preview.contentType || WORKFLOWS_COPY.UNKNOWN_TYPE}</span>
                           </div>
-                          {preview.loading ? <div className="dim small">loading preview...</div> : null}
+                          {preview.loading ? <div className="dim small">{WORKFLOWS_COPY.LOADING_PREVIEW}</div> : null}
                           {!preview.loading && preview.error ? <div className="dq-error compact">{preview.error}</div> : null}
                           {!preview.loading && !preview.error && preview.body ? (
                             <pre className="dq-payload">{preview.body}</pre>
@@ -587,7 +588,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
       {
         runs.length === 0 ? (
           <div className="dq-panel">
-            No workflow runs yet. Start one with <code>POST /debug/run-demo</code>.
+            {WORKFLOWS_COPY.NO_RUNS} <code>POST {API_PATHS.RUN_DEMO}</code>.
           </div>
         ) : null
       }
