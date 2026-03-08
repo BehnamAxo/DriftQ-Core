@@ -3,6 +3,7 @@ import Controls from "./features/layout/components/Controls";
 import DeadLettersTab from "./features/deadLetters/components/DeadLettersTab";
 import Footer from "./features/layout/components/Footer";
 import Header from "./features/layout/components/Header";
+import MessagesTab from "./features/messages/components/MessagesTab";
 import OverviewTab from "./features/overview/components/OverviewTab";
 import ProducersTab from "./features/producers/components/ProducersTab";
 import TabsNav from "./features/layout/components/TabsNav";
@@ -108,6 +109,15 @@ export default function App() {
               pendingMessage={pendingConsumerMessage}
               onPendingMessageChange={setPendingConsumerMessage}
               onConsumerChanged={() => refresh(new AbortController().signal)}
+            />
+          ) : null
+        }
+
+        {
+          activeTab === "Messages" ? (
+            <MessagesTab
+              group={group}
+              topics={topics}
             />
           ) : null
         }

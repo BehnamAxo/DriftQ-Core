@@ -196,6 +196,10 @@ body,
   grid-template-columns: minmax(0, 2fr) auto;
 }
 
+.dq-form-grid.messages {
+  grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1fr) minmax(180px, 1fr);
+}
+
 .dq-input-stack {
   display: flex;
   flex-direction: column;

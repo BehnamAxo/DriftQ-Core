@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fmt } from "../../../utils/number";
 import { postJSON, readFirstNDJSON } from "../../../utils/http";
+import { formatClock } from "../../../utils/time";
 
 function parseMessageValue(raw) {
   try {
@@ -174,9 +175,11 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
               <span className={c.status === "connected" ? "green" : c.status === "backlog" ? "amber" : "dim"}>{c.status}</span>
             </div>
             <div className="tags">
-              {c.topics.map((t) => (
-                <span key={t}>{t}</span>
-              ))}
+              {
+                c.topics.map((t) => (
+                  <span key={t}>{t}</span>
+                ))
+              }
               {c.topics.length === 0 ? <span>no topics</span> : null}
             </div>
             <div className="mini-grid">
@@ -193,8 +196,12 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
                 <small>partitions</small>
               </div>
               <div>
-                <b>{fmt(c.totalAcked)}</b>
-                <small>acked offset</small>
+                <b>{fmt(c.owners.length)}</b>
+                <small>owners</small>
+              </div>
+              <div>
+                <b>{fmt(c.stalledCount)}</b>
+                <small>stalled</small>
               </div>
             </div>
             <div className="dq-form-actions top-gap">
@@ -219,10 +226,6 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
         {
           activeGroup ? (
             <div className="dq-stack">
-              <p className="dq-note">
-                Owner identity and last-delivery timestamps are not exposed yet. This view shows the real lag and lease state available today.
-              </p>
-
               <div className="dq-grid compact">
                 {
                   activeGroup.topicSummaries.map((topic) => (
@@ -249,6 +252,10 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
                           <small>head</small>
                         </div>
                       </div>
+                      <div className="tags">
+                        {topic.owners.length ? topic.owners.map((ownerName) => <span key={`${topic.topic}-${ownerName}`}>{ownerName}</span>) : <span>no active owner</span>}
+                        <span>last delivery {topic.lastDeliveredAt ? formatClock(topic.lastDeliveredAt) : "-"}</span>
+                      </div>
                     </div>
                   ))
                 }
@@ -259,6 +266,9 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
                   <tr>
                     <th>Topic</th>
                     <th className="right">Partition</th>
+                    <th>Owner</th>
+                    <th>Last Delivery</th>
+                    <th className="right">Lease Age</th>
                     <th className="right">Head</th>
                     <th className="right">Committed</th>
                     <th className="right">Lag</th>
@@ -272,12 +282,25 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
                       <tr key={`${row.topic}:${row.partition}`}>
                         <td>{row.topic}</td>
                         <td className="right">{fmt(row.partition)}</td>
+                        <td>{row.leaseOwners.join(", ") || row.lastOwner || "-"}</td>
+                        <td>{row.lastDeliveredAt ? formatClock(row.lastDeliveredAt) : "-"}</td>
+                        <td className={`right ${row.stalled ? "red" : row.oldestLeaseAge > 0 ? "amber" : "dim"}`}>
+                          {row.oldestLeaseAge > 0 ? `${fmt(row.oldestLeaseAge)}ms` : "-"}
+                        </td>
                         <td className="right">{fmt(row.headOffset)}</td>
                         <td className="right">{fmt(row.committedOffset)}</td>
                         <td className={`right ${row.lag > 0 ? "amber" : "green2"}`}>{fmt(row.lag)}</td>
                         <td className={`right ${row.inflight > 0 ? "green" : "dim"}`}>{fmt(row.inflight)}</td>
                         <td>
-                          {row.inflight > 0 ? <span className="green">leased</span> : row.lag > 0 ? <span className="amber">waiting</span> : <span className="dim">caught up</span>}
+                          {
+                            row.stalled
+                            ? <span className="red">stalled</span>
+                            : row.inflight > 0
+                              ? <span className="green">leased</span>
+                              : row.lag > 0
+                                ? <span className="amber">waiting</span>
+                                : <span className="dim">caught up</span>
+                          }
                         </td>
                       </tr>
                     ))
@@ -285,7 +308,7 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
                   {
                     activeGroup.rows.length === 0 ? (
                       <tr>
-                        <td colSpan={7}>no partition detail available for this consumer group</td>
+                        <td colSpan={10}>no partition detail available for this consumer group</td>
                       </tr>
                     ) : null
                   }
@@ -347,40 +370,42 @@ export default function ConsumersTab({ consumers, pendingMessage, onPendingMessa
                 </div>
               </form>
 
-              {pendingMessage ? (
-                <div className="dq-stack">
-                  <div className="tags">
-                    <span>{pendingMessage.topic}</span>
-                    <span>group {pendingMessage.group}</span>
-                    <span>owner {pendingMessage.owner}</span>
-                    <span>partition {pendingMessage.partition}</span>
-                    <span>offset {pendingMessage.offset}</span>
-                    <span>attempts {pendingMessage.attempts}</span>
-                  </div>
+              {
+                pendingMessage ? (
+                  <div className="dq-stack">
+                    <div className="tags">
+                      <span>{pendingMessage.topic}</span>
+                      <span>group {pendingMessage.group}</span>
+                      <span>owner {pendingMessage.owner}</span>
+                      <span>partition {pendingMessage.partition}</span>
+                      <span>offset {pendingMessage.offset}</span>
+                      <span>attempts {pendingMessage.attempts}</span>
+                    </div>
 
-                  <pre className="dq-payload">{JSON.stringify(parseMessageValue(pendingMessage.value || ""), null, 2)}</pre>
-                  {pendingMessage.envelope ? <pre className="dq-payload">{JSON.stringify({ envelope: pendingMessage.envelope }, null, 2)}</pre> : null}
-                  {pendingMessage.routing ? <pre className="dq-payload">{JSON.stringify({ routing: pendingMessage.routing }, null, 2)}</pre> : null}
+                    <pre className="dq-payload">{JSON.stringify(parseMessageValue(pendingMessage.value || ""), null, 2)}</pre>
+                    {pendingMessage.envelope ? <pre className="dq-payload">{JSON.stringify({ envelope: pendingMessage.envelope }, null, 2)}</pre> : null}
+                    {pendingMessage.routing ? <pre className="dq-payload">{JSON.stringify({ routing: pendingMessage.routing }, null, 2)}</pre> : null}
 
-                  <div className="dq-form-grid consume-actions">
-                    <label className="dq-input-stack">
-                      <span>Nack Reason</span>
-                      <input value={nackReason} onChange={(e) => setNackReason(e.target.value)} placeholder="debug reject" />
-                    </label>
+                    <div className="dq-form-grid consume-actions">
+                      <label className="dq-input-stack">
+                        <span>Nack Reason</span>
+                        <input value={nackReason} onChange={(e) => setNackReason(e.target.value)} placeholder="debug reject" />
+                      </label>
 
-                    <div className="dq-form-actions">
-                      <button type="button" className="mini-btn" onClick={handleAck} disabled={acking || nacking}>
-                        {acking ? "Acking..." : "Ack"}
-                      </button>
-                      <button type="button" className="mini-btn danger" onClick={handleNack} disabled={acking || nacking}>
-                        {nacking ? "Nacking..." : "Nack"}
-                      </button>
+                      <div className="dq-form-actions">
+                        <button type="button" className="mini-btn" onClick={handleAck} disabled={acking || nacking}>
+                          {acking ? "Acking..." : "Ack"}
+                        </button>
+                        <button type="button" className="mini-btn danger" onClick={handleNack} disabled={acking || nacking}>
+                          {nacking ? "Nacking..." : "Nack"}
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : (
-                <p className="dq-note">No leased message yet. Use `Consume Next` to fetch one message into the inspector.</p>
-              )}
+                ) : (
+                  <p className="dq-note">No leased message yet. Use `Consume Next` to fetch one message into the inspector.</p>
+                )
+              }
             </div>
           ) : (
             <p className="dq-note">Create or attach a consumer group first so there is something to inspect.</p>

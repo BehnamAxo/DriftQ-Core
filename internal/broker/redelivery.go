@@ -274,6 +274,7 @@ func (b *InMemoryBroker) redeliverExpiredLocked() {
 
 					// update inflight bookkeeping (source of truth)
 					e.SentAt = now
+					b.recordDeliveryLocked(topic, group, partition, cs.Owner, now)
 					e.Attempts++
 					if b.metrics != nil {
 						cause := "retry"

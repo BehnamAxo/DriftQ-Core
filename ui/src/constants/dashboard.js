@@ -1,1 +1,1 @@
-export const TABS = ["Overview", "Topics", "Producers", "Consumers", "Dead Letters", "Workflows (v2)"];
+export const TABS = ["Overview", "Topics", "Producers", "Consumers", "Messages", "Dead Letters", "Workflows (v2)"];

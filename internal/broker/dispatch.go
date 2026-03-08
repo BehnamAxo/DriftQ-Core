@@ -300,6 +300,7 @@ func (b *InMemoryBroker) dispatchFilteredLocked(topic string, onlyPartition int)
 					Owner:     cs.Owner,
 				}
 				inflight[m.Offset] = e
+				b.recordDeliveryLocked(topic, group, p, cs.Owner, e.SentAt)
 
 				send := m
 				send.Attempts = e.Attempts
