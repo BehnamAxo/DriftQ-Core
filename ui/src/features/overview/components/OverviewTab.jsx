@@ -31,27 +31,80 @@ function snapshotRows(config, version) {
   ];
 }
 
+function HelpTip({ text }) {
+  return (
+    <span className="dq-help" tabIndex={0} aria-label={text}>
+      <span className="dq-help-trigger">?</span>
+      <span className="dq-help-tooltip" role="tooltip">{text}</span>
+    </span>
+  );
+}
+
 function snapshotSummary(config, version) {
   return [
     {
       label: "Endpoint",
-      value: config.addr || "unknown",
-      meta: [`version ${version.version || "unknown"}`, version.wal_enabled ? "wal on" : "wal off"]
+      description: "Where this DriftQ node is listening for API and dashboard traffic.",
+      tooltip: "This is the network address clients use to talk to the broker and open the embedded UI.",
+      value: `Listening on ${config.addr || "unknown"}`,
+      meta: [
+        {
+          label: `Build ${version.version || "unknown"}`,
+          detail: "Version of the running DriftQ server build."
+        },
+        {
+          label: version.wal_enabled ? "Durability WAL enabled" : "Durability in-memory only",
+          detail: "Whether broker writes are persisted to the write-ahead log."
+        }
+      ]
     },
     {
       label: "Storage",
-      value: config.engine_store || "unknown",
-      meta: [config.engine_wal || "unknown", config.artifacts_dir || "no artifacts dir"]
+      description: "How broker and workflow state are stored while the node is running.",
+      tooltip: "This summarizes the active storage engine, durability backend, and where artifacts are written.",
+      value: `State stored in ${config.engine_store || "unknown"}`,
+      meta: [
+        {
+          label: `Engine WAL ${config.engine_wal || "unknown"}`,
+          detail: "Workflow engine write-ahead log backend."
+        },
+        {
+          label: `Artifacts ${config.artifacts_dir || "n/a"}`,
+          detail: "Directory used to store workflow outputs and artifacts."
+        }
+      ]
     },
     {
       label: "Limits",
-      value: `${fmt(config.max_inflight)} in-flight`,
-      meta: [`${fmt(config.max_partition_msgs)} msgs`, formatBytes(config.max_partition_bytes)]
+      description: "Active safety caps that bound how much work the broker will accept at once.",
+      tooltip: "These caps prevent too many unacked leases or oversized partitions from overwhelming the broker.",
+      value: `Allows ${fmt(config.max_inflight)} unacked messages in flight`,
+      meta: [
+        {
+          label: `Partition cap ${fmt(config.max_partition_msgs)} msgs`,
+          detail: "Maximum number of messages allowed in a single partition."
+        },
+        {
+          label: `Partition cap ${formatBytes(config.max_partition_bytes)}`,
+          detail: "Maximum total bytes allowed in a single partition."
+        }
+      ]
     },
     {
       label: "Runtime",
-      value: `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`,
-      meta: [config.access_log ? "access log on" : "access log off", config.wal_sync_interval || "sync n/a"]
+      description: "How the server logs activity and flushes durable writes while it is running.",
+      tooltip: "This combines the current log verbosity, output format, request logging, and WAL sync cadence.",
+      value: `Logs at ${config.log_level || "unknown"} level in ${config.log_format || "unknown"} format`,
+      meta: [
+        {
+          label: config.access_log ? "HTTP access logging enabled" : "HTTP access logging disabled",
+          detail: "Whether incoming HTTP requests are written to the access log."
+        },
+        {
+          label: `WAL flush interval ${config.wal_sync_interval || "n/a"}`,
+          detail: "How often buffered WAL writes are forced to durable storage."
+        }
+      ]
     }
   ];
 }
@@ -92,14 +145,27 @@ export default function OverviewTab({
       <section className="dq-overview-grid">
         <div className="dq-panel">
           <h3>Broker Snapshot</h3>
+          <p className="dq-note">
+            Quick read of where this node is listening, how it stores state, and which runtime limits are active.
+          </p>
           <div className="dq-broker-snapshot">
             {
               snapshotSummary(config, version).map((item) => (
                 <div className="dq-summary-card" key={item.label}>
-                  <span className="dq-kv-label">{item.label}</span>
+                  <div className="dq-summary-head">
+                    <span className="dq-kv-label">{item.label}</span>
+                    <HelpTip text={item.tooltip} />
+                  </div>
                   <strong className="dq-summary-value">{item.value}</strong>
+                  <p className="dq-summary-description">{item.description}</p>
                   <div className="dq-summary-meta">
-                    {item.meta.map((meta) => <span key={`${item.label}-${meta}`}>{meta}</span>)}
+                    {
+                      item.meta.map((meta) => (
+                        <span className="dq-chip" key={`${item.label}-${meta.label}`} title={meta.detail}>
+                          {meta.label}
+                        </span>
+                      ))
+                    }
                   </div>
                 </div>
               ))
