@@ -21,20 +21,38 @@ function formatBytes(value) {
 
 function snapshotRows(config, version) {
   return [
-    ["Listen Addr", config.addr || "unknown"],
-    ["WAL", version.wal_enabled ? "enabled" : "disabled"],
     ["WAL Path", config.wal_path || "n/a"],
-    ["Store Engine", config.engine_store || "unknown"],
     ["WAL Engine", config.engine_wal || "unknown"],
     ["Log Mode", `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`],
     ["Access Log", config.access_log ? "on" : "off"],
-    ["Max In-Flight", fmt(config.max_inflight)],
-    ["Max Partition Msgs", fmt(config.max_partition_msgs)],
-    ["Max Partition Bytes", formatBytes(config.max_partition_bytes)],
     ["WAL Sync", config.wal_sync_interval || "n/a"],
     ["WAL Buffer", formatBytes(config.wal_buffer_bytes)],
-    ["Artifacts Dir", config.artifacts_dir || "n/a"],
-    ["Version", version.version || "unknown"]
+    ["Artifacts Dir", config.artifacts_dir || "n/a"]
+  ];
+}
+
+function snapshotSummary(config, version) {
+  return [
+    {
+      label: "Endpoint",
+      value: config.addr || "unknown",
+      meta: [`version ${version.version || "unknown"}`, version.wal_enabled ? "wal on" : "wal off"]
+    },
+    {
+      label: "Storage",
+      value: config.engine_store || "unknown",
+      meta: [config.engine_wal || "unknown", config.artifacts_dir || "no artifacts dir"]
+    },
+    {
+      label: "Limits",
+      value: `${fmt(config.max_inflight)} in-flight`,
+      meta: [`${fmt(config.max_partition_msgs)} msgs`, formatBytes(config.max_partition_bytes)]
+    },
+    {
+      label: "Runtime",
+      value: `${config.log_level || "unknown"} / ${config.log_format || "unknown"}`,
+      meta: [config.access_log ? "access log on" : "access log off", config.wal_sync_interval || "sync n/a"]
+    }
   ];
 }
 
@@ -74,16 +92,33 @@ export default function OverviewTab({
       <section className="dq-overview-grid">
         <div className="dq-panel">
           <h3>Broker Snapshot</h3>
-          <div className="dq-kv-grid">
+          <div className="dq-broker-snapshot">
             {
-              snapshotRows(config, version).map(([label, value]) => (
-                <div className="dq-kv-row" key={label}>
-                  <span className="dq-kv-label">{label}</span>
-                  <span className="dq-kv-value">{value}</span>
+              snapshotSummary(config, version).map((item) => (
+                <div className="dq-summary-card" key={item.label}>
+                  <span className="dq-kv-label">{item.label}</span>
+                  <strong className="dq-summary-value">{item.value}</strong>
+                  <div className="dq-summary-meta">
+                    {item.meta.map((meta) => <span key={`${item.label}-${meta}`}>{meta}</span>)}
+                  </div>
                 </div>
               ))
             }
           </div>
+
+          <details className="dq-disclosure">
+            <summary>Advanced Broker Config</summary>
+            <div className="dq-kv-grid dq-kv-grid-compact">
+              {
+                snapshotRows(config, version).map(([label, value]) => (
+                  <div className="dq-kv-row" key={label}>
+                    <span className="dq-kv-label">{label}</span>
+                    <span className="dq-kv-value">{value}</span>
+                  </div>
+                ))
+              }
+            </div>
+          </details>
         </div>
       </section>
 
