@@ -75,6 +75,46 @@ function HelpTip({ text }) {
   );
 }
 
+function MetricCard({ item, secondary = false }) {
+  const cardClassName = `dq-card ${secondary ? "dq-card-secondary" : "dq-card-primary"} ${item.unavailable ? "dq-card-unavailable" : ""}`;
+  const valueClassName = `dq-value ${secondary ? "dq-value-secondary" : ""} ${item.tone}`;
+
+  return (
+    <div className={cardClassName}>
+      <div className="dq-card-head">
+        <div className={valueClassName}>{item.value}</div>
+        {item.tooltip ? <HelpTip text={item.tooltip} /> : null}
+      </div>
+      <div className="dq-label">{item.label}</div>
+      {item.description ? <p className="dq-card-note">{item.description}</p> : null}
+    </div>
+  );
+}
+
+function compressEvents(events) {
+  const grouped = [];
+
+  for (const event of events) {
+    const previous = grouped[grouped.length - 1];
+    if (
+      previous &&
+      event.type === "HEARTBEAT" &&
+      previous.type === event.type &&
+      previous.topic === event.topic &&
+      previous.group === event.group &&
+      previous.detail === event.detail
+    ) {
+      previous.count += event.count || 1;
+      previous.ts = event.ts;
+      continue;
+    }
+
+    grouped.push({ ...event });
+  }
+
+  return grouped;
+}
+
 function snapshotSummary(config, version) {
   return [
     {
@@ -157,24 +197,109 @@ export default function OverviewTab({
   spark,
   events
 }) {
+  const primaryMetrics = [
+    { label: "Messages Produced", value: fmt(totalProduced), tone: "green" },
+    { label: "Messages Consumed", value: fmt(totalConsumed), tone: "blue" },
+    { label: "In-Flight", value: fmt(totalInflight), tone: "amber" },
+    { label: "Dead Letters", value: fmt(totalDLQ), tone: "red" }
+  ];
+
+  const secondaryMetrics = [
+    {
+      label: "Active Producers",
+      value: "Not tracked",
+      tone: "muted",
+      unavailable: true,
+      description: "Producer-count tracking is not exposed by the broker yet.",
+      tooltip: "This card will become numeric once the backend exposes producer tracking."
+    },
+    {
+      label: "Consumer Groups",
+      value: fmt(consumersCount),
+      tone: "green2",
+      description: "Distinct consumer groups visible in the current dashboard snapshot."
+    },
+    {
+      label: "Deduplicated",
+      value: "Not tracked",
+      tone: "muted",
+      unavailable: true,
+      description: "Deduplication totals are not exposed by the broker yet.",
+      tooltip: "This card will become numeric once the backend publishes deduplication counters."
+    },
+    {
+      label: "Backpressure Rejected",
+      value: fmt(totalRejected),
+      tone: totalRejected > 20 ? "red" : "amber",
+      description: "Produce requests rejected because broker safety limits were hit."
+    }
+  ];
+
+  const recentEvents = compressEvents(events.slice(0, 20));
+  const eventStreamIdle = recentEvents.length === 0 || recentEvents.every((event) => event.type === "HEARTBEAT");
+
   return (
     <>
       <section className="dq-metrics">
-        {[
-          ["Messages Produced", fmt(totalProduced), "green"],
-          ["Messages Consumed", fmt(totalConsumed), "blue"],
-          ["In-Flight", fmt(totalInflight), "amber"],
-          ["Dead Letters", fmt(totalDLQ), "red"],
-          ["Active Producers", "N/A", "muted"],
-          ["Consumer Groups", fmt(consumersCount), "green2"],
-          ["Deduplicated", "N/A", "muted"],
-          ["Backpressure Rejected", fmt(totalRejected), totalRejected > 20 ? "red" : "amber"]
-        ].map(([label, value, tone]) => (
-          <div className="dq-card" key={label}>
-            <div className={`dq-value ${tone}`}>{value}</div>
-            <div className="dq-label">{label}</div>
-          </div>
+        {primaryMetrics.map((item) => (
+          <MetricCard item={item} key={item.label} />
         ))}
+      </section>
+
+      <section className="dq-metrics dq-metrics-secondary">
+        {secondaryMetrics.map((item) => (
+          <MetricCard item={item} secondary key={item.label} />
+        ))}
+      </section>
+
+      <section className="dq-split">
+        <div className="dq-panel">
+          <h3>Topic Throughput</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Topic</th>
+                <th className="right">Rate</th>
+                <th className="right">Lag</th>
+                <th>Trend</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                topics.map((t) => (
+                  <tr key={t.name}>
+                    <td>{t.name}</td>
+                    <td className="right">
+                      <span className="green">^ {t.rateIn}</span> <span className="blue">v {t.rateOut}</span>
+                    </td>
+                    <td className={`right ${t.lag > 100 ? "red" : t.lag > 30 ? "amber" : "green2"}`}>{fmt(t.lag)}</td>
+                    <td>
+                      <Sparkline values={spark[t.name]} />
+                    </td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+        <div className="dq-panel">
+          <h3>Live Event Stream</h3>
+          {eventStreamIdle ? <p className="dq-note">Waiting for broker activity. Produce, consume, ack, or nack a message to see live events here.</p> : null}
+          <div className="dq-events">
+            {
+              recentEvents.map((e) => (
+                <div className="dq-event" key={e.id}>
+                  <span className="ts">{e.ts}</span>
+                  <span className="badge" style={{ borderColor: `${e.color}66`, color: e.color }}>
+                    {e.type}
+                  </span>
+                  <span>{e.topic}{e.count > 1 ? ` x${e.count}` : ""}</span>
+                  <span className="dim">{[e.group, e.detail].filter(Boolean).join(" | ")}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
       </section>
 
       <section className="dq-overview-grid">
@@ -227,55 +352,6 @@ export default function OverviewTab({
               }
             </div>
           </details>
-        </div>
-      </section>
-
-      <section className="dq-split">
-        <div className="dq-panel">
-          <h3>Topic Throughput</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Topic</th>
-                <th className="right">Rate</th>
-                <th className="right">Lag</th>
-                <th>Trend</th>
-              </tr>
-            </thead>
-            <tbody>
-              {
-                topics.map((t) => (
-                  <tr key={t.name}>
-                    <td>{t.name}</td>
-                    <td className="right">
-                      <span className="green">^ {t.rateIn}</span> <span className="blue">v {t.rateOut}</span>
-                    </td>
-                    <td className={`right ${t.lag > 100 ? "red" : t.lag > 30 ? "amber" : "green2"}`}>{fmt(t.lag)}</td>
-                    <td>
-                      <Sparkline values={spark[t.name]} />
-                    </td>
-                  </tr>
-                ))
-              }
-            </tbody>
-          </table>
-        </div>
-        <div className="dq-panel">
-          <h3>Live Event Stream</h3>
-          <div className="dq-events">
-            {
-              events.slice(0, 20).map((e) => (
-                <div className="dq-event" key={e.id}>
-                  <span className="ts">{e.ts}</span>
-                  <span className="badge" style={{ borderColor: `${e.color}66`, color: e.color }}>
-                    {e.type}
-                  </span>
-                  <span>{e.topic}{e.count > 1 ? ` x${e.count}` : ""}</span>
-                  <span className="dim">{[e.group, e.detail].filter(Boolean).join(" | ")}</span>
-                </div>
-              ))
-            }
-          </div>
         </div>
       </section>
     </>

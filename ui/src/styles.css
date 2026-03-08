@@ -368,6 +368,10 @@ body,
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+  margin-bottom: 18px;
+}
+
+.dq-metrics-secondary {
   margin-bottom: 24px;
 }
 
@@ -376,7 +380,29 @@ body,
   border: 1px solid #1e293b;
   border-radius: 6px;
   padding: 16px 14px;
-  text-align: center;
+  text-align: left;
+  display: grid;
+  gap: 8px;
+}
+
+.dq-card-primary {
+  min-height: 112px;
+}
+
+.dq-card-secondary {
+  min-height: 92px;
+  background: #0b1120;
+}
+
+.dq-card-unavailable {
+  border-style: dashed;
+}
+
+.dq-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .dq-value {
@@ -385,10 +411,21 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
+.dq-value-secondary {
+  font-size: 24px;
+}
+
 .dq-label {
   font-size: 11px;
   color: #64748b;
-  margin-top: 4px;
+  margin-top: 0;
+}
+
+.dq-card-note {
+  margin: 0;
+  color: #8aa0bf;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .dq-split {
