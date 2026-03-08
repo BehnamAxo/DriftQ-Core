@@ -1,6 +1,6 @@
-import { COMMON_TEXT, CONTROLS_COPY } from "../../../constants/ui";
+import { CONTROLS_COPY } from "../../../constants/ui";
 
-export default function Controls({ group, onGroupChange, onGroupBlur, onRefresh, loading, tick }) {
+export default function Controls({ group, onGroupChange, onGroupBlur, onRefresh, loading }) {
   return (
     <div className="dq-controls">
       <label>{CONTROLS_COPY.GROUP_LABEL}</label>
@@ -13,7 +13,7 @@ export default function Controls({ group, onGroupChange, onGroupBlur, onRefresh,
       <button type="button" onClick={onRefresh}>
         {CONTROLS_COPY.REFRESH_BUTTON}
       </button>
-      <span>{loading ? COMMON_TEXT.LOADING : CONTROLS_COPY.tickLabel(tick)}</span>
+      {loading ? <span>{CONTROLS_COPY.loadingLabel || "loading..."}</span> : null}
     </div>
   );
 }

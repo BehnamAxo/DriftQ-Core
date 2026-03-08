@@ -64,7 +64,6 @@ export default function App() {
           }}
           onRefresh={() => refresh(new AbortController().signal)}
           loading={loading}
-          tick={tick}
         />
 
         {
@@ -81,6 +80,7 @@ export default function App() {
               topics={topics}
               spark={spark}
               events={events}
+              tick={tick}
             />
           ) : null
         }
@@ -153,7 +153,7 @@ export default function App() {
         }
       </main>
 
-      <Footer tick={tick} />
+      <Footer />
     </div>
   );
 }

@@ -207,6 +207,7 @@ export const CONTROLS_COPY = Object.freeze({
   GROUP_LABEL: "Group",
   REFRESH_BUTTON: "Refresh",
   groupPlaceholder: DEFAULTS.GROUP,
+  loadingLabel: COMMON_TEXT.LOADING,
   tickLabel: (tick) => `tick #${tick}`
 });
 

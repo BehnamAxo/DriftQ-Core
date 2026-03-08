@@ -1,5 +1,5 @@
 import Sparkline from "../../shared/components/Sparkline";
-import { COMMON_TEXT, OVERVIEW_COPY } from "../../../constants/ui";
+import { COMMON_TEXT, CONTROLS_COPY, OVERVIEW_COPY } from "../../../constants/ui";
 import { fmt } from "../../../utils/number";
 
 function formatBytes(value) {
@@ -199,7 +199,8 @@ export default function OverviewTab({
   totalRejected,
   topics,
   spark,
-  events
+  events,
+  tick
 }) {
   const primaryMetrics = [
     { label: OVERVIEW_COPY.PRIMARY_METRICS.PRODUCED, value: fmt(totalProduced), tone: "green" },
@@ -288,15 +289,21 @@ export default function OverviewTab({
             </table>
           </div>
         </div>
-        <div className="dq-panel">
-          <h3>{OVERVIEW_COPY.LIVE_EVENT_STREAM}</h3>
+        <div className="dq-panel dq-stream-panel">
+          <div className="dq-stream-head">
+            <h3 className="dq-stream-title">{OVERVIEW_COPY.LIVE_EVENT_STREAM}</h3>
+            <span className="dq-stream-tick">{CONTROLS_COPY.tickLabel(tick)}</span>
+          </div>
           {eventStreamIdle ? <p className="dq-note">{OVERVIEW_COPY.EVENTS_IDLE_NOTE}</p> : null}
           <div className="dq-events">
             {
               recentEvents.map((e) => (
                 <div className="dq-event" key={e.id}>
                   <span className="ts">{e.ts}</span>
-                  <span className="badge" style={{ borderColor: `${e.color}66`, color: e.color }}>
+                  <span
+                    className={`badge ${e.type === "HEARTBEAT" ? "badge-heartbeat" : ""}`}
+                    style={{ borderColor: `${e.color}66`, color: e.color }}
+                  >
                     {e.type}
                   </span>
                   <span>{e.topic}{e.count > 1 ? ` x${e.count}` : ""}</span>
