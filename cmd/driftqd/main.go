@@ -83,6 +83,19 @@ func (a topicDebugAdapter) ConsumerLag(ctx context.Context, group string, topic 
 	return li.ConsumerLag(ctx, group, topic)
 }
 
+func (a topicDebugAdapter) MessageStates(ctx context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error) {
+	type messageStateInspector interface {
+		MessageStates(ctx context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error)
+	}
+
+	mi, ok := a.b.(messageStateInspector)
+	if !ok {
+		return nil, errors.New("message state not supported by broker")
+	}
+
+	return mi.MessageStates(ctx, group, topic, status, owner, limit)
+}
+
 func (a topicDebugAdapter) TopicCount(ctx context.Context, topic string) (int64, error) {
 	type topicCounter interface {
 		TopicCount(ctx context.Context, topic string) (int64, error)
