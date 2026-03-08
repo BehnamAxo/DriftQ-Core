@@ -8,6 +8,32 @@ import { loadConsumerLagDetails, buildConsumers } from "../utils/consumers";
 import { buildDashboardEvents } from "../utils/events";
 import { buildTopics } from "../utils/topics";
 
+function normalizeRefreshError(err) {
+  const message = String(err?.message || "").trim();
+  if (!message) {
+    return "refresh failed";
+  }
+
+  if (message === "Failed to fetch" || message.includes("NetworkError")) {
+    return "Disconnected from broker. Retrying...";
+  }
+
+  return message;
+}
+
+function summarizeRefreshErrors(errors) {
+  const unique = Array.from(new Set(errors.filter(Boolean).map(normalizeRefreshError)));
+  if (!unique.length) {
+    return "";
+  }
+
+  if (unique.length === 1) {
+    return unique[0];
+  }
+
+  return unique.join(" | ");
+}
+
 export function useDashboardData(activeTab) {
   const [group, setGroup] = useState("bench");
   const [health, setHealth] = useState("unknown");
@@ -64,7 +90,7 @@ export function useDashboardData(activeTab) {
     async (signal) => {
       const selectedGroup = group.trim() || "bench";
       const errors = [];
-      const [healthRes, versionRes, configRes, topicsRes, lagRes, metricsRes, runsRes] = await Promise.allSettled([
+      const results = await Promise.allSettled([
         getJSON("/v1/healthz", signal),
         getJSON("/v1/version", signal),
         getJSON("/v1/config", signal),
@@ -73,11 +99,14 @@ export function useDashboardData(activeTab) {
         getText("/metrics", signal),
         getJSON("/debug/runs?limit=10", signal)
       ]);
+      const [healthRes, versionRes, configRes, topicsRes, lagRes, metricsRes, runsRes] = results;
+      const successCount = results.filter((result) => result.status === "fulfilled").length;
 
       if (healthRes.status === "fulfilled") {
         setHealth(healthRes.value.status || "unknown");
       } else {
         errors.push(healthRes.reason?.message || "health failed");
+        setHealth(successCount === 0 ? "disconnected" : "degraded");
       }
 
       if (versionRes.status === "fulfilled") {
@@ -219,7 +248,7 @@ export function useDashboardData(activeTab) {
 
       setUpdatedAt(ts);
       setTick((value) => value + 1);
-      setError(errors.join(" | "));
+      setError(summarizeRefreshErrors(errors));
       setLoading(false);
     },
     [activeTab, dlqTopic, group]

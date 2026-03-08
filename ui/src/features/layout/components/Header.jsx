@@ -11,6 +11,22 @@ function displayAddr(config) {
   return configured;
 }
 
+function connectionLabel(health) {
+  if (health === "ok") {
+    return "Connected";
+  }
+
+  if (health === "degraded") {
+    return "Degraded";
+  }
+
+  if (health === "disconnected") {
+    return "Disconnected";
+  }
+
+  return "Connecting";
+}
+
 export default function Header({ version, health, updatedAt, config }) {
   return (
     <header className="dq-header">
@@ -28,9 +44,9 @@ export default function Header({ version, health, updatedAt, config }) {
       </div>
 
       <div className="dq-status-wrap">
-        <span className={`dq-dot ${health === "ok" ? "ok" : "warn"}`} />
-        <span className="dq-status-text">Connected - {displayAddr(config)}</span>
-        <span className="dq-status-text dim">updated {updatedAt}</span>
+        <span className={`dq-dot ${health === "ok" ? "ok" : health === "disconnected" ? "offline" : "warn"}`} />
+        <span className="dq-status-text">{connectionLabel(health)} - {displayAddr(config)}</span>
+        <span className="dq-status-text dim">{health === "ok" ? "updated" : "last update"} {updatedAt}</span>
       </div>
     </header>
   );
