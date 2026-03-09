@@ -437,6 +437,7 @@ body,
   display: grid;
   grid-template-columns: 2fr 1.3fr;
   gap: 16px;
+  margin-bottom: 16px;
 }
 
 .dq-overview-grid {
@@ -471,10 +472,7 @@ body,
 }
 
 .dq-stream-panel {
-  position: relative;
-  background:
-    radial-gradient(circle at top right, #38bdf80f, transparent 42%),
-    #0d1220;
+  background: #0d1220;
 }
 
 .dq-stream-head {
@@ -488,15 +486,15 @@ body,
 .dq-stream-title {
   margin-bottom: 0;
   color: #67e8f9;
-  text-shadow: 0 0 14px #38bdf822;
 }
 
 .dq-stream-tick {
-  color: #7dd3fc;
-  border: 1px solid #38bdf833;
-  background: #38bdf814;
-  border-radius: 999px;
-  padding: 4px 10px;
+  color: #dbeafe;
+  border: 1px solid #2563eb55;
+  background: linear-gradient(135deg, #1d4ed8 0%, #1e3a8a 100%);
+  box-shadow: inset 0 0 0 1px #93c5fd14;
+  border-radius: 10px;
+  padding: 5px 12px;
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -763,8 +761,9 @@ th.right {
 
 .dq-event .badge-heartbeat {
   position: relative;
-  background: linear-gradient(90deg, #64748b10, #38bdf824, #64748b10);
-  box-shadow: 0 0 10px #38bdf81a;
+  overflow: hidden;
+  background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
+  box-shadow: 0 0 0 1px #38bdf826 inset, 0 0 12px #38bdf820;
   animation: dq-heartbeat-pulse 1.8s ease-in-out infinite;
 }
 
@@ -773,7 +772,7 @@ th.right {
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  background: linear-gradient(120deg, transparent 20%, #e0f2fe30 50%, transparent 80%);
+  background: linear-gradient(120deg, transparent 15%, #e0f2fe55 50%, transparent 85%);
   transform: translateX(-140%);
   animation: dq-heartbeat-sheen 2.4s linear infinite;
   pointer-events: none;
