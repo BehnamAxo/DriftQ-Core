@@ -141,66 +141,68 @@ export default function MessagesTab({ group, topics }) {
       </section>
 
       <section className="dq-panel">
-        <table>
-          <thead>
-            <tr>
-              <th>{MESSAGES_COPY.TABLE_HEADERS.TOPIC}</th>
-              <th className="right">{MESSAGES_COPY.TABLE_HEADERS.PARTITION}</th>
-              <th className="right">{MESSAGES_COPY.TABLE_HEADERS.OFFSET}</th>
-              <th>{MESSAGES_COPY.TABLE_HEADERS.STATE}</th>
-              <th>{MESSAGES_COPY.TABLE_HEADERS.OWNER}</th>
-              <th className="right">{MESSAGES_COPY.TABLE_HEADERS.ATTEMPTS}</th>
-              <th>{MESSAGES_COPY.TABLE_HEADERS.LAST_DELIVERY}</th>
-              <th className="right">{MESSAGES_COPY.TABLE_HEADERS.LEASE_AGE}</th>
-              <th>{MESSAGES_COPY.TABLE_HEADERS.ERROR}</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {
-              rows.map((row) => {
-                const id = `${row.topic}:${row.partition}:${row.offset}:${row.state}`;
-                return (
-                  <tr key={id}>
-                    <td>{row.topic}</td>
-                    <td className="right">{fmt(row.partition)}</td>
-                    <td className="right">{fmt(row.offset)}</td>
-                    <td>
-                      <span className={
-                        row.state === MESSAGE_STATE.DEAD_LETTERED ? "red" :
-                        row.state === MESSAGE_STATE.RETRIED ? "amber" :
-                        row.state === MESSAGE_STATE.IN_FLIGHT ? "green" :
-                        row.state === MESSAGE_STATE.ACKED ? "blue" :
-                        "dim"
-                      }>
-                        {row.state}
-                      </span>
-                    </td>
-                    <td>{row.owner || COMMON_TEXT.DASH}</td>
-                    <td className="right">{fmt(row.attempts)}</td>
-                    <td>{row.last_delivered_at_ms ? formatClock(row.last_delivered_at_ms) : COMMON_TEXT.DASH}</td>
-                    <td className={`right ${row.stalled ? "red" : row.lease_age_ms > 0 ? "amber" : "dim"}`}>
-                      {row.lease_age_ms > 0 ? `${fmt(row.lease_age_ms)}ms` : COMMON_TEXT.DASH}
-                    </td>
-                    <td className="dim">{row.last_error || COMMON_TEXT.DASH}</td>
-                    <td className="right">
-                      <button type="button" className="mini-btn" onClick={() => setSelectedID(id)}>
-                        {selectedID === id ? MESSAGES_COPY.INSPECTING : MESSAGES_COPY.INSPECT}
-                      </button>
-                    </td>
+        <div className="dq-messages-table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>{MESSAGES_COPY.TABLE_HEADERS.TOPIC}</th>
+                <th className="right">{MESSAGES_COPY.TABLE_HEADERS.PARTITION}</th>
+                <th className="right">{MESSAGES_COPY.TABLE_HEADERS.OFFSET}</th>
+                <th>{MESSAGES_COPY.TABLE_HEADERS.STATE}</th>
+                <th>{MESSAGES_COPY.TABLE_HEADERS.OWNER}</th>
+                <th className="right">{MESSAGES_COPY.TABLE_HEADERS.ATTEMPTS}</th>
+                <th>{MESSAGES_COPY.TABLE_HEADERS.LAST_DELIVERY}</th>
+                <th className="right">{MESSAGES_COPY.TABLE_HEADERS.LEASE_AGE}</th>
+                <th>{MESSAGES_COPY.TABLE_HEADERS.ERROR}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                rows.map((row) => {
+                  const id = `${row.topic}:${row.partition}:${row.offset}:${row.state}`;
+                  return (
+                    <tr key={id}>
+                      <td>{row.topic}</td>
+                      <td className="right">{fmt(row.partition)}</td>
+                      <td className="right">{fmt(row.offset)}</td>
+                      <td>
+                        <span className={
+                          row.state === MESSAGE_STATE.DEAD_LETTERED ? "red" :
+                          row.state === MESSAGE_STATE.RETRIED ? "amber" :
+                          row.state === MESSAGE_STATE.IN_FLIGHT ? "green" :
+                          row.state === MESSAGE_STATE.ACKED ? "blue" :
+                          "dim"
+                        }>
+                          {row.state}
+                        </span>
+                      </td>
+                      <td>{row.owner || COMMON_TEXT.DASH}</td>
+                      <td className="right">{fmt(row.attempts)}</td>
+                      <td>{row.last_delivered_at_ms ? formatClock(row.last_delivered_at_ms) : COMMON_TEXT.DASH}</td>
+                      <td className={`right ${row.stalled ? "red" : row.lease_age_ms > 0 ? "amber" : "dim"}`}>
+                        {row.lease_age_ms > 0 ? `${fmt(row.lease_age_ms)}ms` : COMMON_TEXT.DASH}
+                      </td>
+                      <td className="dim">{row.last_error || COMMON_TEXT.DASH}</td>
+                      <td className="right">
+                        <button type="button" className="mini-btn" onClick={() => setSelectedID(id)}>
+                          {selectedID === id ? MESSAGES_COPY.INSPECTING : MESSAGES_COPY.INSPECT}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              }
+              {
+                !rows.length ? (
+                  <tr>
+                    <td colSpan={10}>{loading ? MESSAGES_COPY.LOADING_STATE : MESSAGES_COPY.NO_MATCHING_MESSAGES}</td>
                   </tr>
-                );
-              })
-            }
-            {
-              !rows.length ? (
-                <tr>
-                  <td colSpan={10}>{loading ? MESSAGES_COPY.LOADING_STATE : MESSAGES_COPY.NO_MATCHING_MESSAGES}</td>
-                </tr>
-              ) : null
-            }
-          </tbody>
-        </table>
+                ) : null
+              }
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="dq-panel">

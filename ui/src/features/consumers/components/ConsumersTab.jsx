@@ -260,14 +260,14 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
 
   return (
     <div className="dq-stack">
-      <section className="dq-grid">
+      <section className="dq-grid dq-consumer-groups">
         {consumers.map((c) => (
-          <div className={`dq-panel ${activeGroup?.group === c.group ? "selected" : ""}`} key={c.group}>
+          <div className={`dq-panel dq-consumer-group-card ${activeGroup?.group === c.group ? "selected" : ""}`} key={c.group}>
             <div className="row">
               <strong>{c.group}</strong>
               <span className={c.status === CONSUMER_STATUS.CONNECTED ? "green" : c.status === CONSUMER_STATUS.BACKLOG ? "amber" : "dim"}>{c.status}</span>
             </div>
-            <div className="tags">
+            <div className="tags dq-consumer-topic-tags">
               {
                 c.topics.map((t) => (
                   <span key={t}>{t}</span>
@@ -319,94 +319,98 @@ export default function ConsumersTab({ consumers, onConsumerChanged }) {
         {
           activeGroup ? (
             <div className="dq-stack">
-              <div className="dq-grid compact">
-                {
-                  activeGroup.topicSummaries.map((topic) => (
-                    <div className="dq-panel topic" key={topic.topic}>
-                      <div className="row">
-                        <strong>{topic.topic}</strong>
-                        <span>{fmt(topic.partitions)} {CONSUMERS_COPY.PARTITIONS}</span>
-                      </div>
-                      <div className="mini-grid">
-                        <div>
-                          <b>{fmt(topic.lag)}</b>
-                          <small>{CONSUMERS_COPY.LAG}</small>
-                        </div>
-                        <div>
-                          <b>{fmt(topic.inflight)}</b>
-                          <small>{CONSUMERS_COPY.INFLIGHT}</small>
-                        </div>
-                        <div>
-                          <b>{fmt(topic.committed)}</b>
-                          <small>{CONSUMERS_COPY.TABLE_HEADERS.COMMITTED}</small>
-                        </div>
-                        <div>
-                          <b>{fmt(topic.head)}</b>
-                          <small>{CONSUMERS_COPY.TABLE_HEADERS.HEAD}</small>
-                        </div>
-                      </div>
-                      <div className="tags">
-                        {topic.owners.length ? topic.owners.map((ownerName) => <span key={`${topic.topic}-${ownerName}`}>{ownerName}</span>) : <span>{CONSUMERS_COPY.NO_ACTIVE_OWNER}</span>}
-                        <span>{CONSUMERS_COPY.LAST_DELIVERY_PREFIX} {topic.lastDeliveredAt ? formatClock(topic.lastDeliveredAt) : COMMON_TEXT.DASH}</span>
-                      </div>
-                    </div>
-                  ))
-                }
-              </div>
-
-              <table>
-                <thead>
-                  <tr>
-                    <th>{CONSUMERS_COPY.TABLE_HEADERS.TOPIC}</th>
-                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.PARTITION}</th>
-                    <th>{CONSUMERS_COPY.TABLE_HEADERS.OWNER}</th>
-                    <th>{CONSUMERS_COPY.TABLE_HEADERS.LAST_DELIVERY}</th>
-                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.LEASE_AGE}</th>
-                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.HEAD}</th>
-                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.COMMITTED}</th>
-                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.LAG}</th>
-                    <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.INFLIGHT}</th>
-                    <th>{CONSUMERS_COPY.TABLE_HEADERS.STATE}</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="dq-consumer-topic-grid-scroll">
+                <div className="dq-grid compact dq-consumer-topic-grid">
                   {
-                    activeGroup.rows.map((row) => (
-                      <tr key={`${row.topic}:${row.partition}`}>
-                        <td>{row.topic}</td>
-                        <td className="right">{fmt(row.partition)}</td>
-                        <td>{row.leaseOwners.join(", ") || row.lastOwner || COMMON_TEXT.DASH}</td>
-                        <td>{row.lastDeliveredAt ? formatClock(row.lastDeliveredAt) : COMMON_TEXT.DASH}</td>
-                        <td className={`right ${row.stalled ? "red" : row.oldestLeaseAge > 0 ? "amber" : "dim"}`}>
-                          {row.oldestLeaseAge > 0 ? `${fmt(row.oldestLeaseAge)}ms` : COMMON_TEXT.DASH}
-                        </td>
-                        <td className="right">{fmt(row.headOffset)}</td>
-                        <td className="right">{fmt(row.committedOffset)}</td>
-                        <td className={`right ${row.lag > 0 ? "amber" : "green2"}`}>{fmt(row.lag)}</td>
-                        <td className={`right ${row.inflight > 0 ? "green" : "dim"}`}>{fmt(row.inflight)}</td>
-                        <td>
-                          {
-                            row.stalled
-                            ? <span className="red">{CONSUMERS_COPY.STATE_LABELS.STALLED}</span>
-                            : row.inflight > 0
-                              ? <span className="green">{CONSUMERS_COPY.STATE_LABELS.LEASED}</span>
-                              : row.lag > 0
-                                ? <span className="amber">{CONSUMERS_COPY.STATE_LABELS.WAITING}</span>
-                                : <span className="dim">{CONSUMERS_COPY.STATE_LABELS.CAUGHT_UP}</span>
-                          }
-                        </td>
-                      </tr>
+                    activeGroup.topicSummaries.map((topic) => (
+                      <div className="dq-panel topic dq-consumer-topic-card" key={topic.topic}>
+                        <div className="row">
+                          <strong>{topic.topic}</strong>
+                          <span>{fmt(topic.partitions)} {CONSUMERS_COPY.PARTITIONS}</span>
+                        </div>
+                        <div className="mini-grid dq-consumer-mini-grid">
+                          <div>
+                            <b>{fmt(topic.lag)}</b>
+                            <small>{CONSUMERS_COPY.LAG}</small>
+                          </div>
+                          <div>
+                            <b>{fmt(topic.inflight)}</b>
+                            <small>{CONSUMERS_COPY.INFLIGHT}</small>
+                          </div>
+                          <div>
+                            <b>{fmt(topic.committed)}</b>
+                            <small>{CONSUMERS_COPY.TABLE_HEADERS.COMMITTED}</small>
+                          </div>
+                          <div>
+                            <b>{fmt(topic.head)}</b>
+                            <small>{CONSUMERS_COPY.TABLE_HEADERS.HEAD}</small>
+                          </div>
+                        </div>
+                        <div className="tags dq-consumer-topic-tags">
+                          {topic.owners.length ? topic.owners.map((ownerName) => <span key={`${topic.topic}-${ownerName}`}>{ownerName}</span>) : <span>{CONSUMERS_COPY.NO_ACTIVE_OWNER}</span>}
+                          <span>{CONSUMERS_COPY.LAST_DELIVERY_PREFIX} {topic.lastDeliveredAt ? formatClock(topic.lastDeliveredAt) : COMMON_TEXT.DASH}</span>
+                        </div>
+                      </div>
                     ))
                   }
-                  {
-                    activeGroup.rows.length === 0 ? (
-                      <tr>
-                        <td colSpan={10}>{CONSUMERS_COPY.NO_PARTITION_DETAIL}</td>
-                      </tr>
-                    ) : null
-                  }
-                </tbody>
-              </table>
+                </div>
+              </div>
+
+              <div className="dq-consumer-table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{CONSUMERS_COPY.TABLE_HEADERS.TOPIC}</th>
+                      <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.PARTITION}</th>
+                      <th>{CONSUMERS_COPY.TABLE_HEADERS.OWNER}</th>
+                      <th>{CONSUMERS_COPY.TABLE_HEADERS.LAST_DELIVERY}</th>
+                      <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.LEASE_AGE}</th>
+                      <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.HEAD}</th>
+                      <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.COMMITTED}</th>
+                      <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.LAG}</th>
+                      <th className="right">{CONSUMERS_COPY.TABLE_HEADERS.INFLIGHT}</th>
+                      <th>{CONSUMERS_COPY.TABLE_HEADERS.STATE}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {
+                      activeGroup.rows.map((row) => (
+                        <tr key={`${row.topic}:${row.partition}`}>
+                          <td>{row.topic}</td>
+                          <td className="right">{fmt(row.partition)}</td>
+                          <td>{row.leaseOwners.join(", ") || row.lastOwner || COMMON_TEXT.DASH}</td>
+                          <td>{row.lastDeliveredAt ? formatClock(row.lastDeliveredAt) : COMMON_TEXT.DASH}</td>
+                          <td className={`right ${row.stalled ? "red" : row.oldestLeaseAge > 0 ? "amber" : "dim"}`}>
+                            {row.oldestLeaseAge > 0 ? `${fmt(row.oldestLeaseAge)}ms` : COMMON_TEXT.DASH}
+                          </td>
+                          <td className="right">{fmt(row.headOffset)}</td>
+                          <td className="right">{fmt(row.committedOffset)}</td>
+                          <td className={`right ${row.lag > 0 ? "amber" : "green2"}`}>{fmt(row.lag)}</td>
+                          <td className={`right ${row.inflight > 0 ? "green" : "dim"}`}>{fmt(row.inflight)}</td>
+                          <td>
+                            {
+                              row.stalled
+                              ? <span className="red">{CONSUMERS_COPY.STATE_LABELS.STALLED}</span>
+                              : row.inflight > 0
+                                ? <span className="green">{CONSUMERS_COPY.STATE_LABELS.LEASED}</span>
+                                : row.lag > 0
+                                  ? <span className="amber">{CONSUMERS_COPY.STATE_LABELS.WAITING}</span>
+                                  : <span className="dim">{CONSUMERS_COPY.STATE_LABELS.CAUGHT_UP}</span>
+                            }
+                          </td>
+                        </tr>
+                      ))
+                    }
+                    {
+                      activeGroup.rows.length === 0 ? (
+                        <tr>
+                          <td colSpan={10}>{CONSUMERS_COPY.NO_PARTITION_DETAIL}</td>
+                        </tr>
+                      ) : null
+                    }
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : (
             <p className="dq-note">{CONSUMERS_COPY.NO_CONSUMER_GROUPS}</p>

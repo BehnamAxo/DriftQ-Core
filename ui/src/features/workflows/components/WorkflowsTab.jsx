@@ -447,6 +447,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                     <label className="dq-input-stack small">
                       <span>{WORKFLOWS_COPY.REPLAY_FROM}</span>
                       <select
+                        className="dq-select"
                         value={replayFrom}
                         onChange={(e) => {
                           const nextStep = e.target.value;
@@ -465,6 +466,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                     <label className="dq-input-stack small">
                       <span>{WORKFLOWS_COPY.REPLAY_MODE}</span>
                       <select
+                        className="dq-select"
                         value={replayMode[r.id] || WORKFLOW_REPLAY_MODE.TIME_TRAVEL}
                         onChange={(e) => setReplayMode((prev) => ({ ...prev, [r.id]: e.target.value }))}
                         disabled={replayingRunID === r.id}
