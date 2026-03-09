@@ -7,6 +7,12 @@
 
 If you only want the broker, you can ignore v2. If you want "Temporal-like" durability + replay, v2 is where this is going. 🙂
 
+<p align="center">
+  <img src="docs/assets/ui-dashboard.png" alt="DriftQ Dashboard" width="1200" />
+  <br />
+  <em>Built-in dashboard at <code>localhost:8080/ui/</code> — zero setup, ships inside the same binary.</em>
+</p>
+
 <a id="toc"></a>
 
 ## Table of contents
@@ -17,6 +23,7 @@ If you only want the broker, you can ignore v2. If you want "Temporal-like" dura
   - [Do this next: broker "Hello World"](#broker-hello-world)
   - [Optional: v2 demo in 60 seconds](#v2-demo-60s)
   - [Common gotchas](#common-gotchas)
+- [Dashboard UI](#dashboard-ui)
 - [driftqctl (CLI)](#driftqctl-cli-)
 - [API Surface](#api-surface)
 - [Development](#development)
@@ -142,6 +149,12 @@ curl http://127.0.0.1:8080/v1/healthz
 Windows PowerShell:
 ```powershell
 curl.exe http://127.0.0.1:8080/v1/healthz
+```
+
+The Docker image includes the built dashboard UI, so you can also open:
+
+```text
+http://127.0.0.1:8080/ui/
 ```
 
 
@@ -430,11 +443,21 @@ Full reference: `docs/v2/v2-README.md`
 go run ./cmd/driftqd
 ```
 
+<a id="dashboard-ui"></a>
+
 ### Dashboard UI (`/ui/`)
 
 The dashboard is optional and served by the same `driftqd` HTTP server when `ui/dist` assets are available on disk.
 
-`driftqd` runs fine without UI assets. If assets are missing, `/ui/` returns 404.
+`driftqd` runs fine without UI assets. If `ui/dist` does not exist, `/ui/` returns 404 and only the API/debug routes are available.
+
+If you are running from source, build the UI before starting the broker:
+
+```bash
+npm ci --prefix ui
+npm run build --prefix ui
+go run ./cmd/driftqd
+```
 
 Build UI assets locally:
 
