@@ -957,6 +957,58 @@ th.right {
   background: #0d1220;
 }
 
+.dq-message-counts {
+  margin-top: 20px;
+  gap: 8px;
+}
+
+.dq-message-count-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 1px #ffffff03;
+}
+
+.dq-message-count-chip.queued {
+  color: #dbeafe;
+  background: linear-gradient(180deg, #3341558f 0%, #1e293bcc 100%);
+  border-color: #64748b55;
+}
+
+.dq-message-count-chip.inflight {
+  color: #99f6e4;
+  background: linear-gradient(180deg, #0f766e33 0%, #134e4a99 100%);
+  border-color: #2dd4bf44;
+}
+
+.dq-message-count-chip.acked {
+  color: #93c5fd;
+  background: linear-gradient(180deg, #1d4ed833 0%, #17255499 100%);
+  border-color: #60a5fa44;
+}
+
+.dq-message-count-chip.retried {
+  color: #fde68a;
+  background: linear-gradient(180deg, #92400e33 0%, #451a03a6 100%);
+  border-color: #fbbf2444;
+}
+
+.dq-message-count-chip.dead {
+  color: #fda4af;
+  background: linear-gradient(180deg, #7f1d1d33 0%, #3f0d12a6 100%);
+  border-color: #fb718544;
+}
+
+.dq-message-count-chip.total {
+  color: #c4b5fd;
+  background: linear-gradient(180deg, #4338ca33 0%, #312e81a6 100%);
+  border-color: #a78bfa44;
+}
+
 .dq-panel.topic .row,
 .dq-panel .row {
   display: flex;

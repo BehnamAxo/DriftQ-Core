@@ -130,13 +130,13 @@ export default function MessagesTab({ group, topics }) {
 
         {error ? <div className="dq-error compact">{error}</div> : null}
 
-        <div className="tags top-gap">
-          <span>{MESSAGES_COPY.COUNTS.QUEUED} {fmt(counts[MESSAGE_STATE.QUEUED])}</span>
-          <span>{MESSAGES_COPY.COUNTS.IN_FLIGHT} {fmt(counts[MESSAGE_STATE.IN_FLIGHT])}</span>
-          <span>{MESSAGES_COPY.COUNTS.ACKED} {fmt(counts[MESSAGE_STATE.ACKED])}</span>
-          <span>{MESSAGES_COPY.COUNTS.RETRIED} {fmt(counts[MESSAGE_STATE.RETRIED])}</span>
-          <span>{MESSAGES_COPY.COUNTS.DEAD_LETTERED} {fmt(counts[MESSAGE_STATE.DEAD_LETTERED])}</span>
-          <span>{loading ? COMMON_TEXT.REFRESHING : `${fmt(rows.length)} ${MESSAGES_COPY.COUNTS.ROWS}`}</span>
+        <div className="tags top-gap dq-message-counts">
+          <span className="dq-message-count-chip queued">{MESSAGES_COPY.COUNTS.QUEUED} {fmt(counts[MESSAGE_STATE.QUEUED])}</span>
+          <span className="dq-message-count-chip inflight">{MESSAGES_COPY.COUNTS.IN_FLIGHT} {fmt(counts[MESSAGE_STATE.IN_FLIGHT])}</span>
+          <span className="dq-message-count-chip acked">{MESSAGES_COPY.COUNTS.ACKED} {fmt(counts[MESSAGE_STATE.ACKED])}</span>
+          <span className="dq-message-count-chip retried">{MESSAGES_COPY.COUNTS.RETRIED} {fmt(counts[MESSAGE_STATE.RETRIED])}</span>
+          <span className="dq-message-count-chip dead">{MESSAGES_COPY.COUNTS.DEAD_LETTERED} {fmt(counts[MESSAGE_STATE.DEAD_LETTERED])}</span>
+          <span className="dq-message-count-chip total">{loading ? COMMON_TEXT.REFRESHING : `${fmt(rows.length)} ${MESSAGES_COPY.COUNTS.ROWS}`}</span>
         </div>
       </section>
 
