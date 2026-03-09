@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
@@ -82,6 +83,9 @@ func (b *InMemoryBroker) redeliverExpiredLocked() {
 					// If it timed out without an explicit Nack, record ack_timeout as last_error
 					if e.LastError == "" {
 						e.LastError = "ack_timeout"
+						if b.metrics != nil {
+							b.metrics.IncLeaseTimeout(topic, group)
+						}
 
 						m := e.Msg
 						m.LastError = e.LastError
@@ -270,7 +274,17 @@ func (b *InMemoryBroker) redeliverExpiredLocked() {
 
 					// update inflight bookkeeping (source of truth)
 					e.SentAt = now
+					b.recordDeliveryLocked(topic, group, partition, cs.Owner, now)
 					e.Attempts++
+					if b.metrics != nil {
+						cause := "retry"
+						if strings.Contains(e.LastError, "ack_timeout") {
+							cause = "ack_timeout"
+						} else if strings.TrimSpace(e.LastError) != "" {
+							cause = "nack"
+						}
+						b.metrics.IncRedelivery(topic, group, cause)
+					}
 
 					// Backoff scheduling (for next retry eligibility)
 					if rp != nil && (rp.BackoffMs > 0 || rp.MaxBackoffMs > 0) {

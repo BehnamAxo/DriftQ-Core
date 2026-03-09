@@ -14,4 +14,11 @@ type ConsumerLagRow struct {
 	CommittedOffset int64  `json:"committed_offset"`
 	Inflight        int64  `json:"inflight"`
 	Lag             int64  `json:"lag"`
+	LeaseOwners     []string `json:"lease_owners,omitempty"`
+	LastOwner       string   `json:"last_owner,omitempty"`
+	LastDeliveredAt int64    `json:"last_delivered_at_ms,omitempty"`
+	OldestLeaseAge  int64    `json:"oldest_lease_age_ms,omitempty"`
+	LeaseDurationMs int64    `json:"lease_duration_ms,omitempty"`
+	LeaseExpiresAt  int64    `json:"lease_expires_at_ms,omitempty"`
+	Stalled         bool     `json:"stalled,omitempty"`
 }

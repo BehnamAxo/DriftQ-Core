@@ -20,7 +20,24 @@ func newV1TestServer(t *testing.T) (*httptest.Server, *broker.InMemoryBroker) {
 	t.Helper()
 
 	b := broker.NewInMemoryBroker()
-	s := &server{broker: b}
+	s := &server{
+		broker: b,
+		config: v1.ConfigResponse{
+			Addr:              ":8080",
+			WalPath:           "./driftq.wal",
+			AccessLog:         true,
+			EngineStore:       "memory",
+			EngineWAL:         "segment",
+			ArtifactsDir:      ".artifacts",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			MaxPartitionBytes: b.MaxPartitionBytes(),
+			MaxPartitionMsgs:  b.MaxPartitionMsgs(),
+			MaxInFlight:       b.MaxInFlight(),
+			WALSyncInterval:   "250ms",
+			WALBufferBytes:    262144,
+		},
+	}
 
 	rootMux := http.NewServeMux()
 	v1Mux := http.NewServeMux()
@@ -33,6 +50,7 @@ func newV1TestServer(t *testing.T) (*httptest.Server, *broker.InMemoryBroker) {
 	v1Mux.HandleFunc("/nack", s.requireMethod(http.MethodPost)(s.handleNack))
 	v1Mux.HandleFunc("/topics", s.method(s.handleTopicsList, s.handleTopicsCreate))
 	v1Mux.HandleFunc("/version", s.requireMethod(http.MethodGet)(s.handleVersion))
+	v1Mux.HandleFunc("/config", s.requireMethod(http.MethodGet)(s.handleConfig))
 
 	rootMux.Handle("/v1/", http.StripPrefix("/v1", v1Mux))
 	rootMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +132,38 @@ func TestV1_Healthz_And_MethodNotAllowed(t *testing.T) {
 	errBody := mustDecodeJSON[v1.ErrorResponse](t, resp2.Body)
 	if errBody.Error != "METHOD_NOT_ALLOWED" {
 		t.Fatalf("error=%q want=%q", errBody.Error, "METHOD_NOT_ALLOWED")
+	}
+}
+
+func TestV1_Config(t *testing.T) {
+	ts, _ := newV1TestServer(t)
+
+	resp, err := http.Get(ts.URL + "/v1/config")
+	if err != nil {
+		t.Fatalf("GET /v1/config: %v", err)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want=%d", resp.StatusCode, http.StatusOK)
+	}
+
+	got := mustDecodeJSON[v1.ConfigResponse](t, resp.Body)
+	if got.Addr != ":8080" {
+		t.Fatalf("addr=%q want=%q", got.Addr, ":8080")
+	}
+
+	if got.WalPath != "./driftq.wal" {
+		t.Fatalf("wal_path=%q want=%q", got.WalPath, "./driftq.wal")
+	}
+
+	if got.EngineStore != "memory" {
+		t.Fatalf("engine_store=%q want=%q", got.EngineStore, "memory")
+	}
+
+	if got.MaxInFlight <= 0 {
+		t.Fatalf("max_inflight=%d want > 0", got.MaxInFlight)
 	}
 }
 

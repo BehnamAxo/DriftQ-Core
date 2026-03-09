@@ -1,8 +1,21 @@
 # syntax=docker/dockerfile:1.7
 
+ARG NODE_VERSION=20-alpine
+ARG GO_VERSION=1.25-alpine
+
+# UI builder
+FROM node:${NODE_VERSION} AS ui-build
+
+WORKDIR /ui
+
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+
+COPY ui ./
+RUN npm run build
+
 # Builder
-ARG GO_VERSION=1.25
-FROM golang:${GO_VERSION}-bookworm AS build
+FROM golang:${GO_VERSION} AS build
 
 WORKDIR /src
 
@@ -25,10 +38,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 RUN mkdir -p /out/data && chown 65532:65532 /out/data && chmod 0755 /out/data
 
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build --chown=65532:65532 /out/driftqd /driftqd
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=ui-build --chown=65532:65532 /ui/dist /ui/dist
 
 EXPOSE 8080
 

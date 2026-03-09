@@ -14,6 +14,11 @@ type inflightEntry struct {
 	Owner         string
 }
 
+type deliverySnapshot struct {
+	Owner string
+	At    time.Time
+}
+
 // Note: This is for test. This is my "do nothing" brain. It lets me plug something in without changing behavior
 type NoopRouter struct{}
 

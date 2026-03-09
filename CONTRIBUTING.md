@@ -36,6 +36,8 @@ DriftQ-Core has two tracks:
 
 ### Unit tests
 ```bash
+npm ci --prefix ui
+npm run build --prefix ui
 go test ./... -count=1
 ```
 

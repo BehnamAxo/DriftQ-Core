@@ -21,10 +21,12 @@ import (
 	"time"
 
 	"github.com/driftq-org/DriftQ-Core/internal/broker"
+	"github.com/driftq-org/DriftQ-Core/internal/debugtypes"
 	"github.com/driftq-org/DriftQ-Core/internal/engine"
 	v1 "github.com/driftq-org/DriftQ-Core/internal/httpapi/v1"
 	"github.com/driftq-org/DriftQ-Core/internal/multiagent"
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
+	ui "github.com/driftq-org/DriftQ-Core/ui"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -36,6 +38,7 @@ var (
 
 type server struct {
 	broker broker.Broker
+	config v1.ConfigResponse
 }
 
 type topicDebugAdapter struct {
@@ -53,6 +56,11 @@ type statusRecorder struct {
 type promSink struct {
 	produceRejected *prometheus.CounterVec
 	dlqTotal        *prometheus.CounterVec
+	topicsCreated   *prometheus.CounterVec
+	acksTotal       *prometheus.CounterVec
+	nacksTotal      *prometheus.CounterVec
+	leaseTimeouts   *prometheus.CounterVec
+	redeliveries    *prometheus.CounterVec
 	walAppend       *prometheus.HistogramVec
 	dispatch        prometheus.Histogram
 	dispatchStaged  prometheus.Counter
@@ -62,12 +70,94 @@ func (a topicDebugAdapter) ListTopics() ([]string, error) {
 	return a.b.ListTopics(context.Background())
 }
 
+func (a topicDebugAdapter) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
+	type consumerLagInspector interface {
+		ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error)
+	}
+
+	li, ok := a.b.(consumerLagInspector)
+	if !ok {
+		return nil, errors.New("lag not supported by broker")
+	}
+
+	return li.ConsumerLag(ctx, group, topic)
+}
+
+func (a topicDebugAdapter) MessageStates(ctx context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error) {
+	type messageStateInspector interface {
+		MessageStates(ctx context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error)
+	}
+
+	mi, ok := a.b.(messageStateInspector)
+	if !ok {
+		return nil, errors.New("message state not supported by broker")
+	}
+
+	return mi.MessageStates(ctx, group, topic, status, owner, limit)
+}
+
+func (a topicDebugAdapter) TopicCount(ctx context.Context, topic string) (int64, error) {
+	type topicCounter interface {
+		TopicCount(ctx context.Context, topic string) (int64, error)
+	}
+
+	tc, ok := a.b.(topicCounter)
+	if !ok {
+		return 0, errors.New("topic count not supported by broker")
+	}
+
+	return tc.TopicCount(ctx, topic)
+}
+
+func (a topicDebugAdapter) Peek(topic string, limit int) ([]any, error) {
+	type topicPeeker interface {
+		Peek(topic string, limit int) ([]any, error)
+	}
+
+	pk, ok := a.b.(topicPeeker)
+	if !ok {
+		return nil, errors.New("peek not supported by broker")
+	}
+
+	return pk.Peek(topic, limit)
+}
+
 func (p *promSink) IncProduceRejected(reason string) {
 	p.produceRejected.WithLabelValues(reason).Inc()
 }
 
 func (p *promSink) IncDLQ(topic, reason string) {
 	p.dlqTotal.WithLabelValues(topic, reason).Inc()
+}
+
+func (p *promSink) IncTopicCreated(topic string) {
+	if p.topicsCreated != nil {
+		p.topicsCreated.WithLabelValues(topic).Inc()
+	}
+}
+
+func (p *promSink) IncAck(topic, group string) {
+	if p.acksTotal != nil {
+		p.acksTotal.WithLabelValues(topic, group).Inc()
+	}
+}
+
+func (p *promSink) IncNack(topic, group, reason string) {
+	if p.nacksTotal != nil {
+		p.nacksTotal.WithLabelValues(topic, group, reason).Inc()
+	}
+}
+
+func (p *promSink) IncLeaseTimeout(topic, group string) {
+	if p.leaseTimeouts != nil {
+		p.leaseTimeouts.WithLabelValues(topic, group).Inc()
+	}
+}
+
+func (p *promSink) IncRedelivery(topic, group, cause string) {
+	if p.redeliveries != nil {
+		p.redeliveries.WithLabelValues(topic, group, cause).Inc()
+	}
 }
 
 func (p *promSink) ObserveWALAppend(kind string, d time.Duration) {
@@ -336,6 +426,46 @@ func main() {
 		[]string{"topic", "reason"},
 	)
 
+	topicsCreated := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "topic_created_total",
+			Help: "Total number of topics created.",
+		},
+		[]string{"topic"},
+	)
+
+	acksTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_acks_total",
+			Help: "Total number of successful message acknowledgements.",
+		},
+		[]string{"topic", "group"},
+	)
+
+	nacksTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_nacks_total",
+			Help: "Total number of explicit message nacks.",
+		},
+		[]string{"topic", "group", "reason"},
+	)
+
+	leaseTimeouts := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_lease_timeouts_total",
+			Help: "Total number of message lease timeouts detected by redelivery.",
+		},
+		[]string{"topic", "group"},
+	)
+
+	redeliveries := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "message_redeliveries_total",
+			Help: "Total number of broker redeliveries.",
+		},
+		[]string{"topic", "group", "cause"},
+	)
+
 	walAppend := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "broker_wal_append_duration_seconds",
@@ -360,11 +490,28 @@ func main() {
 		},
 	)
 
-	prometheus.MustRegister(produceRejected, dlqTotal, walAppend, dispatch, dispatchStaged, NewBrokerCollector(b))
+	prometheus.MustRegister(
+		produceRejected,
+		dlqTotal,
+		topicsCreated,
+		acksTotal,
+		nacksTotal,
+		leaseTimeouts,
+		redeliveries,
+		walAppend,
+		dispatch,
+		dispatchStaged,
+		NewBrokerCollector(b),
+	)
 
 	b.SetMetricsSink(&promSink{
 		produceRejected: produceRejected,
 		dlqTotal:        dlqTotal,
+		topicsCreated:   topicsCreated,
+		acksTotal:       acksTotal,
+		nacksTotal:      nacksTotal,
+		leaseTimeouts:   leaseTimeouts,
+		redeliveries:    redeliveries,
 		walAppend:       walAppend,
 		dispatch:        dispatch,
 		dispatchStaged:  dispatchStaged,
@@ -412,7 +559,24 @@ func main() {
 		)
 	}
 
-	s := &server{broker: b}
+	s := &server{
+		broker: b,
+		config: v1.ConfigResponse{
+			Addr:              *addr,
+			WalPath:           *walPath,
+			AccessLog:         *accessLog,
+			EngineStore:       strings.ToLower(strings.TrimSpace(*engineStore)),
+			EngineWAL:         *engineWAL,
+			ArtifactsDir:      *artifactsDir,
+			LogLevel:          strings.ToLower(strings.TrimSpace(*logLevel)),
+			LogFormat:         strings.ToLower(strings.TrimSpace(*logFormat)),
+			MaxPartitionBytes: b.MaxPartitionBytes(),
+			MaxPartitionMsgs:  b.MaxPartitionMsgs(),
+			MaxInFlight:       b.MaxInFlight(),
+			WALSyncInterval:   walSyncInterval.String(),
+			WALBufferBytes:    *walBufferBytes,
+		},
+	}
 
 	// v2 runner store (memory or durable file WAL)
 	var runStore engine.Store
@@ -514,9 +678,13 @@ func main() {
 	v1Mux.HandleFunc("/nack", s.requireMethod(http.MethodPost)(s.handleNack))
 	v1Mux.HandleFunc("/topics", s.method(s.handleTopicsList, s.handleTopicsCreate))
 	v1Mux.HandleFunc("/version", s.requireMethod(http.MethodGet)(s.handleVersion))
+	v1Mux.HandleFunc("/config", s.requireMethod(http.MethodGet)(s.handleConfig))
 
 	// mount v1 under /v1/*
 	rootMux.Handle("/v1/", http.StripPrefix("/v1", v1Mux))
+	// Optional dashboard UI
+	rootMux.Handle("/ui", http.RedirectHandler("/ui/", http.StatusPermanentRedirect))
+	rootMux.Handle("/ui/", ui.Handler())
 	// Prometheus scrape endpoint (not versioned yet)
 	rootMux.Handle("/metrics", promhttp.Handler())
 
@@ -654,6 +822,15 @@ func (s *server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		Commit:     commit,
 		WalEnabled: walOn,
 	})
+}
+
+func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		v1.MethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	v1.WriteJSON(w, http.StatusOK, s.config)
 }
 
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {

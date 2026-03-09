@@ -763,6 +763,9 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 	type consumerLagInspector interface {
 		ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error)
 	}
+	type messageStateInspector interface {
+		MessageStates(ctx context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error)
+	}
 
 	mux.HandleFunc("/debug/topics/lag", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -836,6 +839,58 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 			"group": group,
 			"topic": topic,
 			"rows":  out,
+		})
+	})
+
+	mux.HandleFunc("/debug/messages/state", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		group := strings.TrimSpace(r.URL.Query().Get("group"))
+		if group == "" {
+			http.Error(w, "missing group", http.StatusBadRequest)
+			return
+		}
+
+		topic := strings.TrimSpace(r.URL.Query().Get("topic"))
+		status := strings.TrimSpace(r.URL.Query().Get("status"))
+		owner := strings.TrimSpace(r.URL.Query().Get("owner"))
+
+		limit := 100
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				http.Error(w, "invalid limit", http.StatusBadRequest)
+				return
+			}
+			limit = n
+		}
+
+		mi, ok := b.(messageStateInspector)
+		if !ok {
+			http.Error(w, "message state not supported by broker", http.StatusNotImplemented)
+			return
+		}
+
+		rows, err := mi.MessageStates(r.Context(), group, topic, status, owner, limit)
+		if err != nil {
+			http.Error(w, "message state failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{
+			"ok":     true,
+			"group":  group,
+			"topic":  topic,
+			"status": status,
+			"owner":  owner,
+			"rows":   rows,
 		})
 	})
 

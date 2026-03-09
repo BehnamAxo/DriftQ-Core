@@ -119,6 +119,9 @@ type InMemoryBroker struct {
 	// topic -> group -> partition -> next index in ts.partitions[partition] to attempt dispatch
 	nextIndex map[string]map[string]map[int]int
 
+	// topic -> group -> partition -> last observed delivery for this partition/group
+	lastDelivery map[string]map[string]map[int]deliverySnapshot
+
 	wal    storage.WAL
 	router Router // If nil, "no brain configured"
 
@@ -305,10 +308,262 @@ func (b *InMemoryBroker) Close() error {
 }
 
 func (b *InMemoryBroker) ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error) {
-	if b.lag == nil {
-		return nil, nil
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	now := time.Now()
+
+	topics := make([]string, 0, len(b.topics))
+	if topic != "" {
+		if _, ok := b.topics[topic]; !ok {
+			return []debugtypes.ConsumerLagRow{}, nil
+		}
+		topics = append(topics, topic)
+	} else {
+		for name := range b.topics {
+			topics = append(topics, name)
+		}
+		sort.Strings(topics)
 	}
-	return b.lag.Snapshot(group, topic), nil
+
+	out := make([]debugtypes.ConsumerLagRow, 0)
+	for _, name := range topics {
+		ts, ok := b.topics[name]
+		if !ok {
+			continue
+		}
+
+		for partition := 0; partition < len(ts.partitions); partition++ {
+			// Internal offsets are "last acked"; debug API exposes "next to deliver".
+			rawCommitted := int64(-1)
+			if byGroup, ok := b.consumerOffsets[name]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					if off, ok := byPart[partition]; ok {
+						rawCommitted = off
+					}
+				}
+			}
+			committed := rawCommitted + 1
+			if committed < 0 {
+				committed = 0
+			}
+
+			inflight := int64(0)
+			if byGroup, ok := b.inFlight[name]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					if byOff, ok := byPart[partition]; ok {
+						inflight = int64(len(byOff))
+					}
+				}
+			}
+
+			leaseOwners, oldestLeaseAge, leaseDurationMs, leaseExpiresAt, stalled := b.partitionLeaseSnapshotLocked(name, group, partition, now)
+			lastOwner := ""
+			lastDeliveredAt := int64(0)
+			if byGroup, ok := b.lastDelivery[name]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					if snap, ok := byPart[partition]; ok {
+						lastOwner = snap.Owner
+						if !snap.At.IsZero() {
+							lastDeliveredAt = snap.At.UnixMilli()
+						}
+					}
+				}
+			}
+
+			head := int64(len(ts.partitions[partition]))
+			lag := head - committed
+			if lag < 0 {
+				lag = 0
+			}
+
+			out = append(out, debugtypes.ConsumerLagRow{
+				Group:           group,
+				Topic:           name,
+				Partition:       partition,
+				HeadOffset:      head,
+				CommittedOffset: committed,
+				Inflight:        inflight,
+				Lag:             lag,
+				LeaseOwners:     leaseOwners,
+				LastOwner:       lastOwner,
+				LastDeliveredAt: lastDeliveredAt,
+				OldestLeaseAge:  oldestLeaseAge,
+				LeaseDurationMs: leaseDurationMs,
+				LeaseExpiresAt:  leaseExpiresAt,
+				Stalled:         stalled,
+			})
+		}
+	}
+
+	return out, nil
+}
+
+func (b *InMemoryBroker) MessageStates(_ context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	now := time.Now()
+
+	topics := make([]string, 0, len(b.topics))
+	if topic != "" {
+		if _, ok := b.topics[topic]; !ok {
+			return []debugtypes.MessageStateRow{}, nil
+		}
+		topics = append(topics, topic)
+	} else {
+		for name := range b.topics {
+			topics = append(topics, name)
+		}
+		sort.Strings(topics)
+	}
+
+	rows := make([]debugtypes.MessageStateRow, 0, limit)
+	status = strings.ToLower(strings.TrimSpace(status))
+	owner = strings.TrimSpace(owner)
+
+	appendIfMatch := func(row debugtypes.MessageStateRow) {
+		if status != "" && status != "all" && row.State != status {
+			return
+		}
+
+		if owner != "" && row.Owner != owner {
+			return
+		}
+		rows = append(rows, row)
+	}
+
+	for _, topicName := range topics {
+		ts, ok := b.topics[topicName]
+		if !ok {
+			continue
+		}
+
+		isDLQ := strings.HasPrefix(topicName, "dlq.")
+		for partition, part := range ts.partitions {
+			rawCommitted := int64(-1)
+			if byGroup, ok := b.consumerOffsets[topicName]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					if off, ok := byPart[partition]; ok {
+						rawCommitted = off
+					}
+				}
+			}
+			committedNext := rawCommitted + 1
+			if committedNext < 0 {
+				committedNext = 0
+			}
+
+			var byOff map[int64]*inflightEntry
+			if byGroup, ok := b.inFlight[topicName]; ok {
+				if byPart, ok := byGroup[group]; ok {
+					byOff = byPart[partition]
+				}
+			}
+			retries := b.getRetryState(topicName, group, partition)
+			ownerLease := b.ownerLeaseByTopicGroupLocked(topicName, group)
+
+			for i := len(part) - 1; i >= 0; i-- {
+				m := part[i]
+				row := debugtypes.MessageStateRow{
+					Group:     group,
+					Topic:     topicName,
+					Partition: partition,
+					Offset:    m.Offset,
+					Key:       string(m.Key),
+					Value:     string(m.Value),
+					Attempts:  1,
+					Envelope:  m.Envelope,
+					Routing:   m.Routing,
+				}
+
+				if isDLQ {
+					row.State = "dead_lettered"
+					row.Attempts = m.Attempts
+					row.LastError = m.LastError
+					appendIfMatch(row)
+					if len(rows) >= limit {
+						goto done
+					}
+					continue
+				}
+
+				if entry, ok := byOff[m.Offset]; ok && entry != nil {
+					row.State = "in_flight"
+					row.Owner = entry.Owner
+					row.Attempts = entry.Attempts
+					row.LastError = entry.LastError
+
+					if !entry.SentAt.IsZero() {
+						row.LastDeliveredAt = entry.SentAt.UnixMilli()
+						row.LeaseAgeMs = now.Sub(entry.SentAt).Milliseconds()
+					}
+
+					lease := ownerLease[entry.Owner]
+					if lease <= 0 {
+						lease = b.ackTimeout
+					}
+
+					row.LeaseDurationMs = lease.Milliseconds()
+					if !entry.SentAt.IsZero() {
+						row.LeaseExpiresAtMs = entry.SentAt.Add(lease).UnixMilli()
+					}
+
+					row.Stalled = row.LeaseDurationMs > 0 && row.LeaseAgeMs > row.LeaseDurationMs
+					appendIfMatch(row)
+					if len(rows) >= limit {
+						goto done
+					}
+					continue
+				}
+
+				if retry := retries[m.Offset]; retry != nil && retry.LastError != "" {
+					row.State = "retried"
+					row.LastError = retry.LastError
+					appendIfMatch(row)
+
+					if len(rows) >= limit {
+						goto done
+					}
+					continue
+				}
+
+				if m.Offset < committedNext {
+					row.State = "acked"
+				} else {
+					row.State = "queued"
+				}
+
+				appendIfMatch(row)
+				if len(rows) >= limit {
+					goto done
+				}
+			}
+		}
+	}
+
+done:
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Topic != rows[j].Topic {
+			return rows[i].Topic < rows[j].Topic
+		}
+
+		if rows[i].Partition != rows[j].Partition {
+			return rows[i].Partition < rows[j].Partition
+		}
+
+		return rows[i].Offset > rows[j].Offset
+	})
+
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
 }
 
 // NewInMemoryBroker constructs a broker with defaults, then applies any options.
@@ -331,6 +586,7 @@ func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...Broker
 		maxInFlight:         32, // default, tune via flags
 		inFlight:            make(map[string]map[string]map[int]map[int64]*inflightEntry),
 		nextIndex:           make(map[string]map[string]map[int]int),
+		lastDelivery:        make(map[string]map[string]map[int]deliverySnapshot),
 		wal:                 wal,
 		router:              r,
 		ackTimeout:          2 * time.Second,
@@ -387,6 +643,10 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 		}
 	}
 
+	if b.metrics != nil {
+		b.metrics.IncTopicCreated(name)
+	}
+
 	return nil
 }
 
@@ -401,6 +661,82 @@ func (b *InMemoryBroker) ListTopics(_ context.Context) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// TopicCount returns the buffered message count for a topic across all partitions.
+func (b *InMemoryBroker) TopicCount(_ context.Context, topic string) (int64, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ts, ok := b.topics[topic]
+	if !ok {
+		return 0, fmt.Errorf("topic not found: %s", topic)
+	}
+
+	var total int64
+	for _, part := range ts.partitions {
+		total += int64(len(part))
+	}
+	return total, nil
+}
+
+// Peek returns recent messages for a topic (descending by offset, partition tie-break).
+func (b *InMemoryBroker) Peek(topic string, limit int) ([]any, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ts, ok := b.topics[topic]
+	if !ok {
+		return nil, fmt.Errorf("topic not found: %s", topic)
+	}
+
+	type peekMsg struct {
+		Partition int
+		Message   Message
+	}
+
+	flat := make([]peekMsg, 0)
+	for p, part := range ts.partitions {
+		for _, m := range part {
+			flat = append(flat, peekMsg{Partition: p, Message: m})
+		}
+	}
+
+	sort.Slice(flat, func(i, j int) bool {
+		if flat[i].Message.Offset != flat[j].Message.Offset {
+			return flat[i].Message.Offset > flat[j].Message.Offset
+		}
+		return flat[i].Partition < flat[j].Partition
+	})
+
+	if len(flat) > limit {
+		flat = flat[:limit]
+	}
+
+	out := make([]any, 0, len(flat))
+	for _, row := range flat {
+		m := row.Message
+		out = append(out, map[string]any{
+			"topic":      topic,
+			"partition":  row.Partition,
+			"offset":     m.Offset,
+			"attempts":   m.Attempts,
+			"last_error": m.LastError,
+			"key":        string(m.Key),
+			"value":      string(m.Value),
+			"routing":    m.Routing,
+			"envelope":   m.Envelope,
+		})
+	}
+
+	return out, nil
 }
 
 func (b *InMemoryBroker) Produce(ctx context.Context, topic string, msg Message) error {
@@ -698,6 +1034,9 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 	if b.idem == nil || idk == "" {
 		err := b.ackLocked(topic, group, partition, offset)
 		b.mu.Unlock()
+		if err == nil && b.metrics != nil {
+			b.metrics.IncAck(topic, group)
+		}
 		return err
 	}
 
@@ -719,7 +1058,11 @@ func (b *InMemoryBroker) AckIfOwner(ctx context.Context, topic, group string, pa
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.ackLocked(topic, group, partition, offset)
+	err := b.ackLocked(topic, group, partition, offset)
+	if err == nil && b.metrics != nil {
+		b.metrics.IncAck(topic, group)
+	}
+	return err
 }
 
 func (b *InMemoryBroker) AckCumulativeIfOwner(ctx context.Context, topic, group string, partition int, offset int64, owner string) error {
@@ -1040,6 +1383,10 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 
 	// Push SentAt far enough back so redelivery sees it as expired *now*
 	e.SentAt = now.Add(-lease - time.Millisecond)
+
+	if b.metrics != nil {
+		b.metrics.IncNack(topic, group, reason)
+	}
 
 	// 5) Optional: resend now
 	b.redeliverExpiredLocked()
