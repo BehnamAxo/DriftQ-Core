@@ -598,6 +598,7 @@ export const WORKFLOWS_COPY = Object.freeze({
   REPLAY_MODE: "Replay Mode",
   CANCEL_REASON: "Cancel Reason",
   CANCEL_REASON_PLACEHOLDER: DEFAULTS.WORKFLOW_CANCEL_REASON,
+  CANCEL_UNAVAILABLE_HINT: "Cancel is only available while a run is running or waiting.",
   REPLAYING: "Replaying...",
   REPLAY_RUN: "Replay Run",
   CANCELING: "Canceling...",

@@ -312,6 +312,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
               : selectedReplayStep
                 ? WORKFLOWS_COPY.TIME_TRAVEL_SELECTED_HINT
                 : WORKFLOWS_COPY.TIME_TRAVEL_HINT;
+          const cancelHint = !r.cancelable ? WORKFLOWS_COPY.CANCEL_UNAVAILABLE_HINT : COMMON_TEXT.EMPTY;
 
           return (
           <div className="dq-panel run" key={r.id}>
@@ -482,6 +483,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                         value={cancelReason}
                         onChange={(e) => setCancelReason(e.target.value)}
                         placeholder={WORKFLOWS_COPY.CANCEL_REASON_PLACEHOLDER}
+                        title={cancelHint}
                         disabled={!r.cancelable || cancelingRunID === r.id}
                       />
                     </label>
@@ -499,6 +501,7 @@ export default function WorkflowsTab({ runs, selectedRun, onSelectRun, onRunChan
                         type="button"
                         className="mini-btn danger"
                         onClick={() => handleCancel(r.id)}
+                        title={cancelHint}
                         disabled={!r.cancelable || cancelingRunID === r.id}
                       >
                         {cancelingRunID === r.id ? WORKFLOWS_COPY.CANCELING : WORKFLOWS_COPY.CANCEL_RUN}
