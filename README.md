@@ -133,7 +133,7 @@ Neither option is great when you're a small team shipping fast, or when you're b
 
 **Recommended (pinned tag):**
 ```bash
-docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.3.0
 ```
 
 **Development / tracks `main`:**
@@ -174,7 +174,7 @@ docker-compose up -d
 
 **Docker with custom flags:**
 ```bash
-docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0 \
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.3.0 \
   -addr :8080 \
   -wal /data/driftq.wal \
   -engine-store file \
@@ -670,7 +670,7 @@ go build -o driftqctl ./cmd/driftqctl
 
 **Build with version info:**
 ```bash
-go build -ldflags "-X main.buildVersion=1.2.0 -X main.buildCommit=$(git rev-parse --short HEAD)" -o driftqd ./cmd/driftqd
+go build -ldflags "-X main.buildVersion=1.3.0 -X main.buildCommit=$(git rev-parse --short HEAD)" -o driftqd ./cmd/driftqd
 ```
 
 <a id="compatibility-note-wal-️"></a>

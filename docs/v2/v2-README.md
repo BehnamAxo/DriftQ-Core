@@ -28,7 +28,7 @@ Important behavior notes:
 Pinned image:
 
 ```bash
-docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.3.0
 ```
 
 This starts:
@@ -39,7 +39,7 @@ This starts:
 Durable engine + persistent artifacts on the mounted volume:
 
 ```bash
-docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0 \
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.3.0 \
   -engine-store file \
   -engine-wal /data/engine.wal \
   -artifacts-dir /data/artifacts

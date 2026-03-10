@@ -10,7 +10,7 @@ All stable broker endpoints are under `/v1/*` except `/metrics`, which is unvers
 Pinned image tag:
 
 ```bash
-docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.2.0
+docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core:1.3.0
 ```
 
 Health check:
