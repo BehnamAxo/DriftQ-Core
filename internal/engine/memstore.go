@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,8 +36,7 @@ type Store interface {
 
 	ListRuns() []string
 
-
-	// KV metadata
+	// KV metadata (key-value)
 	PutKV(key, value string) error
 	GetKV(key string) (string, bool)
 }
@@ -56,7 +55,7 @@ type MemoryStore struct {
 	nextSeq map[string]int64
 	timers  map[string]Timer
 
-	kv     map[string]string
+	kv map[string]string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -66,7 +65,7 @@ func NewMemoryStore() *MemoryStore {
 		events:  make(map[string][]RunEvent),
 		nextSeq: make(map[string]int64),
 		timers:  make(map[string]Timer),
-		kv:     make(map[string]string),
+		kv:      make(map[string]string),
 	}
 }
 
@@ -413,7 +412,6 @@ func (s *MemoryStore) ListDueTimers(now time.Time) []Timer {
 
 	return out
 }
-
 
 // PutKV stores a durable metadata key/value (in-memory for MemoryStore).
 func (s *MemoryStore) PutKV(key, value string) error {
