@@ -112,7 +112,7 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - **Minimal rollback primitive** via an "active index" pointer (promote/rollback)
 - **Handler panic recovery** (panicking handlers do not crash the server)
 
-### v3.1 foundation — Multi-Agent Messaging Layer
+### v3 foundation — Multi-Agent Runtime & Guardrails
 - Agent topic conventions:
   - `agent.{id}.inbox`
   - `agent.{id}.outbox`
@@ -127,6 +127,12 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - Runnable examples and smoke script:
   - `examples/multiagent/v3.1/*`
   - `scripts/multiagent_v31_smoke.sh`
+- Persisted regression datasets and native eval suites
+- Eval runs that re-execute stored workflow cases, including source-run-derived cases with optional workflow overrides
+- Promotion gate over the existing active index pointer
+- Failure-to-test-case capture flow for turning runs into regression cases
+- Debug API documentation:
+  - `docs/v3/v3-README.md`
 
 
 <a id="quickstart-docker"></a>
@@ -735,9 +741,10 @@ For copy/paste starter repos and runnable demos, see **DriftQ-Starters**:
 
 ## Docs
 
+- **Architecture map:** `docs/architecture.md`
 - **v1 broker docs:** `docs/v1/v1-README.md`
 - **v2 foundations docs:** `docs/v2/v2-README.md`
-- **v3.1 messaging foundation docs:** `docs/v3/v3.1-README.md`
+- **v3 foundations docs:** `docs/v3/v3-README.md`
 
 
 <a id="license"></a>
