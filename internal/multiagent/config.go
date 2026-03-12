@@ -262,10 +262,19 @@ func (c StartupConfig) BuildRegistry() (*CapabilityRegistry, error) {
 }
 
 func (c StartupConfig) RouterConfig(reg *CapabilityRegistry) RouterConfig {
+	sourceTopics := SourceTopicSet(c.SourceTopics...)
+	for _, agentID := range c.AllAgentIDs() {
+		outbox, err := AgentOutboxTopic(agentID)
+		if err != nil {
+			continue
+		}
+		sourceTopics[outbox] = struct{}{}
+	}
+
 	return RouterConfig{
 		Registry:     reg,
 		Strict:       c.RouterStrict,
-		SourceTopics: SourceTopicSet(c.SourceTopics...),
+		SourceTopics: sourceTopics,
 	}
 }
 

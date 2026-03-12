@@ -151,6 +151,7 @@ func TestMultiAgentRouter_NonAgentPayloadIgnoredWhenNotStrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
+
 	if dec.TargetTopic != "" || dec.Label != "" || len(dec.Meta) != 0 {
 		t.Fatalf("expected noop decision, got %#v", dec)
 	}
@@ -174,6 +175,7 @@ func TestMultiAgentRouter_SourceTopicFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
+
 	if dec.TargetTopic != "" || dec.Label != "" {
 		t.Fatalf("expected noop due to source filter, got %#v", dec)
 	}
@@ -182,6 +184,7 @@ func TestMultiAgentRouter_SourceTopicFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Route allowed topic: %v", err)
 	}
+
 	if dec.TargetTopic != "agent.coder.inbox" {
 		t.Fatalf("unexpected target for allowed topic: %#v", dec)
 	}
@@ -194,5 +197,33 @@ func TestMultiAgentRouter_CapabilityNeedsRegistry(t *testing.T) {
 	_, err := r.Route(context.Background(), "work.in", msg)
 	if !errors.Is(err, ErrNilRegistry) {
 		t.Fatalf("expected ErrNilRegistry, got %v", err)
+	}
+}
+
+func TestMultiAgentRouter_SourceOutboxRequiresMatchingSender(t *testing.T) {
+	r := NewRouter(RouterConfig{})
+	msg := broker.Message{Value: []byte(`{"sender":"reviewer","receiver":"coder","intent":"x","payload":{"ok":true}}`)}
+
+	_, err := r.Route(context.Background(), "agent.planner.outbox", msg)
+	if !errors.Is(err, ErrSourceTopicSenderMismatch) {
+		t.Fatalf("expected ErrSourceTopicSenderMismatch, got %v", err)
+	}
+}
+
+func TestMultiAgentRouter_SourceOutboxAddsSourceAgentMetadata(t *testing.T) {
+	r := NewRouter(RouterConfig{})
+	msg := broker.Message{Value: []byte(`{"sender":"planner","receiver":"coder","intent":"x","payload":{"ok":true}}`)}
+
+	dec, err := r.Route(context.Background(), "agent.planner.outbox", msg)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	if dec.TargetTopic != "agent.coder.inbox" {
+		t.Fatalf("unexpected target topic: %s", dec.TargetTopic)
+	}
+
+	if dec.Meta["source_agent"] != "planner" {
+		t.Fatalf("expected source_agent metadata, got %#v", dec.Meta)
 	}
 }

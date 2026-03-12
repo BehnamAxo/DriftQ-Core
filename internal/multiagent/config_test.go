@@ -141,3 +141,26 @@ func TestBootstrapTopics_CreatesAndSkipsExisting(t *testing.T) {
 		t.Fatalf("ListTopics mismatch\n got=%v\nwant=%v", gotTopics, wantAll)
 	}
 }
+
+func TestStartupConfig_RouterConfig_AlwaysIncludesAgentOutboxes(t *testing.T) {
+	cfg := StartupConfig{
+		Agents:       []string{"planner"},
+		Capabilities: map[string][]string{"coding": {"coder-a"}},
+		SourceTopics: []string{"agent-ingress"},
+	}
+
+	if err := cfg.NormalizeAndValidate(); err != nil {
+		t.Fatalf("NormalizeAndValidate: %v", err)
+	}
+
+	rcfg := cfg.RouterConfig(NewCapabilityRegistry())
+	for _, topic := range []string{
+		"agent-ingress",
+		"agent.planner.outbox",
+		"agent.coder-a.outbox",
+	} {
+		if _, ok := rcfg.SourceTopics[topic]; !ok {
+			t.Fatalf("expected source topic %q in router config: %v", topic, rcfg.SourceTopics)
+		}
+	}
+}

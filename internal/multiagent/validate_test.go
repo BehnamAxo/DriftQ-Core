@@ -63,6 +63,39 @@ func TestTopicNamingConventions(t *testing.T) {
 	}
 }
 
+func TestManagedTopicParsers(t *testing.T) {
+	t.Run("agent inbox", func(t *testing.T) {
+		id, ok := AgentIDFromInboxTopic("agent.planner.inbox")
+		if !ok || id != "planner" {
+			t.Fatalf("AgentIDFromInboxTopic got=(%q,%v) want=(planner,true)", id, ok)
+		}
+	})
+
+	t.Run("agent outbox", func(t *testing.T) {
+		id, ok := AgentIDFromOutboxTopic("agent.coder-a.outbox")
+		if !ok || id != "coder-a" {
+			t.Fatalf("AgentIDFromOutboxTopic got=(%q,%v) want=(coder-a,true)", id, ok)
+		}
+	})
+
+	t.Run("team broadcast", func(t *testing.T) {
+		id, ok := TeamIDFromBroadcastTopic("team.core.broadcast")
+		if !ok || id != "core" {
+			t.Fatalf("TeamIDFromBroadcastTopic got=(%q,%v) want=(core,true)", id, ok)
+		}
+	})
+
+	t.Run("invalid managed topics", func(t *testing.T) {
+		if _, ok := AgentIDFromOutboxTopic("agent.bad.topic"); ok {
+			t.Fatal("expected invalid outbox topic to fail")
+		}
+
+		if _, ok := TeamIDFromBroadcastTopic("team.core.broadcast.extra"); ok {
+			t.Fatal("expected invalid broadcast topic to fail")
+		}
+	})
+}
+
 func TestAgentMessageValidate_Direct(t *testing.T) {
 	m := AgentMessage{
 		Sender:   "planner",
