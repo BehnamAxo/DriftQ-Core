@@ -748,7 +748,11 @@ func (b *InMemoryBroker) Produce(ctx context.Context, topic string, msg Message)
 	// IMPORTANT: skip routing for DLQ messages (DLQ publish must be deterministic)
 	if b.router != nil && (msg.Envelope == nil || msg.Envelope.DLQ == nil) {
 		decision, err := b.router.Route(ctx, topic, msg)
-		if err == nil {
+		if err != nil {
+			return err
+		}
+
+		if decision.Label != "" || decision.TargetTopic != "" || decision.PartitionOverride != nil || len(decision.Meta) > 0 {
 			msg.Routing = &RoutingMetadata{
 				Label: decision.Label,
 				Meta:  decision.Meta,

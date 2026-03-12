@@ -82,6 +82,13 @@ func (r *Router) Route(_ context.Context, topic string, msg broker.Message) (bro
 		return broker.RoutingDecision{}, nil
 	}
 
+	if sourceAgentID, ok := AgentIDFromOutboxTopic(topic); ok {
+		sender := strings.TrimSpace(am.Sender)
+		if sender != sourceAgentID {
+			return broker.RoutingDecision{}, fmt.Errorf("%w: source_topic=%s sender=%s", ErrSourceTopicSenderMismatch, topic, sender)
+		}
+	}
+
 	kind, err := am.ResolvedRouteKind()
 	if err != nil {
 		return broker.RoutingDecision{}, err
@@ -108,6 +115,10 @@ func (r *Router) Route(_ context.Context, topic string, msg broker.Message) (bro
 
 	if mid := strings.TrimSpace(am.MessageID); mid != "" {
 		decision.Meta["message_id"] = mid
+	}
+
+	if sourceAgentID, ok := AgentIDFromOutboxTopic(topic); ok {
+		decision.Meta["source_agent"] = sourceAgentID
 	}
 
 	switch kind {

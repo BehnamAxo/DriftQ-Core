@@ -119,6 +119,8 @@ Neither option is great when you're a small team shipping fast, or when you're b
   - `team.{id}.broadcast`
 - Basic capability/role routing via in-memory registry (round-robin selection)
 - Structured agent message contract (`sender`, `receiver|team|capability|role`, `intent`, `payload`)
+- Configured agent outboxes act as first-class router source topics
+- Strict mode rejects invalid agent payloads at produce time
 - Startup config and topic bootstrap in `driftqd` via:
   - `-multiagent-config`
   - `-bootstrap-multiagent-topics`

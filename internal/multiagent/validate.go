@@ -15,6 +15,7 @@ var (
 	ErrInvalidRouteKind           = errors.New("invalid route kind")
 	ErrRouteMismatch              = errors.New("declared route does not match message fields")
 	ErrTargetTopicRequiresRouting = errors.New("target topic requires capability routing lookup")
+	ErrSourceTopicSenderMismatch  = errors.New("sender does not match source outbox topic")
 	ErrMissingSender              = errors.New("sender is required")
 	ErrMissingIntent              = errors.New("intent is required")
 	ErrMissingPayload             = errors.New("payload is required")

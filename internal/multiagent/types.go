@@ -72,6 +72,35 @@ func TeamBroadcastTopic(teamID string) (string, error) {
 	return "team." + teamID + ".broadcast", nil
 }
 
+func AgentIDFromInboxTopic(topic string) (string, bool) {
+	return parseTopicComponent(topic, "agent.", ".inbox", "agent id")
+}
+
+func AgentIDFromOutboxTopic(topic string) (string, bool) {
+	return parseTopicComponent(topic, "agent.", ".outbox", "agent id")
+}
+
+func TeamIDFromBroadcastTopic(topic string) (string, bool) {
+	return parseTopicComponent(topic, "team.", ".broadcast", "team id")
+}
+
+func parseTopicComponent(topic, prefix, suffix, kind string) (string, bool) {
+	if !strings.HasPrefix(topic, prefix) || !strings.HasSuffix(topic, suffix) {
+		return "", false
+	}
+
+	id := strings.TrimSuffix(strings.TrimPrefix(topic, prefix), suffix)
+	if id == "" {
+		return "", false
+	}
+
+	if err := validateTopicIDComponent(kind, id); err != nil {
+		return "", false
+	}
+
+	return id, true
+}
+
 func (m AgentMessage) CapabilityOrRole() string {
 	if strings.TrimSpace(m.Capability) != "" {
 		return strings.TrimSpace(m.Capability)

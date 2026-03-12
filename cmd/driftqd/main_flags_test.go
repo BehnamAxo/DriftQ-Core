@@ -751,7 +751,88 @@ func TestMainFlags_MultiagentRouter_Broadcast_ReachesMultipleGroups(t *testing.T
 	}
 }
 
-func TestMainFlags_MultiagentRouter_StrictInvalidPayload_PassesThroughSourceTopic(t *testing.T) {
+func TestMainFlags_MultiagentRouter_OutboxSource_RoutesDirect(t *testing.T) {
+	cfgJSON := `{
+  "agents": ["planner", "coder-a"],
+  "router_strict": false,
+  "source_topics": ["agent-ingress"]
+}`
+
+	cfgPath := filepath.Join(t.TempDir(), "multiagent.json")
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	p := startDriftqdProc(t, "-multiagent-config", cfgPath, "-bootstrap-multiagent-topics")
+
+	agentMsg := `{"sender":"planner","receiver":"coder-a","intent":"implement","payload":{"task":"outbox-route"}}`
+	produceBody := `{"topic":"agent.planner.outbox","value":` + strconv.Quote(agentMsg) + `}`
+	status, body, _ := postJSON(t, p.baseURL+"/v1/produce", produceBody)
+	if status != http.StatusOK {
+		t.Fatalf("produce status=%d body=%s", status, string(body))
+	}
+
+	line, _ := consumeOneNDJSONLine(t, p.baseURL, "agent.coder-a.inbox", "g1", "o1", 5000, 3*time.Second)
+	var item struct {
+		Value   string `json:"value"`
+		Routing struct {
+			Meta map[string]string `json:"meta"`
+		} `json:"routing"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &item); err != nil {
+		t.Fatalf("unmarshal consume item: %v line=%s", err, line)
+	}
+
+	if item.Value != agentMsg {
+		t.Fatalf("value mismatch got=%q want=%q", item.Value, agentMsg)
+	}
+
+	if got := item.Routing.Meta["route_kind"]; got != "direct" {
+		t.Fatalf("route_kind=%q want direct", got)
+	}
+
+	if got := item.Routing.Meta["source_topic"]; got != "agent.planner.outbox" {
+		t.Fatalf("source_topic=%q want agent.planner.outbox", got)
+	}
+
+	if got := item.Routing.Meta["source_agent"]; got != "planner" {
+		t.Fatalf("source_agent=%q want planner", got)
+	}
+
+	assertNoConsumeLineWithin(t, p.baseURL, "agent.planner.outbox", "g2", "o2", 500, 300*time.Millisecond)
+}
+
+func TestMainFlags_MultiagentRouter_OutboxSource_RejectsSenderMismatch(t *testing.T) {
+	cfgJSON := `{
+  "agents": ["planner", "coder-a"],
+  "router_strict": false,
+  "source_topics": ["agent-ingress"]
+}`
+
+	cfgPath := filepath.Join(t.TempDir(), "multiagent.json")
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+
+	p := startDriftqdProc(t, "-multiagent-config", cfgPath, "-bootstrap-multiagent-topics")
+
+	agentMsg := `{"sender":"reviewer","receiver":"coder-a","intent":"implement","payload":{"task":"bad-outbox"}}`
+	produceBody := `{"topic":"agent.planner.outbox","value":` + strconv.Quote(agentMsg) + `}`
+	status, body, _ := postJSON(t, p.baseURL+"/v1/produce", produceBody)
+	if status != http.StatusBadRequest {
+		t.Fatalf("produce status=%d want=%d body=%s", status, http.StatusBadRequest, string(body))
+	}
+
+	if !strings.Contains(string(body), "sender does not match source outbox topic") {
+		t.Fatalf("expected sender mismatch error, body=%s", string(body))
+	}
+
+	assertNoConsumeLineWithin(t, p.baseURL, "agent.planner.outbox", "g1", "o1", 500, 300*time.Millisecond)
+	assertNoConsumeLineWithin(t, p.baseURL, "agent.coder-a.inbox", "g2", "o2", 500, 300*time.Millisecond)
+}
+
+func TestMainFlags_MultiagentRouter_StrictInvalidPayload_ReturnsBadRequest(t *testing.T) {
 	cfgJSON := `{
   "agents": ["coder-a"],
   "router_strict": true,
@@ -767,30 +848,11 @@ func TestMainFlags_MultiagentRouter_StrictInvalidPayload_PassesThroughSourceTopi
 	mustCreateTopic(t, p.baseURL, "agent-ingress", 1)
 	mustCreateTopic(t, p.baseURL, "agent.coder-a.inbox", 1)
 
-	// Not valid agent JSON. Router sees an error, but broker currently swallows router errors
-	// and preserves the producer topic. This test locks that behavior for now.
-	status, body := mustProduceStatus(t, p.baseURL, "agent-ingress", "not-json", http.StatusOK)
-	if status != http.StatusOK {
-		t.Fatalf("produce status=%d body=%s", status, body)
+	status, body := mustProduceStatus(t, p.baseURL, "agent-ingress", "not-json", http.StatusBadRequest)
+	if status != http.StatusBadRequest || !strings.Contains(body, "parse agent message json") {
+		t.Fatalf("expected parse failure 400, got status=%d body=%s", status, body)
 	}
 
-	line, _ := consumeOneNDJSONLine(t, p.baseURL, "agent-ingress", "g1", "o1", 5000, 3*time.Second)
-	var item struct {
-		Value   string      `json:"value"`
-		Routing interface{} `json:"routing"`
-	}
-
-	if err := json.Unmarshal([]byte(line), &item); err != nil {
-		t.Fatalf("unmarshal consume item: %v line=%s", err, line)
-	}
-
-	if item.Value != "not-json" {
-		t.Fatalf("value mismatch got=%q want=%q", item.Value, "not-json")
-	}
-
-	if item.Routing != nil {
-		t.Fatalf("expected no routing metadata on invalid payload passthrough, got=%v", item.Routing)
-	}
-
+	assertNoConsumeLineWithin(t, p.baseURL, "agent-ingress", "g1", "o1", 500, 300*time.Millisecond)
 	assertNoConsumeLineWithin(t, p.baseURL, "agent.coder-a.inbox", "g2", "o2", 500, 300*time.Millisecond)
 }
