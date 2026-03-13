@@ -40,6 +40,8 @@ type Runner struct {
 	registry     *HandlerRegistry
 	policyMu     sync.RWMutex
 	policyBundle *AuthorizationPolicyBundle
+	riskMu       sync.RWMutex
+	riskPolicy   *RiskPolicy
 
 	maxParallel int // for join/fan out later
 	cancels     map[string]context.CancelFunc
@@ -115,6 +117,10 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	if _, err := r.authorizeWorkflow(ctx, runID, g); err != nil {
 		return err
 	}
+	riskReport, ctx, err := r.evaluateAndEnforceRisk(ctx, runID, g, initialInput)
+	if err != nil {
+		return err
+	}
 
 	// 1) Create run (queued)
 	run := Run{
@@ -144,6 +150,15 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		Type:       EventRunCreated,
 		WorkflowID: wf.WorkflowID,
 	})
+
+	if riskPayload, err := json.Marshal(riskReport); err == nil {
+		_, _ = r.store.AppendEvent(RunEvent{
+			RunID:      runID,
+			Type:       EventRiskAssessed,
+			WorkflowID: wf.WorkflowID,
+			Payload:    riskPayload,
+		})
+	}
 
 	// 2) Start run
 	start := time.Now().UTC()

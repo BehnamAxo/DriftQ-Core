@@ -101,6 +101,66 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 	})
 
+	mux.HandleFunc("/debug/risk-policy", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+		case http.MethodPost:
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+
+		switch r.Method {
+		case http.MethodGet:
+			policy, ok, err := runner.GetRiskPolicy()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				policy = defaultRiskPolicy()
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"configured": ok,
+				"policy":     policy,
+				"trace_id":   traceID,
+			})
+
+		case http.MethodPost:
+			var policy RiskPolicy
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&policy); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			if err := runner.SaveRiskPolicy(policy); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			saved, _, err := runner.GetRiskPolicy()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":       true,
+				"policy":   saved,
+				"trace_id": traceID,
+			})
+		}
+	})
+
 	mux.HandleFunc("/debug/run-artifacts", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -403,19 +463,26 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		if mode == PolicyModeSimulate {
-			report, err := runner.EvaluateRunSpecAuthorization(ctx, runID, body.Spec, reg)
+			authzReport, err := runner.EvaluateRunSpecAuthorization(ctx, runID, body.Spec, reg)
 			if err != nil {
 				http.Error(w, "authorization simulate failed: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			report.Mode = PolicyModeSimulate
+			authzReport.Mode = PolicyModeSimulate
+
+			riskReport, err := runner.EvaluateRunSpecRisk(ctx, runID, body.Spec, reg, body.Input)
+			if err != nil {
+				http.Error(w, "risk simulate failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":            true,
 				"simulated":     true,
 				"run_id":        runID,
-				"authorization": report,
+				"authorization": authzReport,
+				"risk":          riskReport,
 				"trace_id":      traceID,
 			})
 			return
@@ -432,6 +499,24 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 					"error":         authErr.Error(),
 					"authorization": authErr.Report,
 					"trace_id":      traceID,
+				})
+				return
+			}
+
+			var riskErr *RiskError
+			if errors.As(err, &riskErr) {
+				w.Header().Set("Content-Type", "application/json")
+				if errors.Is(err, ErrRiskApprovalRequired) {
+					w.WriteHeader(http.StatusConflict)
+				} else {
+					w.WriteHeader(http.StatusForbidden)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":       false,
+					"run_id":   runID,
+					"error":    riskErr.Error(),
+					"risk":     riskErr.Report,
+					"trace_id": traceID,
 				})
 				return
 			}
