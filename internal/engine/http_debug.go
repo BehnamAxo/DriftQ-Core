@@ -44,6 +44,63 @@ func traceIDFromRequest(req *http.Request) string {
 func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	attachEvalRoutes(mux, runner)
 
+	mux.HandleFunc("/debug/policy", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+		case http.MethodPost:
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+
+		switch r.Method {
+		case http.MethodGet:
+			bundle, ok, err := runner.GetAuthorizationPolicy()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"configured": ok,
+				"policy":     bundle,
+				"trace_id":   traceID,
+			})
+
+		case http.MethodPost:
+			var bundle AuthorizationPolicyBundle
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&bundle); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			if err := runner.SaveAuthorizationPolicy(bundle); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			saved, _, err := runner.GetAuthorizationPolicy()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":       true,
+				"policy":   saved,
+				"trace_id": traceID,
+			})
+		}
+	})
+
 	mux.HandleFunc("/debug/run-artifacts", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -287,9 +344,12 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		traceID := traceIDFromRequest(r)
 
 		var body struct {
-			RunID string          `json:"run_id"`
-			Spec  json.RawMessage `json:"spec"`
-			Input json.RawMessage `json:"input"`
+			RunID      string          `json:"run_id"`
+			Spec       json.RawMessage `json:"spec"`
+			Input      json.RawMessage `json:"input"`
+			TenantID   string          `json:"tenant_id,omitempty"`
+			Principal  *Principal      `json:"principal,omitempty"`
+			PolicyMode PolicyMode      `json:"policy_mode,omitempty"`
 		}
 
 		dec := json.NewDecoder(r.Body)
@@ -313,6 +373,15 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			runID = "spec-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 		}
 
+		mode := body.PolicyMode
+		if mode == "" {
+			mode = PolicyModeEnforce
+		}
+		if mode != PolicyModeEnforce && mode != PolicyModeSimulate {
+			http.Error(w, "policy_mode must be enforce or simulate", http.StatusBadRequest)
+			return
+		}
+
 		reg := runner.HandlerRegistry()
 		if reg == nil {
 			http.Error(w, "no handler registry configured on runner", http.StatusInternalServerError)
@@ -320,8 +389,53 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		ctx := WithTraceID(r.Context(), traceID)
+		if body.Principal != nil {
+			body.Principal.Normalize()
+			ctx = WithPrincipal(ctx, *body.Principal)
+		}
+
+		tenantID := strings.TrimSpace(body.TenantID)
+		if tenantID == "" && body.Principal != nil {
+			tenantID = body.Principal.TenantID
+		}
+		if tenantID != "" {
+			ctx = WithTenantID(ctx, tenantID)
+		}
+
+		if mode == PolicyModeSimulate {
+			report, err := runner.EvaluateRunSpecAuthorization(ctx, runID, body.Spec, reg)
+			if err != nil {
+				http.Error(w, "authorization simulate failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			report.Mode = PolicyModeSimulate
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":            true,
+				"simulated":     true,
+				"run_id":        runID,
+				"authorization": report,
+				"trace_id":      traceID,
+			})
+			return
+		}
 
 		if err := runner.RunSpecJSON(ctx, runID, body.Spec, reg, body.Input); err != nil {
+			var authErr *AuthorizationError
+			if errors.As(err, &authErr) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":            false,
+					"run_id":        runID,
+					"error":         authErr.Error(),
+					"authorization": authErr.Report,
+					"trace_id":      traceID,
+				})
+				return
+			}
+
 			// If the run was canceled, that's not a "bad request". so we treat it as a successful control outcome
 			if errors.Is(err, ErrRunCanceled) || errors.Is(err, context.Canceled) {
 				w.Header().Set("Content-Type", "application/json")

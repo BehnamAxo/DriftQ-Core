@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 )
 
 type HandlerRegistry struct {
@@ -31,8 +32,10 @@ func CompileSpecToExecutable(spec WorkflowSpec, g WorkflowGraph, reg *HandlerReg
 	}
 
 	topicByNode := map[string]string{}
+	capabilityByNode := map[string]string{}
 	for _, n := range spec.Nodes {
 		topicByNode[n.ID] = n.Topic
+		capabilityByNode[n.ID] = strings.TrimSpace(n.Capability)
 	}
 
 	out := WorkflowGraph{ID: g.ID, Edges: append([]NodeEdge(nil), g.Edges...)}
@@ -48,9 +51,10 @@ func CompileSpecToExecutable(spec WorkflowSpec, g WorkflowGraph, reg *HandlerReg
 		}
 
 		out.Nodes = append(out.Nodes, NodeDef{
-			NodeID: nd.NodeID,
-			Topic:  topic,
-			Run:    fn,
+			NodeID:             nd.NodeID,
+			Topic:              topic,
+			RequiredCapability: capabilityByNode[nd.NodeID],
+			Run:                fn,
 		})
 	}
 

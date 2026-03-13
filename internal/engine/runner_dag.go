@@ -39,6 +39,10 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		ctx = WithTraceID(ctx, traceID)
 	}
 
+	if _, err := r.authorizeWorkflow(ctx, runID, g); err != nil {
+		return err
+	}
+
 	// helper: external cancel (via CancelRun) should stop scheduling ASAP
 	isCanceled := func() bool {
 		cur, ok := r.store.GetRun(runID)
