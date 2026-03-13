@@ -6,8 +6,15 @@ import (
 )
 
 func (r *Runner) RunSpecJSON(ctx context.Context, runID string, specJSON []byte, reg *HandlerRegistry, initialInput json.RawMessage) error {
+	tenantID := effectiveTenantFromContext(ctx)
 	if reg == nil {
-		reg = r.HandlerRegistryForTenant(effectiveTenantFromContext(ctx))
+		reg = r.HandlerRegistryForTenant(tenantID)
+	} else if r.HandlerRegistryForTenant(tenantID) == nil {
+		if tenantID != "" {
+			r.SetTenantHandlerRegistry(tenantID, reg)
+		} else {
+			r.SetHandlerRegistry(reg)
+		}
 	}
 
 	g, spec, err := ParseWorkflowSpecJSON(specJSON)

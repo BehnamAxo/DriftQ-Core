@@ -341,6 +341,23 @@ func (r *Runner) evaluateAndEnforceRisk(ctx context.Context, runID string, g Wor
 		return WorkflowRiskReport{}, ctx, err
 	}
 
+	if report.Action == RiskActionRequireApproval {
+		if task, ok, err := r.findHumanTask(runID, "", 0, HumanTaskSourceRisk); err == nil && ok {
+			switch task.Status {
+			case HumanTaskApproved:
+				report.Action = RiskActionAllow
+				report.Allowed = true
+				report.Reason = "manual risk approval granted"
+			case HumanTaskRejected, HumanTaskTimedOut, HumanTaskCanceled:
+				report.Action = RiskActionBlock
+				report.Allowed = false
+				report.Reason = "manual risk approval rejected"
+			case HumanTaskPending:
+				report.Reason = "waiting for manual risk approval"
+			}
+		}
+	}
+
 	r.appendAuditRecord(ctx, AuditRecord{
 		TenantID:     report.TenantID,
 		PrincipalID:  report.Principal.ID,

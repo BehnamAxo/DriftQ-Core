@@ -13,6 +13,16 @@ import (
 var ErrGraphInvalid = errors.New("invalid workflow graph")
 var ErrRunCanceled = errors.New("run canceled")
 
+type nodeResult struct {
+	nodeID  string
+	attempt int
+	started time.Time
+	ended   time.Time
+	input   json.RawMessage
+	output  json.RawMessage
+	err     error
+}
+
 // Public wrapper (existing API)
 func (r *Runner) RunDAG(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) error {
 	return r.runDAG(ctx, runID, g, initialInput, nil)
@@ -45,6 +55,14 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 	riskReport, ctx, err := r.evaluateAndEnforceRisk(ctx, runID, g, initialInput)
 	if err != nil {
+		var riskErr *RiskError
+		if errors.As(err, &riskErr) && riskErr.Report.Action == RiskActionRequireApproval {
+			task, stageErr := r.stageRiskApproval(ctx, runID, g, spec, initialInput, riskErr.Report)
+			if stageErr != nil {
+				return stageErr
+			}
+			return &HumanApprovalPendingError{Task: task}
+		}
 		return err
 	}
 
@@ -264,16 +282,6 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	sort.Slice(ready, func(i, j int) bool { return nodeIndex[ready[i]] < nodeIndex[ready[j]] })
 
 	// FAN-OUT / FAN-IN
-	type nodeResult struct {
-		nodeID  string
-		attempt int
-		started time.Time
-		ended   time.Time
-		input   json.RawMessage
-		output  json.RawMessage
-		err     error
-	}
-
 	type usageEvent struct {
 		nodeID  string
 		attempt int
@@ -475,6 +483,31 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			maxAttempt[node.NodeID] = attempt
 
 			nodeStart := time.Now().UTC()
+
+			if handled, humanRes, err := r.maybeHandleHumanNode(ctx, runID, wfID, node, attempt, nodeInput, nodeStart); err != nil {
+				if key := inflightKey[nodeID]; key != "" {
+					r.releaseCap(key)
+					delete(inflightKey, nodeID)
+				}
+				return err
+			} else if handled {
+				if errors.Is(humanRes.err, ErrHumanApprovalPending) {
+					run.Status = RunStatusWaiting
+					run.EndedAt = nil
+					_ = r.store.UpdateRun(run)
+					waiting = true
+					stopScheduling = true
+					if key := inflightKey[nodeID]; key != "" {
+						r.releaseCap(key)
+						delete(inflightKey, nodeID)
+					}
+					continue
+				}
+
+				running++
+				resCh <- humanRes
+				continue
+			}
 
 			// replay-cache short-circuit
 			if cache != nil {

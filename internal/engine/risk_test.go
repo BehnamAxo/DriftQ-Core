@@ -107,12 +107,14 @@ func TestRunnerRisk_BlocksAndRequiresApproval(t *testing.T) {
 	}`)
 
 	err = runner.RunSpecJSON(context.Background(), "run-risk-approval", approvalSpec, reg, json.RawMessage(`{}`))
-	if !errors.Is(err, ErrRiskApprovalRequired) {
-		t.Fatalf("expected ErrRiskApprovalRequired, got %v", err)
+	var pendingErr *HumanApprovalPendingError
+	if !errors.As(err, &pendingErr) {
+		t.Fatalf("expected HumanApprovalPendingError, got %v", err)
 	}
 
-	if _, ok := store.GetRun("run-risk-approval"); ok {
-		t.Fatal("approval-gated run should not be created")
+	run, ok := store.GetRun("run-risk-approval")
+	if !ok || run.Status != RunStatusWaiting {
+		t.Fatalf("expected waiting approval-gated run, got ok=%v run=%+v", ok, run)
 	}
 }
 
