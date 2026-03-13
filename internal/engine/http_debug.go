@@ -161,6 +161,106 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 	})
 
+	mux.HandleFunc("/debug/human/tasks", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+		status := HumanTaskStatus(strings.TrimSpace(r.URL.Query().Get("status")))
+		limit := 100
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+		if limit < 1 {
+			limit = 1
+		}
+		if limit > 500 {
+			limit = 500
+		}
+
+		tasks, err := runner.ListHumanTasks(runID, status, limit)
+		if err != nil {
+			http.Error(w, "list human tasks failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		tenantID := effectiveTenantFromContext(ctx)
+		filtered := make([]HumanTask, 0, len(tasks))
+		for _, task := range tasks {
+			if tenantID != "" && task.TenantID != "" && task.TenantID != tenantID {
+				continue
+			}
+			filtered = append(filtered, task)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"count":     len(filtered),
+			"tasks":     filtered,
+			"tenant_id": tenantID,
+			"trace_id":  traceID,
+		})
+	})
+
+	mux.HandleFunc("/debug/human/respond", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		var body struct {
+			TaskID      string          `json:"task_id"`
+			Decision    HumanDecision   `json:"decision"`
+			EditedInput json.RawMessage `json:"edited_input,omitempty"`
+			Comment     string          `json:"comment,omitempty"`
+			Resume      *bool           `json:"resume,omitempty"`
+		}
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		resume := true
+		if body.Resume != nil {
+			resume = *body.Resume
+		}
+
+		task, err := runner.ResolveHumanTask(ctx, body.TaskID, body.Decision, body.EditedInput, body.Comment, resume)
+		if err != nil {
+			if errors.Is(err, ErrHumanTaskNotFound) {
+				http.Error(w, "human task not found", http.StatusNotFound)
+				return
+			}
+			if errors.Is(err, ErrHumanTaskResolved) || errors.Is(err, ErrTenantAccessDenied) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "resolve human task failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":       true,
+			"task":     task,
+			"trace_id": traceID,
+		})
+	})
+
 	mux.HandleFunc("/debug/run-artifacts", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -529,6 +629,20 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 					"error":    riskErr.Error(),
 					"risk":     riskErr.Report,
 					"trace_id": traceID,
+				})
+				return
+			}
+
+			var humanErr *HumanApprovalPendingError
+			if errors.As(err, &humanErr) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":             false,
+					"run_id":         runID,
+					"human_approval": true,
+					"task":           humanErr.Task,
+					"trace_id":       traceID,
 				})
 				return
 			}
