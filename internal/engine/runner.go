@@ -23,10 +23,11 @@ type Workflow struct {
 }
 
 type NodeDef struct {
-	NodeID    string
-	Topic     string
-	Run       NodeFunc
-	TimeoutMS int
+	NodeID             string
+	Topic              string
+	RequiredCapability string
+	Run                NodeFunc
+	TimeoutMS          int
 }
 
 type Runner struct {
@@ -34,9 +35,13 @@ type Runner struct {
 	metrics *EngineMetrics
 	logger  *slog.Logger
 
-	mu       sync.RWMutex
-	graphs   map[string]WorkflowGraph // workflow_id -> graph
-	registry *HandlerRegistry
+	mu           sync.RWMutex
+	graphs       map[string]WorkflowGraph // workflow_id -> graph
+	registry     *HandlerRegistry
+	policyMu     sync.RWMutex
+	policyBundle *AuthorizationPolicyBundle
+	riskMu       sync.RWMutex
+	riskPolicy   *RiskPolicy
 
 	maxParallel int // for join/fan out later
 	cancels     map[string]context.CancelFunc
@@ -105,6 +110,18 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		ctx = WithTraceID(ctx, traceID)
 	}
 
+	g := WorkflowGraph{
+		ID:    wf.WorkflowID,
+		Nodes: append([]NodeDef(nil), wf.Nodes...),
+	}
+	if _, err := r.authorizeWorkflow(ctx, runID, g); err != nil {
+		return err
+	}
+	riskReport, ctx, err := r.evaluateAndEnforceRisk(ctx, runID, g, initialInput)
+	if err != nil {
+		return err
+	}
+
 	// 1) Create run (queued)
 	run := Run{
 		RunID:      runID,
@@ -133,6 +150,15 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		Type:       EventRunCreated,
 		WorkflowID: wf.WorkflowID,
 	})
+
+	if riskPayload, err := json.Marshal(riskReport); err == nil {
+		_, _ = r.store.AppendEvent(RunEvent{
+			RunID:      runID,
+			Type:       EventRiskAssessed,
+			WorkflowID: wf.WorkflowID,
+			Payload:    riskPayload,
+		})
+	}
 
 	// 2) Start run
 	start := time.Now().UTC()

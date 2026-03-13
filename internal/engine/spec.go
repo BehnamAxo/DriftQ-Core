@@ -8,12 +8,13 @@ type RetryPolicy struct {
 }
 
 type NodeSpec struct {
-	ID     string          `json:"id" yaml:"id"`
-	Topic  string          `json:"topic,omitempty" yaml:"topic,omitempty"` // step -> topic mapping
-	Deps   []string        `json:"deps,omitempty" yaml:"deps,omitempty"`
-	Input  json.RawMessage `json:"input_schema,omitempty" yaml:"input_schema,omitempty"`
-	Output json.RawMessage `json:"output_schema,omitempty" yaml:"output_schema,omitempty"`
-	Retry  RetryPolicy     `json:"retry,omitempty" yaml:"retry,omitempty"`
+	ID         string          `json:"id" yaml:"id"`
+	Topic      string          `json:"topic,omitempty" yaml:"topic,omitempty"` // step -> topic mapping
+	Capability string          `json:"capability,omitempty" yaml:"capability,omitempty"`
+	Deps       []string        `json:"deps,omitempty" yaml:"deps,omitempty"`
+	Input      json.RawMessage `json:"input_schema,omitempty" yaml:"input_schema,omitempty"`
+	Output     json.RawMessage `json:"output_schema,omitempty" yaml:"output_schema,omitempty"`
+	Retry      RetryPolicy     `json:"retry,omitempty" yaml:"retry,omitempty"`
 }
 
 type WorkflowSpec struct {

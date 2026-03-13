@@ -39,6 +39,14 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		ctx = WithTraceID(ctx, traceID)
 	}
 
+	if _, err := r.authorizeWorkflow(ctx, runID, g); err != nil {
+		return err
+	}
+	riskReport, ctx, err := r.evaluateAndEnforceRisk(ctx, runID, g, initialInput)
+	if err != nil {
+		return err
+	}
+
 	// helper: external cancel (via CancelRun) should stop scheduling ASAP
 	isCanceled := func() bool {
 		cur, ok := r.store.GetRun(runID)
@@ -128,6 +136,15 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			RunID: runID,
 			Type:  EventRunCreated,
 		})
+
+		if riskPayload, err := json.Marshal(riskReport); err == nil {
+			_, _ = r.store.AppendEvent(RunEvent{
+				RunID:      runID,
+				Type:       EventRiskAssessed,
+				WorkflowID: wfID,
+				Payload:    riskPayload,
+			})
+		}
 	}
 
 	r.rememberGraph(wfID, g)

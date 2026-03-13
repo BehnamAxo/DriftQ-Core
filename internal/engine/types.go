@@ -135,6 +135,7 @@ const (
 	EventNodeRetryPlanned RunEventType = "node_retry_planned"
 	EventThrottled        RunEventType = "throttled"
 	EventBudgetExceeded   RunEventType = "budget_exceeded"
+	EventRiskAssessed     RunEventType = "risk_assessed"
 )
 
 func (s RunStatus) Valid() bool {
