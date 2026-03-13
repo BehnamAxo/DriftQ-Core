@@ -169,11 +169,22 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		traceID := traceIDFromRequest(r)
-		ctx := WithTraceID(r.Context(), traceID)
+		ctx := debugContextFromRequest(r, traceID)
 
 		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 		if runID == "" {
 			http.Error(w, "run_id is required", http.StatusBadRequest)
+			return
+		}
+
+		run, ok := runner.store.GetRun(runID)
+		if !ok {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+
+		if err := runner.ensureRunTenantAccess(ctx, run, "debug.run_artifacts"); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
 
@@ -247,7 +258,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		traceID := traceIDFromRequest(r)
-		ctx := WithTraceID(r.Context(), traceID)
+		ctx := debugContextFromRequest(r, traceID)
 
 		type demoPayload struct {
 			X int `json:"x"`
@@ -321,6 +332,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				Labels:       map[string]string{"kind": "node_output"},
 				Description:  "demo node A output",
 			})
+
 			if err != nil {
 				return nil, err
 			}
@@ -442,12 +454,6 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			return
 		}
 
-		reg := runner.HandlerRegistry()
-		if reg == nil {
-			http.Error(w, "no handler registry configured on runner", http.StatusInternalServerError)
-			return
-		}
-
 		ctx := WithTraceID(r.Context(), traceID)
 		if body.Principal != nil {
 			body.Principal.Normalize()
@@ -460,6 +466,12 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 		if tenantID != "" {
 			ctx = WithTenantID(ctx, tenantID)
+		}
+
+		reg := runner.HandlerRegistryForTenant(effectiveTenantFromContext(ctx))
+		if reg == nil {
+			http.Error(w, "no handler registry configured on runner", http.StatusInternalServerError)
+			return
 		}
 
 		if mode == PolicyModeSimulate {
@@ -573,7 +585,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		traceID := traceIDFromRequest(r)
-		ctx := WithTraceID(r.Context(), traceID)
+		ctx := debugContextFromRequest(r, traceID)
 
 		if err := runner.CancelRun(ctx, body.RunID, body.Reason); err != nil {
 			if errors.Is(err, ErrRunNotFound) {
@@ -628,13 +640,19 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		traceID := traceIDFromRequest(r)
-		ctx := WithTraceID(r.Context(), traceID)
+		ctx := debugContextFromRequest(r, traceID)
 
 		if err := runner.ReplayFrom(ctx, body.RunID, body.FromStep, mode); err != nil {
 			if errors.Is(err, ErrRunNotFound) {
 				http.Error(w, "run not found", http.StatusNotFound)
 				return
 			}
+
+			if errors.Is(err, ErrTenantAccessDenied) {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+
 			http.Error(w, "replay failed: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -662,10 +680,16 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			http.Error(w, "missing run_id", http.StatusBadRequest)
 			return
 		}
+		traceID := traceIDFromRequest(r)
 
 		run, ok := runner.store.GetRun(runID)
 		if !ok {
 			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		ctx := debugContextFromRequest(r, traceID)
+		if err := runner.ensureRunTenantAccess(ctx, run, "debug.run_state"); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
 
@@ -708,18 +732,82 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			limit = 500
 		}
 
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		tenantID := effectiveTenantFromContext(ctx)
 		ids := runner.store.ListRuns()
-		if len(ids) > limit {
-			ids = ids[:limit]
+		filtered := make([]string, 0, len(ids))
+
+		for _, runID := range ids {
+			run, ok := runner.store.GetRun(runID)
+			if !ok {
+				continue
+			}
+
+			if tenantID != "" && strings.TrimSpace(run.TenantID) != tenantID {
+				continue
+			}
+
+			filtered = append(filtered, runID)
+		}
+
+		if len(filtered) > limit {
+			filtered = filtered[:limit]
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
-			"ok":    true,
-			"count": len(ids),
-			"runs":  ids,
+			"ok":        true,
+			"count":     len(filtered),
+			"runs":      filtered,
+			"tenant_id": tenantID,
+		})
+	})
+
+	mux.HandleFunc("/debug/audit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		limit := 100
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+
+		if limit < 1 {
+			limit = 1
+		}
+
+		if limit > 500 {
+			limit = 500
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		tenantID := effectiveTenantFromContext(ctx)
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+		records, err := runner.ListAuditRecords(tenantID, runID, limit)
+
+		if err != nil {
+			http.Error(w, "list audit failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{
+			"ok":        true,
+			"count":     len(records),
+			"records":   records,
+			"tenant_id": tenantID,
+			"run_id":    runID,
 		})
 	})
 
@@ -737,7 +825,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		traceID := traceIDFromRequest(r)
-		ctx := WithTraceID(r.Context(), traceID)
+		ctx := debugContextFromRequest(r, traceID)
 
 		_, meta, err := runner.GetArtifact(ctx, artifactID)
 		if err != nil {
@@ -745,14 +833,17 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				http.Error(w, "invalid artifact id", http.StatusBadRequest)
 				return
 			}
+
 			if errors.Is(err, ErrArtifactNotFound) {
 				http.Error(w, "artifact not found", http.StatusNotFound)
 				return
 			}
+
 			if errors.Is(err, ErrArtifactStoreUnset) {
 				http.Error(w, "artifact store not configured", http.StatusBadRequest)
 				return
 			}
+
 			http.Error(w, "get artifact meta failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -782,7 +873,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 
 		traceID := traceIDFromRequest(r)
-		ctx := WithTraceID(r.Context(), traceID)
+		ctx := debugContextFromRequest(r, traceID)
 
 		b, meta, err := runner.GetArtifact(ctx, artifactID)
 		if err != nil {
@@ -790,14 +881,17 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				http.Error(w, "invalid artifact id", http.StatusBadRequest)
 				return
 			}
+
 			if errors.Is(err, ErrArtifactNotFound) {
 				http.Error(w, "artifact not found", http.StatusNotFound)
 				return
 			}
+
 			if errors.Is(err, ErrArtifactStoreUnset) {
 				http.Error(w, "artifact store not configured", http.StatusBadRequest)
 				return
 			}
+
 			http.Error(w, "get artifact failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -859,6 +953,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			"ok":             true,
 			"active_version": "",
 		}
+
 		if ok {
 			resp["active_version"] = ver
 		}
@@ -886,6 +981,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 					RunID   string `json:"run_id"`
 					Version string `json:"version"`
 				}
+
 				_ = json.Unmarshal(body, &req)
 				runID = strings.TrimSpace(req.RunID)
 				version = strings.TrimSpace(req.Version)
@@ -923,6 +1019,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				var req struct {
 					Version string `json:"version"`
 				}
+
 				_ = json.Unmarshal(body, &req)
 				version = strings.TrimSpace(req.Version)
 			}
@@ -945,15 +1042,19 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 	type topicLister interface {
 		ListTopics() ([]string, error)
 	}
+
 	type topicCounter interface {
 		TopicCount(topic string) (int64, error)
 	}
+
 	type topicPeeker interface {
 		Peek(topic string, limit int) ([]any, error)
 	}
+
 	type topicListerCtx interface {
 		ListTopics(ctx context.Context) ([]string, error)
 	}
+
 	type topicCounterCtx interface {
 		TopicCount(ctx context.Context, topic string) (int64, error)
 	}
@@ -963,6 +1064,7 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 	type consumerLagInspector interface {
 		ConsumerLag(ctx context.Context, group string, topic string) ([]debugtypes.ConsumerLagRow, error)
 	}
+
 	type messageStateInspector interface {
 		MessageStates(ctx context.Context, group, topic, status, owner string, limit int) ([]debugtypes.MessageStateRow, error)
 	}
@@ -990,6 +1092,7 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 				http.Error(w, "invalid partition", http.StatusBadRequest)
 				return
 			}
+
 			partFilter = &n
 		}
 
@@ -1025,9 +1128,11 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 			if out[i].Topic != out[j].Topic {
 				return out[i].Topic < out[j].Topic
 			}
+
 			if out[i].Group != out[j].Group {
 				return out[i].Group < out[j].Group
 			}
+
 			return out[i].Partition < out[j].Partition
 		})
 
@@ -1066,6 +1171,7 @@ func AttachTopicDebugRoutes(mux *http.ServeMux, b any) {
 				http.Error(w, "invalid limit", http.StatusBadRequest)
 				return
 			}
+
 			limit = n
 		}
 
@@ -1215,6 +1321,13 @@ func (r *Runner) handleDebugRun(w http.ResponseWriter, req *http.Request) {
 	run, ok := r.store.GetRun(runID)
 	if !ok {
 		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
+	traceID := traceIDFromRequest(req)
+	ctx := debugContextFromRequest(req, traceID)
+	if err := r.ensureRunTenantAccess(ctx, run, "debug.run"); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 

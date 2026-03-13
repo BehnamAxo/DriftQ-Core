@@ -42,10 +42,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	if _, err := r.authorizeWorkflow(ctx, runID, g); err != nil {
 		return err
 	}
+
 	riskReport, ctx, err := r.evaluateAndEnforceRisk(ctx, runID, g, initialInput)
 	if err != nil {
 		return err
 	}
+
+	requestedTenantID := effectiveTenantFromContext(ctx)
 
 	// helper: external cancel (via CancelRun) should stop scheduling ASAP
 	isCanceled := func() bool {
@@ -74,6 +77,13 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 	if ok {
 		run = existingRun
+		if err := r.ensureRunTenantAccess(ctx, run, "run.resume"); err != nil {
+			return err
+		}
+
+		if run.TenantID == "" && requestedTenantID != "" {
+			run.TenantID = requestedTenantID
+		}
 
 		// prefer stored workflow id if present
 		if run.WorkflowID != "" {
@@ -117,12 +127,16 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			}
 		}
 	} else {
+		if err := r.enforceTenantRunQuota(ctx, requestedTenantID, runID, wfID); err != nil {
+			return err
+		}
 		run = Run{
 			RunID:        runID,
 			WorkflowID:   wfID,
 			Status:       RunStatusQueued,
 			Spec:         cloneRaw(spec),
 			InitialInput: cloneRaw(initialInput),
+			TenantID:     requestedTenantID,
 		}
 
 		if err := r.store.CreateRun(run); err != nil {
@@ -208,7 +222,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	// v2.7: tenant + effective budget snapshot
 	tenantID := run.TenantID
 	if tenantID == "" {
-		tenantID = TenantIDFrom(ctx)
+		tenantID = requestedTenantID
 		if tenantID != "" {
 			run.TenantID = tenantID
 		}
@@ -294,6 +308,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 		if budgetExceeded {
 			return
 		}
+
 		budgetExceeded = true
 
 		end := time.Now().UTC()
@@ -321,6 +336,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			"status":          "failed",
 			"terminal_reason": "budget_exceeded",
 		})
+
 		_, _ = r.store.AppendEvent(RunEvent{
 			RunID:      runID,
 			Type:       EventRunFinished,

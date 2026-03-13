@@ -35,13 +35,14 @@ type Runner struct {
 	metrics *EngineMetrics
 	logger  *slog.Logger
 
-	mu           sync.RWMutex
-	graphs       map[string]WorkflowGraph // workflow_id -> graph
-	registry     *HandlerRegistry
-	policyMu     sync.RWMutex
-	policyBundle *AuthorizationPolicyBundle
-	riskMu       sync.RWMutex
-	riskPolicy   *RiskPolicy
+	mu               sync.RWMutex
+	graphs           map[string]WorkflowGraph // workflow_id -> graph
+	registry         *HandlerRegistry
+	tenantRegistries map[string]*HandlerRegistry
+	policyMu         sync.RWMutex
+	policyBundle     *AuthorizationPolicyBundle
+	riskMu           sync.RWMutex
+	riskPolicy       *RiskPolicy
 
 	maxParallel int // for join/fan out later
 	cancels     map[string]context.CancelFunc
@@ -53,6 +54,7 @@ type Runner struct {
 	// v2.7 budgets/throttles
 	defaultRunBudget BudgetPolicy
 	tenantBudgets    map[string]BudgetPolicy
+	tenantRunCaps    map[string]int
 	rateLimiter      RateLimiter
 
 	// (in-memory for now)
@@ -89,6 +91,8 @@ func NewRunner(store Store, opts ...RunnerOption) *Runner {
 		cancels:             make(map[string]context.CancelFunc),
 		artifactInlineLimit: DefaultArtifactInlineLimit,
 		tenantBudgets:       make(map[string]BudgetPolicy),
+		tenantRunCaps:       make(map[string]int),
+		tenantRegistries:    make(map[string]*HandlerRegistry),
 		topicCaps:           make(map[string]int),
 		tenantTopicCaps:     make(map[string]map[string]int),
 		inflightCaps:        make(map[string]int),
@@ -114,11 +118,18 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		ID:    wf.WorkflowID,
 		Nodes: append([]NodeDef(nil), wf.Nodes...),
 	}
+
 	if _, err := r.authorizeWorkflow(ctx, runID, g); err != nil {
 		return err
 	}
+
 	riskReport, ctx, err := r.evaluateAndEnforceRisk(ctx, runID, g, initialInput)
 	if err != nil {
+		return err
+	}
+
+	tenantID := effectiveTenantFromContext(ctx)
+	if err := r.enforceTenantRunQuota(ctx, tenantID, runID, wf.WorkflowID); err != nil {
 		return err
 	}
 
@@ -127,6 +138,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		RunID:      runID,
 		WorkflowID: wf.WorkflowID,
 		Status:     RunStatusQueued,
+		TenantID:   tenantID,
 	}
 
 	if err := r.store.CreateRun(run); err != nil {
@@ -435,10 +447,14 @@ func (r *Runner) SetLogger(l *slog.Logger) {
 }
 
 func (r *Runner) SetHandlerRegistry(reg *HandlerRegistry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.registry = reg
 }
 
 func (r *Runner) HandlerRegistry() *HandlerRegistry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.registry
 }
 

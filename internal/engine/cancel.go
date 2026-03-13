@@ -25,6 +25,10 @@ func (r *Runner) CancelRun(ctx context.Context, runID string, reason string) err
 		return ErrRunNotFound
 	}
 
+	if err := r.ensureRunTenantAccess(ctx, run, "run.cancel"); err != nil {
+		return err
+	}
+
 	if run.Status == RunStatusSucceeded || run.Status == RunStatusFailed {
 		return nil
 	}

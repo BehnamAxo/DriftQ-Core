@@ -36,6 +36,7 @@ type ArtifactMeta struct {
 	CreatedAt   time.Time `json:"created_at"`
 
 	// Keeping these around for debugging
+	TenantID   string `json:"tenant_id,omitempty"`
 	RunID      string `json:"run_id,omitempty"`
 	WorkflowID string `json:"workflow_id,omitempty"`
 	NodeID     string `json:"node_id,omitempty"`
