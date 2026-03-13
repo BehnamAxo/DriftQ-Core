@@ -2,10 +2,12 @@
 
 This document covers the current v3 foundations inside DriftQ-Core.
 
-Right now, v3 has two implemented foundation areas:
+Right now, v3 has four implemented foundation areas:
 
 - multi-agent messaging
 - guardrails and evaluation
+- governance and tenant isolation
+- human-in-the-loop workflow steps
 
 The goal is one coherent v3 track, not separate product docs per sub-slice.
 
@@ -98,6 +100,9 @@ Implemented now:
 - Re-execution of old runs against new workflow specs
 - Pass/fail promotion gate over the active index pointer
 - Failure-to-test-case capture flow from existing runs
+- Authorization policy bundles for workflow/tool access
+- Runtime risk scoring and policy decisions
+- Risk simulation and policy inspection through debug routes
 
 Built-in evaluators:
 
@@ -117,6 +122,10 @@ Core objects:
 - eval dataset
 - eval suite
 - eval run/report
+- authorization policy bundle
+- risk policy
+- workflow authorization report
+- workflow risk report
 
 Dataset case fields can include:
 
@@ -146,6 +155,55 @@ Eval report includes:
 - per-case results
 - final pass/fail
 
+### Governance and tenant isolation foundation
+
+Implemented now:
+
+- tenant-aware run access boundaries
+- tenant-aware artifact access boundaries
+- tenant-scoped handler registries/config
+- per-tenant active run caps
+- reuse of existing per-tenant budget and topic-cap controls
+- audit-ready records for authorization, risk, governance, and human decisions
+- safer multi-tenant runtime/debug defaults
+
+Current scope notes:
+
+- foundation layer rather than a full enterprise governance suite
+- no dedicated admin UI yet
+- no retention/export/search tooling for audits yet
+- no org hierarchy or delegated admin model yet
+
+Core objects:
+
+- audit record
+- tenant-scoped handler registry mapping
+- tenant active run cap
+
+### Human-in-the-loop foundation
+
+Implemented now:
+
+- workflow-native human approval steps
+- workflow-native human review/edit steps
+- timeout behavior with approve/reject/cancel actions
+- resume-after-approval using the existing waiting/timer machinery
+- risk-based escalation into human approval before execution continues
+- debug endpoints to list and resolve pending human tasks
+
+Current scope notes:
+
+- foundation layer aimed at runtime behavior first
+- no dedicated UI yet
+- no async notification delivery yet
+- no rich assignment/escalation rules yet
+
+Core objects:
+
+- human step spec
+- human task
+- human approval pending error
+
 ## Current debug endpoints
 
 ### Multi-agent
@@ -173,6 +231,17 @@ v3 messaging uses the existing broker API rather than new v3-specific endpoints:
 - `POST /debug/evals/case-from-run`
 - `POST /debug/evals/promote`
 
+### Guardrails / Governance / HITL
+
+- `GET /debug/policy`
+- `POST /debug/policy`
+- `GET /debug/risk-policy`
+- `POST /debug/risk-policy`
+- `GET /debug/audit`
+- `GET /debug/human/tasks`
+- `POST /debug/human/respond`
+- `POST /debug/run-spec`
+
 ## Example flow
 
 1. Start `driftqd` with multi-agent config if you need agent routing.
@@ -188,6 +257,8 @@ v3 is being built as a single track on top of the existing broker and workflow e
 
 - messaging provides the transport and contract for agents
 - evaluation provides regression checks and guarded promotion for workflow changes
+- authorization, risk, and governance provide runtime guardrails and tenant safety
+- human-in-the-loop provides first-class review/approval pauses inside workflow execution
 
 The current implementation intentionally reuses:
 
@@ -196,3 +267,4 @@ The current implementation intentionally reuses:
 - stored `Run.InitialInput`
 - replayable engine execution
 - existing active index promote/rollback primitives
+- existing waiting/timer resume primitives for human approval flows

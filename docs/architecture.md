@@ -1,6 +1,6 @@
 # DriftQ-Core Architecture
 
-This document describes the internal architecture of DriftQ-Core, a durable message broker (v1) with workflow runtime foundations (v2).
+This document describes the internal architecture of DriftQ-Core, a durable message broker (v1) with workflow runtime foundations (v2) and v3 runtime guardrails.
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@ DriftQ-Core is a single Go binary that provides two main subsystems:
 | Subsystem | Status | Purpose |
 |-----------|--------|---------|
 | **v1 Broker** | Stable | Kafka-like message broker with topics, partitions, consumer groups |
-| **v2 Engine** | Evolving | Temporal-like workflow runtime with DAG scheduling, replay, artifacts |
+| **v2 Engine / v3 Runtime** | Evolving | Temporal-like workflow runtime with DAG scheduling, replay, artifacts, guardrails, governance, and HITL |
 
 Both subsystems share core infrastructure (HTTP server, WAL storage, metrics) but operate independently. You can use v1 alone as a simple message queue, or combine both for durable workflow orchestration.
 
@@ -153,10 +153,14 @@ type Runner struct {
     store           Store               // Durable state
     graphs          map[string]WorkflowGraph  // Cached workflow definitions
     registry        *HandlerRegistry    // Step handlers
+    tenantRegistries map[string]*HandlerRegistry
     artifacts       ArtifactStore       // Large output storage
     cancels         map[string]context.CancelFunc
+    policyBundle    *AuthorizationPolicyBundle
+    riskPolicy      *RiskPolicy
     defaultRunBudget BudgetPolicy
     tenantBudgets   map[string]BudgetPolicy
+    tenantRunCaps   map[string]int
     rateLimiter     RateLimiter
 }
 ```
@@ -222,6 +226,7 @@ type Run struct {
     Status       RunStatus       // queued|running|waiting|succeeded|failed|canceled
     Spec         json.RawMessage // Stored workflow spec (for replay)
     InitialInput json.RawMessage // Original input (for replay)
+    TenantID     string          // Tenant ownership / isolation scope
     RunBudget    BudgetPolicy    // Resource limits
     BudgetUsage  BudgetUsage     // Current usage
 }
@@ -254,6 +259,33 @@ type Timer struct {
     FireAt  time.Time
 }
 ```
+
+#### v3 runtime guardrails layered on top of the engine
+
+The same runner now performs a layered preflight before execution:
+
+1. authorization check
+2. runtime risk evaluation
+3. tenant governance / quota checks
+4. optional human approval pause
+5. workflow execution
+
+Additional runtime concepts now carried by the engine:
+
+- `Principal` for caller identity, roles, capabilities, and tenant scope
+- authorization policy bundles for workflow/tool decisions
+- risk policy + workflow risk reports
+- tenant-scoped registries and tenant access checks
+- audit records for policy/governance/HITL decisions
+- human tasks for approval/review-edit steps
+
+This lets the runner:
+
+- deny unauthorized runs before creation
+- sandbox or block risky runs
+- stage manual approval before side effects
+- isolate runs and artifacts by tenant
+- resume waiting runs after timers or human responses
 
 #### Replay Modes
 

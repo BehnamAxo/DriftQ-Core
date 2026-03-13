@@ -131,6 +131,10 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - Eval runs that re-execute stored workflow cases, including source-run-derived cases with optional workflow overrides
 - Promotion gate over the existing active index pointer
 - Failure-to-test-case capture flow for turning runs into regression cases
+- Authorization and policy rules for workflow/tool access
+- Runtime risk scoring with sandbox / approval / block decisions
+- Tenant isolation, tenant-scoped registries, quotas, and audit logs
+- Human-in-the-loop workflow steps with approval, review/edit, timeout, and resume behavior
 - Debug API documentation:
   - `docs/v3/v3-README.md`
 
