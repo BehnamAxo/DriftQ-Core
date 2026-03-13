@@ -21,9 +21,9 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 // ReplayFrom replays (or redrives) a run starting at a specific step.
 //
 // Semantics:
-// - mode=time_travel: reuse any already-succeeded outputs when possible.
-//   If fromStep has already succeeded, we keep it and replay downstream only.
-// - mode=live: force re-execution starting at fromStep.
+//   - mode=time_travel: reuse any already-succeeded outputs when possible.
+//     If fromStep has already succeeded, we keep it and replay downstream only.
+//   - mode=live: force re-execution starting at fromStep.
 //
 // Implementation note: we keep history by marking prior node executions/timers as
 // canceled instead of deleting them. New attempts will have higher attempt numbers.
@@ -31,6 +31,10 @@ func (r *Runner) ReplayFrom(ctx context.Context, runID, fromStep string, mode Re
 	run, ok := r.store.GetRun(runID)
 	if !ok {
 		return ErrRunNotFound
+	}
+
+	if err := r.ensureRunTenantAccess(ctx, run, "run.replay"); err != nil {
+		return err
 	}
 
 	// 1) Prefer cached executable graph (fast path)
@@ -119,7 +123,9 @@ func (r *Runner) compileExecutableFromStoredSpec(runID string, run Run) (Workflo
 			run.WorkflowID, runID,
 		)
 	}
-	if r.registry == nil {
+
+	reg := r.HandlerRegistryForTenant(run.TenantID)
+	if reg == nil {
 		return WorkflowGraph{}, fmt.Errorf(
 			"replay: no cached graph; runner has no handler registry to compile stored spec (workflow_id=%q run_id=%q)",
 			run.WorkflowID, runID,
@@ -131,7 +137,7 @@ func (r *Runner) compileExecutableFromStoredSpec(runID string, run Run) (Workflo
 		return WorkflowGraph{}, fmt.Errorf("replay: parse stored spec failed: %w", err)
 	}
 
-	exec2, err := CompileSpecToExecutable(spec, g, r.registry)
+	exec2, err := CompileSpecToExecutable(spec, g, reg)
 	if err != nil {
 		return WorkflowGraph{}, fmt.Errorf("replay: compile stored spec failed: %w", err)
 	}

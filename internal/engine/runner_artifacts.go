@@ -26,6 +26,7 @@ func (r *Runner) buildNodeFinishedPayload(ctx context.Context, runID, workflowID
 	ref, meta, err := r.PutArtifact(ctx, out, ArtifactMeta{
 		ContentType: "application/json",
 
+		TenantID:   effectiveTenantFromContext(ctx),
 		RunID:      runID,
 		WorkflowID: workflowID,
 		NodeID:     nodeID,
@@ -93,7 +94,16 @@ func (r *Runner) GetArtifact(ctx context.Context, artifactID string) ([]byte, Ar
 		return nil, ArtifactMeta{}, err
 	}
 
-	return s.Get(ctx, strings.TrimSpace(artifactID))
+	data, meta, err := s.Get(ctx, strings.TrimSpace(artifactID))
+	if err != nil {
+		return nil, ArtifactMeta{}, err
+	}
+
+	if err := r.ensureArtifactTenantAccess(ctx, meta, "artifact.get"); err != nil {
+		return nil, ArtifactMeta{}, err
+	}
+
+	return data, meta, nil
 }
 
 func (r *Runner) DeleteArtifact(ctx context.Context, artifactID string) error {
@@ -102,5 +112,15 @@ func (r *Runner) DeleteArtifact(ctx context.Context, artifactID string) error {
 		return err
 	}
 
-	return s.Delete(ctx, strings.TrimSpace(artifactID))
+	artifactID = strings.TrimSpace(artifactID)
+	_, meta, err := s.Get(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+
+	if err := r.ensureArtifactTenantAccess(ctx, meta, "artifact.delete"); err != nil {
+		return err
+	}
+
+	return s.Delete(ctx, artifactID)
 }

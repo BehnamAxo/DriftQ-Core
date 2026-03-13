@@ -678,6 +678,23 @@ func (r *Runner) authorizeWorkflow(ctx context.Context, runID string, g Workflow
 		return nil, err
 	}
 
+	r.appendAuditRecord(ctx, AuditRecord{
+		TenantID:     report.TenantID,
+		PrincipalID:  report.Principal.ID,
+		Action:       "authorization.evaluate",
+		ResourceType: "workflow",
+		ResourceID:   report.WorkflowID,
+		RunID:        report.RunID,
+		WorkflowID:   report.WorkflowID,
+		Outcome: func() AuditOutcome {
+			if report.Allowed {
+				return AuditOutcomeAllowed
+			}
+			return AuditOutcomeDenied
+		}(),
+		Reason: report.Reason,
+	})
+
 	if !report.Allowed {
 		return &report, &AuthorizationError{Report: report}
 	}

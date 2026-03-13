@@ -341,6 +341,23 @@ func (r *Runner) evaluateAndEnforceRisk(ctx context.Context, runID string, g Wor
 		return WorkflowRiskReport{}, ctx, err
 	}
 
+	r.appendAuditRecord(ctx, AuditRecord{
+		TenantID:     report.TenantID,
+		PrincipalID:  report.Principal.ID,
+		Action:       "risk.evaluate",
+		ResourceType: "workflow",
+		ResourceID:   report.WorkflowID,
+		RunID:        report.RunID,
+		WorkflowID:   report.WorkflowID,
+		Outcome: func() AuditOutcome {
+			if report.Allowed {
+				return AuditOutcomeAllowed
+			}
+			return AuditOutcomeDenied
+		}(),
+		Reason: report.Reason,
+	})
+
 	ctx = WithRiskDecision(ctx, RuntimeRiskDecision{
 		Action:   report.Action,
 		Score:    report.Score,
