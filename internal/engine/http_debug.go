@@ -161,6 +161,99 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 	})
 
+	mux.HandleFunc("/debug/tool-gateway", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost:
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		switch r.Method {
+		case http.MethodGet:
+			bundle, ok, err := runner.GetToolGatewayBundle()
+			if err != nil {
+				http.Error(w, "get tool gateway failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				bundle = ToolGatewayBundle{}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"bundle":    bundle,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+
+		case http.MethodPost:
+			var body ToolGatewayBundle
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			if err := runner.SaveToolGatewayBundle(body); err != nil {
+				http.Error(w, "save tool gateway failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			bundle, _, _ := runner.GetToolGatewayBundle()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"bundle":    bundle,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+		}
+	})
+
+	mux.HandleFunc("/debug/tool-calls", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+		tool := strings.TrimSpace(r.URL.Query().Get("tool"))
+		limit := 100
+		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+			n, err := strconv.Atoi(rawLimit)
+			if err != nil || n < 1 {
+				http.Error(w, "limit must be a positive int", http.StatusBadRequest)
+				return
+			}
+			limit = n
+		}
+
+		records, err := runner.ListToolCallRecords(ctx, runID, tool, limit)
+		if err != nil {
+			http.Error(w, "list tool calls failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"count":     len(records),
+			"records":   records,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
 	mux.HandleFunc("/debug/human/tasks", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)

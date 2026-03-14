@@ -31,6 +31,8 @@ type NodeDef struct {
 	Topic              string
 	RequiredCapability string
 	Human              *HumanStepSpec
+	InputSchema        json.RawMessage
+	OutputSchema       json.RawMessage
 	Run                NodeFunc
 	TimeoutMS          int
 }
@@ -49,6 +51,8 @@ type Runner struct {
 	policyBundle     *AuthorizationPolicyBundle
 	riskMu           sync.RWMutex
 	riskPolicy       *RiskPolicy
+	toolMu           sync.RWMutex
+	toolGateway      *ToolGatewayBundle
 
 	maxParallel int // for join/fan out later
 	cancels     map[string]context.CancelFunc
@@ -325,7 +329,23 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			toolSpanStarted = true
 		}
 
-		output, nodeErr := node.Run(execCtx, cloneRaw(input))
+		var output json.RawMessage
+		var nodeErr error
+		if strings.TrimSpace(node.Topic) != "" {
+			output, nodeErr = r.invokeTool(execCtx, toolInvocation{
+				RunID:              runID,
+				WorkflowID:         wf.WorkflowID,
+				NodeID:             node.NodeID,
+				Attempt:            attempt,
+				Tool:               node.Topic,
+				RequiredCapability: node.RequiredCapability,
+				InputSchema:        cloneRaw(node.InputSchema),
+				OutputSchema:       cloneRaw(node.OutputSchema),
+				Handler:            node.Run,
+			}, cloneRaw(input))
+		} else {
+			output, nodeErr = node.Run(execCtx, cloneRaw(input))
+		}
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
 

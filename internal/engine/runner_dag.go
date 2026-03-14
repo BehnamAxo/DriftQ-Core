@@ -708,6 +708,19 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						}
 					}()
 
+					if strings.TrimSpace(n.Topic) != "" {
+						return r.invokeTool(toolCtx, toolInvocation{
+							RunID:              runID,
+							WorkflowID:         wfID,
+							NodeID:             n.NodeID,
+							Attempt:            att,
+							Tool:               n.Topic,
+							RequiredCapability: n.RequiredCapability,
+							InputSchema:        cloneRaw(n.InputSchema),
+							OutputSchema:       cloneRaw(n.OutputSchema),
+							Handler:            n.Run,
+						}, cloneRaw(inp))
+					}
 					return n.Run(toolCtx, cloneRaw(inp))
 				}()
 

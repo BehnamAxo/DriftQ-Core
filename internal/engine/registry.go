@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -34,10 +35,15 @@ func CompileSpecToExecutable(spec WorkflowSpec, g WorkflowGraph, reg *HandlerReg
 	topicByNode := map[string]string{}
 	capabilityByNode := map[string]string{}
 	humanByNode := map[string]*HumanStepSpec{}
+	inputSchemaByNode := map[string]json.RawMessage{}
+	outputSchemaByNode := map[string]json.RawMessage{}
+
 	for _, n := range spec.Nodes {
 		topicByNode[n.ID] = n.Topic
 		capabilityByNode[n.ID] = strings.TrimSpace(n.Capability)
 		humanByNode[n.ID] = cloneHumanStepSpec(n.Human)
+		inputSchemaByNode[n.ID] = cloneRaw(n.Input)
+		outputSchemaByNode[n.ID] = cloneRaw(n.Output)
 	}
 
 	out := WorkflowGraph{ID: g.ID, Edges: append([]NodeEdge(nil), g.Edges...)}
@@ -67,6 +73,8 @@ func CompileSpecToExecutable(spec WorkflowSpec, g WorkflowGraph, reg *HandlerReg
 			Topic:              topic,
 			RequiredCapability: capabilityByNode[nd.NodeID],
 			Human:              human,
+			InputSchema:        cloneRaw(inputSchemaByNode[nd.NodeID]),
+			OutputSchema:       cloneRaw(outputSchemaByNode[nd.NodeID]),
 			Run:                fn,
 		})
 	}
