@@ -925,6 +925,134 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
+	mux.HandleFunc("/debug/agent-state", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost:
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		switch r.Method {
+		case http.MethodGet:
+			agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+			if agentID == "" {
+				http.Error(w, "agent_id is required", http.StatusBadRequest)
+				return
+			}
+
+			opts := AgentStateReadOptions{}
+			if rawVersion := strings.TrimSpace(r.URL.Query().Get("version")); rawVersion != "" {
+				version, err := strconv.Atoi(rawVersion)
+				if err != nil || version < 1 {
+					http.Error(w, "version must be a positive int", http.StatusBadRequest)
+					return
+				}
+				opts.Version = version
+			}
+
+			snapshot, err := runner.ReadAgentState(ctx, agentID, opts)
+			if err != nil {
+				switch {
+				case errors.Is(err, ErrAgentStateNotFound):
+					http.Error(w, err.Error(), http.StatusNotFound)
+				case errors.Is(err, ErrTenantAccessDenied), errors.Is(err, ErrAgentStateAccessDenied):
+					http.Error(w, err.Error(), http.StatusForbidden)
+				default:
+					http.Error(w, "read agent state failed: "+err.Error(), http.StatusBadRequest)
+				}
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"snapshot":  snapshot,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+
+		case http.MethodPost:
+			var body AgentStateWriteRequest
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			snapshot, err := runner.WriteAgentState(ctx, body)
+			if err != nil {
+				switch {
+				case errors.Is(err, ErrAgentStateReplayWriteDenied), errors.Is(err, ErrAgentStateVersionConflict):
+					http.Error(w, err.Error(), http.StatusConflict)
+				case errors.Is(err, ErrTenantAccessDenied), errors.Is(err, ErrAgentStateAccessDenied):
+					http.Error(w, err.Error(), http.StatusForbidden)
+				default:
+					http.Error(w, "write agent state failed: "+err.Error(), http.StatusBadRequest)
+				}
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"snapshot":  snapshot,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+		}
+	})
+
+	mux.HandleFunc("/debug/agent-state/lineage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+		if agentID == "" {
+			http.Error(w, "agent_id is required", http.StatusBadRequest)
+			return
+		}
+
+		limit := 100
+		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+			n, err := strconv.Atoi(rawLimit)
+			if err != nil || n < 1 {
+				http.Error(w, "limit must be a positive int", http.StatusBadRequest)
+				return
+			}
+			limit = n
+		}
+
+		lineage, err := runner.ListAgentStateLineage(ctx, agentID, limit)
+		if err != nil {
+			if errors.Is(err, ErrTenantAccessDenied) || errors.Is(err, ErrAgentStateAccessDenied) {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			http.Error(w, "list agent state lineage failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"count":     len(lineage),
+			"lineage":   lineage,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
 	mux.HandleFunc("/debug/artifact-meta", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
