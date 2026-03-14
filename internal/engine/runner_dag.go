@@ -274,6 +274,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 	// make tenant available to handlers
 	ctx = WithTenantID(ctx, tenantID)
+	ctx = WithAgentStateContext(ctx, r)
 
 	// per-run cancelable context so /run-cancel can interrupt in-flight node.Run
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -652,6 +653,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 			go func() {
 				stepCtx := WithAttempt(runCtx, att)
+				stepCtx = WithExecutionRef(stepCtx, ExecutionRef{
+					RunID:      runID,
+					WorkflowID: wfID,
+					NodeID:     n.NodeID,
+					Attempt:    att,
+				})
 
 				// Make the runner's artifact store available to node handlers. This is what ArtifactStoreFrom(ctx) reads
 				if r.artifacts != nil {

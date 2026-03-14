@@ -30,6 +30,7 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 // Implementation note: we keep history by marking prior node executions/timers as
 // canceled instead of deleting them. New attempts will have higher attempt numbers.
 func (r *Runner) ReplayFrom(ctx context.Context, runID, fromStep string, mode ReplayMode) (err error) {
+	ctx = WithReplayScope(ctx, runID, mode)
 	ctx, span := r.startSpan(ctx, "driftq.replay.run",
 		attribute.String("driftq.run_id", strings.TrimSpace(runID)),
 		attribute.String("driftq.replay.mode", string(mode)),

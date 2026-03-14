@@ -387,6 +387,10 @@ func debugTenantIDFromRequest(r *http.Request) string {
 	return strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 }
 
+func debugAgentIDFromRequest(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Agent-Id"))
+}
+
 func debugContextFromRequest(r *http.Request, traceID string) context.Context {
 	traceID = strings.TrimSpace(traceID)
 	ctx := r.Context()
@@ -396,6 +400,10 @@ func debugContextFromRequest(r *http.Request, traceID string) context.Context {
 
 	if tenantID := debugTenantIDFromRequest(r); tenantID != "" {
 		ctx = WithTenantID(ctx, tenantID)
+	}
+
+	if agentID := debugAgentIDFromRequest(r); agentID != "" {
+		ctx = WithAgentID(ctx, agentID)
 	}
 	return ctx
 }

@@ -221,6 +221,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 
 	// 3) Execute nodes sequentially
 	input := cloneRaw(initialInput)
+	ctx = WithAgentStateContext(ctx, r)
 
 	for _, node := range wf.Nodes {
 		select {
@@ -304,7 +305,13 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			Attempt:    attempt,
 		})
 
-		nodeCtx, nodeSpan := r.startSpan(ctx, "driftq.node.execute", nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)...)
+		nodeCtx := WithExecutionRef(ctx, ExecutionRef{
+			RunID:      runID,
+			WorkflowID: wf.WorkflowID,
+			NodeID:     node.NodeID,
+			Attempt:    attempt,
+		})
+		nodeCtx, nodeSpan := r.startSpan(nodeCtx, "driftq.node.execute", nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)...)
 		execCtx := nodeCtx
 		var toolSpanAttrs []attribute.KeyValue
 		var toolSpanName string
