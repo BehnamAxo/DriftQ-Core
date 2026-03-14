@@ -1053,6 +1053,127 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		})
 	})
 
+	mux.HandleFunc("/debug/agent-memory", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost:
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		switch r.Method {
+		case http.MethodGet:
+			agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+			if agentID == "" {
+				http.Error(w, "agent_id is required", http.StatusBadRequest)
+				return
+			}
+
+			limit := 50
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				n, err := strconv.Atoi(rawLimit)
+				if err != nil || n < 1 {
+					http.Error(w, "limit must be a positive int", http.StatusBadRequest)
+					return
+				}
+				limit = n
+			}
+
+			entries, err := runner.ListAgentMemory(ctx, agentID, limit)
+			if err != nil {
+				switch {
+				case errors.Is(err, ErrTenantAccessDenied), errors.Is(err, ErrAgentMemoryAccessDenied):
+					http.Error(w, err.Error(), http.StatusForbidden)
+				default:
+					http.Error(w, "list agent memory failed: "+err.Error(), http.StatusBadRequest)
+				}
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"count":     len(entries),
+				"entries":   entries,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+
+		case http.MethodPost:
+			var body AgentMemoryWriteRequest
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			entry, err := runner.WriteAgentMemory(ctx, body)
+			if err != nil {
+				switch {
+				case errors.Is(err, ErrAgentMemoryReplayWriteDenied):
+					http.Error(w, err.Error(), http.StatusConflict)
+				case errors.Is(err, ErrTenantAccessDenied), errors.Is(err, ErrAgentMemoryAccessDenied), errors.Is(err, ErrAgentStateAccessDenied):
+					http.Error(w, err.Error(), http.StatusForbidden)
+				default:
+					http.Error(w, "write agent memory failed: "+err.Error(), http.StatusBadRequest)
+				}
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"entry":     entry,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+		}
+	})
+
+	mux.HandleFunc("/debug/agent-memory/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		var body AgentMemorySearchRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		results, err := runner.SearchAgentMemory(ctx, body)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrTenantAccessDenied), errors.Is(err, ErrAgentMemoryAccessDenied):
+				http.Error(w, err.Error(), http.StatusForbidden)
+			default:
+				http.Error(w, "search agent memory failed: "+err.Error(), http.StatusBadRequest)
+			}
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"count":     len(results),
+			"results":   results,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
 	mux.HandleFunc("/debug/artifact-meta", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
