@@ -1,6 +1,6 @@
 # DriftQ-Core Architecture
 
-This document describes the internal architecture of DriftQ-Core, a durable message broker (v1) with workflow runtime foundations (v2) and v3 runtime guardrails.
+This document describes the internal architecture of DriftQ-Core, a durable message broker (v1) with workflow runtime foundations (v2), v3 runtime guardrails, and OpenTelemetry-native observability.
 
 ## Table of Contents
 
@@ -24,9 +24,9 @@ DriftQ-Core is a single Go binary that provides two main subsystems:
 | Subsystem | Status | Purpose |
 |-----------|--------|---------|
 | **v1 Broker** | Stable | Kafka-like message broker with topics, partitions, consumer groups |
-| **v2 Engine / v3 Runtime** | Evolving | Temporal-like workflow runtime with DAG scheduling, replay, artifacts, guardrails, governance, and HITL |
+| **v2 Engine / v3 Runtime** | Evolving | Temporal-like workflow runtime with DAG scheduling, replay, artifacts, guardrails, governance, HITL, and OTLP-friendly telemetry |
 
-Both subsystems share core infrastructure (HTTP server, WAL storage, metrics) but operate independently. You can use v1 alone as a simple message queue, or combine both for durable workflow orchestration.
+Both subsystems share core infrastructure (HTTP server, WAL storage, metrics, tracing) but operate independently. You can use v1 alone as a simple message queue, or combine both for durable workflow orchestration.
 
 
 ## High-Level Architecture
@@ -41,6 +41,7 @@ Both subsystems share core infrastructure (HTTP server, WAL storage, metrics) bu
 │  │  /v1/* (broker)              │   │  topics list|create|peek     │    │
 │  │  /debug/* (engine)           │   │  runs list|status|replay...  │    │
 │  │  /metrics (prometheus)       │   │                              │    │
+│  │  OTLP trace/metric export    │   │                              │    │
 │  └──────────────┬───────────────┘   └──────────────────────────────┘    │
 │                 │                                                       │
 │  ┌──────────────▼───────────────┐   ┌──────────────────────────────┐    │
@@ -151,6 +152,7 @@ The workflow execution engine (`internal/engine/runner.go`):
 ```go
 type Runner struct {
     store           Store               // Durable state
+    obs             *runtimeTelemetry   // OTel spans + metrics
     graphs          map[string]WorkflowGraph  // Cached workflow definitions
     registry        *HandlerRegistry    // Step handlers
     tenantRegistries map[string]*HandlerRegistry
@@ -164,6 +166,20 @@ type Runner struct {
     rateLimiter     RateLimiter
 }
 ```
+
+### Runtime Observability
+
+`driftqd` initializes OpenTelemetry providers and HTTP trace propagation before the broker and engine are created. The engine then emits spans for:
+
+- workflow runs
+- node execution
+- authorization checks
+- risk evaluation
+- governance / tenant checks
+- human wait and resolution
+- replay operations
+
+The engine also emits matching OTel metrics for run outcomes, node outcomes, authz/risk/governance decisions, human tasks, and replay activity. OTLP export complements the existing Prometheus `/metrics` endpoint and the structured logs that already include `trace_id`.
 
 #### Store Interface
 
@@ -367,6 +383,7 @@ Client Request
       ▼
 ┌─────────────────┐
 │  Request Logger │  (trace_id, req_id, method, path, duration)
+│  OTel Middleware│  (traceparent extract, server span, OTLP export)
 └────────┬────────┘
          │
          ▼
@@ -375,6 +392,7 @@ Client Request
 │  /v1/* → broker │
 │  /debug/* → eng │
 │  /metrics → prom│
+│  OTLP → collector│
 └────────┬────────┘
          │
          ▼
@@ -393,6 +411,7 @@ Client Request
 | `/v1/*` | `cmd/driftqd/main.go` | Stable broker API |
 | `/debug/*` | `internal/engine/http_debug.go` | Evolving engine API |
 | `/metrics` | `promhttp.Handler()` | Prometheus metrics |
+| OTLP/HTTP exporter | `internal/observability` | OpenTelemetry traces + metrics |
 
 
 ## Data Flow

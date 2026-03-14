@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type ReplayMode string
@@ -27,7 +29,19 @@ func (r *Runner) Replay(ctx context.Context, runID string, mode ReplayMode) erro
 //
 // Implementation note: we keep history by marking prior node executions/timers as
 // canceled instead of deleting them. New attempts will have higher attempt numbers.
-func (r *Runner) ReplayFrom(ctx context.Context, runID, fromStep string, mode ReplayMode) error {
+func (r *Runner) ReplayFrom(ctx context.Context, runID, fromStep string, mode ReplayMode) (err error) {
+	ctx, span := r.startSpan(ctx, "driftq.replay.run",
+		attribute.String("driftq.run_id", strings.TrimSpace(runID)),
+		attribute.String("driftq.replay.mode", string(mode)),
+		attribute.String("driftq.replay.from_step", strings.TrimSpace(fromStep)),
+	)
+	defer func() {
+		if r.obs != nil {
+			r.obs.observeReplay(mode, err == nil)
+		}
+		r.finishSpan(span, err)
+	}()
+
 	run, ok := r.store.GetRun(runID)
 	if !ok {
 		return ErrRunNotFound

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var ErrAuthorizationDenied = errors.New("authorization denied")
@@ -672,8 +674,28 @@ func (r *Runner) EvaluateWorkflowAuthorization(ctx context.Context, runID string
 	return report, nil
 }
 
-func (r *Runner) authorizeWorkflow(ctx context.Context, runID string, g WorkflowGraph) (*WorkflowAuthorizationReport, error) {
-	report, err := r.EvaluateWorkflowAuthorization(ctx, runID, g)
+func (r *Runner) authorizeWorkflow(ctx context.Context, runID string, g WorkflowGraph) (report *WorkflowAuthorizationReport, err error) {
+	principal, _ := PrincipalFrom(ctx)
+	ctx, span := r.startSpan(ctx, "driftq.authz.evaluate",
+		append(workflowSpanAttributes(runID, g.ID, effectiveTenantFromContext(ctx)), principalSpanAttributes(principal)...)...,
+	)
+	defer func() {
+		if report != nil {
+			if r.obs != nil {
+				r.obs.observeAuthorization(*report)
+			}
+			r.finishSpan(span, err,
+				attribute.Bool("driftq.authz.allowed", report.Allowed),
+				attribute.String("driftq.authz.mode", string(report.Mode)),
+			)
+			return
+		}
+		r.finishSpan(span, err)
+	}()
+
+	reportValue, evalErr := r.EvaluateWorkflowAuthorization(ctx, runID, g)
+	report = &reportValue
+	err = evalErr
 	if err != nil {
 		return nil, err
 	}
@@ -696,8 +718,8 @@ func (r *Runner) authorizeWorkflow(ctx context.Context, runID string, g Workflow
 	})
 
 	if !report.Allowed {
-		return &report, &AuthorizationError{Report: report}
+		return report, &AuthorizationError{Report: *report}
 	}
 
-	return &report, nil
+	return report, nil
 }

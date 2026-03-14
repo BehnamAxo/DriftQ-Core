@@ -25,6 +25,7 @@ import (
 	"github.com/driftq-org/DriftQ-Core/internal/engine"
 	v1 "github.com/driftq-org/DriftQ-Core/internal/httpapi/v1"
 	"github.com/driftq-org/DriftQ-Core/internal/multiagent"
+	"github.com/driftq-org/DriftQ-Core/internal/observability"
 	"github.com/driftq-org/DriftQ-Core/internal/storage"
 	ui "github.com/driftq-org/DriftQ-Core/ui"
 	"github.com/prometheus/client_golang/prometheus"
@@ -214,16 +215,6 @@ func remoteIP(addr string) string {
 	return addr
 }
 
-type traceIDKey struct{}
-
-func withTraceID(ctx context.Context, traceID string) context.Context {
-	return context.WithValue(ctx, traceIDKey{}, traceID)
-}
-
-func newTraceID() string {
-	return newRequestID()
-}
-
 func withRequestLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -235,15 +226,14 @@ func withRequestLogging(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-Id", reqID)
 
-		// trace id (new)
-		traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		traceID := strings.TrimSpace(engine.TraceIDFrom(r.Context()))
 		if traceID == "" {
-			traceID = newTraceID()
+			traceID = strings.TrimSpace(r.Header.Get("X-Trace-Id"))
+		}
+		if traceID == "" {
+			traceID = engine.NewTraceID()
 		}
 		w.Header().Set("X-Trace-Id", traceID)
-
-		// inject into context so downstream handlers can use it
-		r = r.WithContext(withTraceID(r.Context(), traceID))
 
 		rec := &statusRecorder{ResponseWriter: w}
 
@@ -349,6 +339,11 @@ func main() {
 
 	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
 	logFormat := flag.String("log-format", "text", "log format: text|json")
+	otelEnabled := flag.Bool("otel-enabled", false, "enable OTLP trace and metric export")
+	otelServiceName := flag.String("otel-service-name", "driftqd", "OpenTelemetry service name")
+	otelEndpoint := flag.String("otel-endpoint", "localhost:4318", "OTLP/HTTP collector endpoint host:port")
+	otelInsecure := flag.Bool("otel-insecure", true, "use insecure OTLP/HTTP transport")
+	otelMetricsInterval := flag.Duration("otel-metrics-interval", 10*time.Second, "OpenTelemetry metrics export interval")
 
 	maxPartitionBytes := flag.Int("max-partition-bytes", 0, "Max bytes buffered per partition (0 = broker default)")
 	maxPartitionMsgs := flag.Int("max-partition-msgs", 0, "Max messages buffered per partition (0 = broker default)")
@@ -360,6 +355,25 @@ func main() {
 	flag.Parse()
 
 	logger := configureLogger(*logLevel, *logFormat)
+
+	otelShutdown, err := observability.Setup(context.Background(), observability.Config{
+		Enabled:         *otelEnabled,
+		ServiceName:     *otelServiceName,
+		ServiceVersion:  normalizeOr(buildVersion, "dev"),
+		Endpoint:        strings.TrimSpace(*otelEndpoint),
+		Insecure:        *otelInsecure,
+		MetricsInterval: *otelMetricsInterval,
+	})
+	if err != nil {
+		fatal("failed to initialize observability", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelShutdown(ctx); err != nil {
+			logger.Error("observability shutdown failed", "err", err)
+		}
+	}()
 
 	// Optional safe reset: move existing WAL aside so we start fresh
 	if *resetWAL {
@@ -408,6 +422,8 @@ func main() {
 		"wal_sync_interval", walSyncInterval.String(),
 		"wal_buffer_bytes", *walBufferBytes,
 		"access_log", *accessLog,
+		"otel_enabled", *otelEnabled,
+		"otel_endpoint", strings.TrimSpace(*otelEndpoint),
 	)
 
 	produceRejected := prometheus.NewCounterVec(
@@ -695,8 +711,9 @@ func main() {
 
 	handler := http.Handler(rootMux)
 	if *accessLog {
-		handler = withRequestLogging(rootMux)
+		handler = withRequestLogging(handler)
 	}
+	handler = observability.Middleware(*otelServiceName, handler)
 
 	srv := &http.Server{
 		Addr:         *addr,

@@ -2,12 +2,13 @@
 
 This document covers the current v3 foundations inside DriftQ-Core.
 
-Right now, v3 has four implemented foundation areas:
+Right now, v3 has five implemented foundation areas:
 
 - multi-agent messaging
 - guardrails and evaluation
 - governance and tenant isolation
 - human-in-the-loop workflow steps
+- OpenTelemetry-native observability
 
 The goal is one coherent v3 track, not separate product docs per sub-slice.
 
@@ -204,6 +205,31 @@ Core objects:
 - human task
 - human approval pending error
 
+### OpenTelemetry-native observability foundation
+
+Implemented now:
+
+- standard OpenTelemetry traces for workflow lifecycle, node execution, authz, risk, governance, HITL, and replay
+- standard OpenTelemetry metrics for runs, nodes, authz/risk/governance checks, human tasks, and replay activity
+- incoming trace-context extraction on HTTP requests so DriftQ spans correlate with upstream app traces
+- OTLP/HTTP trace and metric export from `driftqd`
+- existing structured logs continue to carry correlated `trace_id` values
+
+Current scope notes:
+
+- foundation layer aimed at production trace + metric export first
+- no dedicated dashboards are shipped yet
+- no OpenTelemetry log exporter is wired yet
+- Prometheus `/metrics` still exists alongside OTLP export
+
+Current `driftqd` observability flags:
+
+- `-otel-enabled`
+- `-otel-service-name`
+- `-otel-endpoint`
+- `-otel-insecure`
+- `-otel-metrics-interval`
+
 ## Current debug endpoints
 
 ### Multi-agent
@@ -268,3 +294,4 @@ The current implementation intentionally reuses:
 - replayable engine execution
 - existing active index promote/rollback primitives
 - existing waiting/timer resume primitives for human approval flows
+- HTTP request context propagation so engine spans nest under app/server traces

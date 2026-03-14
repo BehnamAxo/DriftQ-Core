@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -313,7 +315,29 @@ func (r *Runner) humanTimeoutFired(runID, nodeID string, attempt int) bool {
 	return false
 }
 
-func (r *Runner) ResolveHumanTask(ctx context.Context, taskID string, decision HumanDecision, editedInput json.RawMessage, comment string, resume bool) (HumanTask, error) {
+func (r *Runner) ResolveHumanTask(ctx context.Context, taskID string, decision HumanDecision, editedInput json.RawMessage, comment string, resume bool) (task HumanTask, err error) {
+	ctx, span := r.startSpan(ctx, "driftq.human.resolve",
+		attribute.String("driftq.human.task_id", strings.TrimSpace(taskID)),
+		attribute.String("driftq.human.decision", string(decision)),
+	)
+	defer func() {
+		if task.ID != "" && r.obs != nil {
+			wait := time.Duration(0)
+			if !task.CreatedAt.IsZero() && task.ResolvedAt != nil {
+				wait = task.ResolvedAt.Sub(task.CreatedAt)
+			}
+			r.obs.observeHumanTask("resolve", task, wait)
+		}
+		if task.ID != "" {
+			r.finishSpan(span, err,
+				attribute.String("driftq.human.task_id", task.ID),
+				attribute.String("driftq.human.status", string(task.Status)),
+				attribute.String("driftq.human.source", string(task.Source)),
+			)
+			return
+		}
+		r.finishSpan(span, err)
+	}()
 	task, ok, err := r.GetHumanTask(taskID)
 	if err != nil {
 		return HumanTask{}, err
@@ -400,7 +424,27 @@ func (r *Runner) ResolveHumanTask(ctx context.Context, taskID string, decision H
 	return task, nil
 }
 
-func (r *Runner) stageRiskApproval(ctx context.Context, runID string, g WorkflowGraph, spec json.RawMessage, initialInput json.RawMessage, report WorkflowRiskReport) (HumanTask, error) {
+func (r *Runner) stageRiskApproval(ctx context.Context, runID string, g WorkflowGraph, spec json.RawMessage, initialInput json.RawMessage, report WorkflowRiskReport) (task HumanTask, err error) {
+	ctx, span := r.startSpan(ctx, "driftq.human.wait",
+		append(workflowSpanAttributes(runID, g.ID, report.TenantID),
+			attribute.String("driftq.human.source", string(HumanTaskSourceRisk)),
+			attribute.String("driftq.risk.action", string(report.Action)),
+		)...,
+	)
+	defer func() {
+		if task.ID != "" && r.obs != nil {
+			r.obs.observeHumanTask("request", task, 0)
+		}
+		if task.ID != "" {
+			r.finishSpan(span, err,
+				attribute.String("driftq.human.task_id", task.ID),
+				attribute.String("driftq.human.status", string(task.Status)),
+			)
+			return
+		}
+		r.finishSpan(span, err)
+	}()
+
 	if len(spec) == 0 {
 		return HumanTask{}, &RiskError{Report: report}
 	}
@@ -478,10 +522,31 @@ func (r *Runner) stageRiskApproval(ctx context.Context, runID string, g Workflow
 	return task, nil
 }
 
-func (r *Runner) maybeHandleHumanNode(ctx context.Context, runID, workflowID string, node NodeDef, attempt int, input json.RawMessage, started time.Time) (bool, nodeResult, error) {
+func (r *Runner) maybeHandleHumanNode(ctx context.Context, runID, workflowID string, node NodeDef, attempt int, input json.RawMessage, started time.Time) (handled bool, result nodeResult, err error) {
 	if node.Human == nil {
 		return false, nodeResult{}, nil
 	}
+
+	ctx, span := r.startSpan(ctx, "driftq.human.wait",
+		append(nodeSpanAttributes(runID, workflowID, effectiveTenantFromContext(ctx), node.NodeID, node.Topic, attempt),
+			attribute.String("driftq.human.mode", string(node.Human.Mode)),
+			attribute.String("driftq.human.source", string(HumanTaskSourceNode)),
+		)...,
+	)
+	defer func() {
+		if handled && result.nodeID != "" {
+			attrs := []attribute.KeyValue{
+				attribute.String("driftq.human.result_node_id", result.nodeID),
+			}
+			if result.err != nil {
+				r.finishSpan(span, result.err, attrs...)
+				return
+			}
+			r.finishSpan(span, err, attrs...)
+			return
+		}
+		r.finishSpan(span, err)
+	}()
 
 	task, ok, err := r.findHumanTask(runID, node.NodeID, attempt, HumanTaskSourceNode)
 	if err != nil {
@@ -575,6 +640,10 @@ func (r *Runner) maybeHandleHumanNode(ctx context.Context, runID, workflowID str
 			Reason:       "node requires human approval",
 		})
 
+		if r.obs != nil {
+			r.obs.observeHumanTask("request", task, 0)
+		}
+
 		return true, nodeResult{nodeID: node.NodeID, attempt: attempt, started: started, ended: started, input: cloneRaw(input), err: ErrHumanApprovalPending}, nil
 	}
 
@@ -599,6 +668,14 @@ func (r *Runner) maybeHandleHumanNode(ctx context.Context, runID, workflowID str
 
 		if err := r.saveHumanTask(task); err != nil {
 			return true, nodeResult{}, err
+		}
+
+		if r.obs != nil {
+			wait := time.Duration(0)
+			if !task.CreatedAt.IsZero() && task.ResolvedAt != nil {
+				wait = task.ResolvedAt.Sub(task.CreatedAt)
+			}
+			r.obs.observeHumanTask("resolve", task, wait)
 		}
 
 		payload, _ := json.Marshal(task)
