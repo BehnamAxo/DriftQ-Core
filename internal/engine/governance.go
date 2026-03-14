@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -233,7 +235,17 @@ func (r *Runner) activeRunsForTenant(tenantID, excludeRunID string) int {
 	return count
 }
 
-func (r *Runner) enforceTenantRunQuota(ctx context.Context, tenantID, runID, workflowID string) error {
+func (r *Runner) enforceTenantRunQuota(ctx context.Context, tenantID, runID, workflowID string) (err error) {
+	ctx, span := r.startSpan(ctx, "driftq.governance.check", workflowSpanAttributes(runID, workflowID, tenantID)...)
+	defer func() {
+		if r.obs != nil {
+			r.obs.observeGovernance("tenant.quota.active_runs", err == nil)
+		}
+		r.finishSpan(span, err,
+			attribute.String("driftq.governance.action", "tenant.quota.active_runs"),
+		)
+	}()
+
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
 		return nil
@@ -263,7 +275,18 @@ func (r *Runner) enforceTenantRunQuota(ctx context.Context, tenantID, runID, wor
 	return fmt.Errorf("%w: active run cap reached for tenant %q", ErrTenantQuotaExceeded, tenantID)
 }
 
-func (r *Runner) ensureRunTenantAccess(ctx context.Context, run Run, action string) error {
+func (r *Runner) ensureRunTenantAccess(ctx context.Context, run Run, action string) (err error) {
+	ctx, span := r.startSpan(ctx, "driftq.governance.check", workflowSpanAttributes(run.RunID, run.WorkflowID, run.TenantID)...)
+	defer func() {
+		if r.obs != nil {
+			r.obs.observeGovernance(action, err == nil)
+		}
+		r.finishSpan(span, err,
+			attribute.String("driftq.governance.action", strings.TrimSpace(action)),
+			attribute.String("driftq.resource_type", "run"),
+		)
+	}()
+
 	resourceTenantID := strings.TrimSpace(run.TenantID)
 	if resourceTenantID == "" {
 		return nil

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -335,8 +337,28 @@ func (r *Runner) EvaluateWorkflowRisk(ctx context.Context, runID string, g Workf
 	return report, nil
 }
 
-func (r *Runner) evaluateAndEnforceRisk(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) (WorkflowRiskReport, context.Context, error) {
-	report, err := r.EvaluateWorkflowRisk(ctx, runID, g, initialInput)
+func (r *Runner) evaluateAndEnforceRisk(ctx context.Context, runID string, g WorkflowGraph, initialInput json.RawMessage) (report WorkflowRiskReport, outCtx context.Context, err error) {
+	principal, _ := PrincipalFrom(ctx)
+	ctx, span := r.startSpan(ctx, "driftq.risk.evaluate",
+		append(workflowSpanAttributes(runID, g.ID, effectiveTenantFromContext(ctx)), principalSpanAttributes(principal)...)...,
+	)
+	defer func() {
+		if r.obs != nil && report.Action != "" {
+			r.obs.observeRisk(report)
+		}
+		outCtx = ctx
+		if report.Action != "" {
+			r.finishSpan(span, err,
+				attribute.String("driftq.risk.action", string(report.Action)),
+				attribute.Int("driftq.risk.score", report.Score),
+				attribute.Bool("driftq.risk.allowed", report.Allowed),
+			)
+			return
+		}
+		r.finishSpan(span, err)
+	}()
+
+	report, err = r.EvaluateWorkflowRisk(ctx, runID, g, initialInput)
 	if err != nil {
 		return WorkflowRiskReport{}, ctx, err
 	}

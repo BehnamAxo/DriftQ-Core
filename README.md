@@ -135,6 +135,7 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - Runtime risk scoring with sandbox / approval / block decisions
 - Tenant isolation, tenant-scoped registries, quotas, and audit logs
 - Human-in-the-loop workflow steps with approval, review/edit, timeout, and resume behavior
+- OpenTelemetry-native observability with OTLP export, request trace correlation, and workflow/node/tool/artifact/authz/risk/governance/human/replay/broker telemetry
 - Debug API documentation:
   - `docs/v3/v3-README.md`
 

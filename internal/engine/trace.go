@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+
+	otrace "go.opentelemetry.io/otel/trace"
 )
 
 type traceKey struct{}
@@ -23,6 +25,10 @@ func TraceIDFrom(ctx context.Context) string {
 		if s, ok := v.(string); ok && s != "" {
 			return s
 		}
+	}
+
+	if spanCtx := otrace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
+		return spanCtx.TraceID().String()
 	}
 
 	return ""

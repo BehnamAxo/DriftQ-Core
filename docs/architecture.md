@@ -1,6 +1,6 @@
 # DriftQ-Core Architecture
 
-This document describes the internal architecture of DriftQ-Core, a durable message broker (v1) with workflow runtime foundations (v2) and v3 runtime guardrails.
+This document describes the internal architecture of DriftQ-Core, a durable message broker (v1) with workflow runtime foundations (v2), v3 runtime guardrails, and OpenTelemetry-native observability.
 
 ## Table of Contents
 
@@ -24,9 +24,9 @@ DriftQ-Core is a single Go binary that provides two main subsystems:
 | Subsystem | Status | Purpose |
 |-----------|--------|---------|
 | **v1 Broker** | Stable | Kafka-like message broker with topics, partitions, consumer groups |
-| **v2 Engine / v3 Runtime** | Evolving | Temporal-like workflow runtime with DAG scheduling, replay, artifacts, guardrails, governance, and HITL |
+| **v2 Engine / v3 Runtime** | Evolving | Temporal-like workflow runtime with DAG scheduling, replay, artifacts, guardrails, governance, HITL, and OTLP-friendly telemetry |
 
-Both subsystems share core infrastructure (HTTP server, WAL storage, metrics) but operate independently. You can use v1 alone as a simple message queue, or combine both for durable workflow orchestration.
+Both subsystems share core infrastructure (HTTP server, WAL storage, metrics, tracing) but operate independently. You can use v1 alone as a simple message queue, or combine both for durable workflow orchestration.
 
 
 ## High-Level Architecture
@@ -41,6 +41,7 @@ Both subsystems share core infrastructure (HTTP server, WAL storage, metrics) bu
 │  │  /v1/* (broker)              │   │  topics list|create|peek     │    │
 │  │  /debug/* (engine)           │   │  runs list|status|replay...  │    │
 │  │  /metrics (prometheus)       │   │                              │    │
+│  │  OTLP trace/metric export    │   │                              │    │
 │  └──────────────┬───────────────┘   └──────────────────────────────┘    │
 │                 │                                                       │
 │  ┌──────────────▼───────────────┐   ┌──────────────────────────────┐    │
@@ -82,15 +83,21 @@ The central broker implementation (`internal/broker/broker.go`):
 
 ```go
 type InMemoryBroker struct {
-    topics          map[string]*TopicState      // topic -> partitions
-    consumerOffsets map[string]map[string]map[int]int64  // topic -> group -> partition -> offset
+    mu              sync.RWMutex
+    topics          map[string]*TopicState
+    consumerOffsets map[string]map[string]map[int]int64
     consumerChans   map[string]map[string][]consumerStream
+    rrCursor        map[string]map[string]int
     inFlight        map[string]map[string]map[int]map[int64]*inflightEntry
+    nextIndex       map[string]map[string]map[int]int
+    lastDelivery    map[string]map[string]map[int]deliverySnapshot
     wal             storage.WAL
     router          Router
     idem            *IdempotencyStore
     retryState      map[string]map[string]map[int]map[int64]*retryStateEntry
+    metrics         MetricsSink
     lag             *LagTracker
+    pendingOffsets  map[offsetFlushKey]int64
 }
 ```
 
@@ -150,11 +157,15 @@ The workflow execution engine (`internal/engine/runner.go`):
 
 ```go
 type Runner struct {
-    store           Store               // Durable state
-    graphs          map[string]WorkflowGraph  // Cached workflow definitions
-    registry        *HandlerRegistry    // Step handlers
+    store           Store
+    metrics         *EngineMetrics
+    obs             *runtimeTelemetry
+    logger          *slog.Logger
+    graphs          map[string]WorkflowGraph
+    registry        *HandlerRegistry
     tenantRegistries map[string]*HandlerRegistry
-    artifacts       ArtifactStore       // Large output storage
+    artifacts       ArtifactStore
+    artifactInlineLimit int
     cancels         map[string]context.CancelFunc
     policyBundle    *AuthorizationPolicyBundle
     riskPolicy      *RiskPolicy
@@ -162,33 +173,55 @@ type Runner struct {
     tenantBudgets   map[string]BudgetPolicy
     tenantRunCaps   map[string]int
     rateLimiter     RateLimiter
+    topicCaps       map[string]int
+    tenantTopicCaps map[string]map[string]int
+    inflightCaps    map[string]int
+    maxParallel     int
 }
 ```
+
+### Runtime Observability
+
+`driftqd` initializes OpenTelemetry providers and HTTP trace propagation before the broker and engine are created. The engine then emits spans for:
+
+- workflow runs
+- node execution
+- authorization checks
+- risk evaluation
+- governance / tenant checks
+- human wait and resolution
+- replay operations
+
+The engine also emits matching OTel metrics for run outcomes, node outcomes, authz/risk/governance decisions, human tasks, replay activity, tool execution, artifact operations, and broker/topic activity. OTLP export complements the existing Prometheus `/metrics` endpoint and the structured logs that already include `trace_id`.
+
+The current v3 observability scope also includes:
+
+- nested tool spans inside node execution
+- artifact put/get/delete spans and metrics
+- broker/topic spans around the v1 API operations
+- an OTel broker metrics sink that mirrors broker counters and hot-path timings into OTLP
 
 #### Store Interface
 
 ```go
 type Store interface {
-    // Runs
     CreateRun(r Run) error
     UpdateRun(r Run) error
     GetRun(runID string) (Run, bool)
-    ListRuns() []string
 
-    // Node Executions
     UpsertNodeExecution(n NodeExecution) error
     GetNodeExecution(runID, nodeID string, attempt int) (NodeExecution, bool)
     ListNodeExecutions(runID string) []NodeExecution
 
-    // Event Log
     AppendEvent(e RunEvent) (RunEvent, error)
     ListEvents(runID string) []RunEvent
 
-    // Timers
     UpsertTimer(t Timer) error
+    GetTimer(runID, nodeID string, attempt int) (Timer, bool)
+    ListTimers(runID string) []Timer
     ListDueTimers(now time.Time) []Timer
 
-    // KV (for index pointer, etc.)
+    ListRuns() []string
     PutKV(key, value string) error
     GetKV(key string) (string, bool)
 }
@@ -221,22 +254,29 @@ Workflow Spec                      DAG Scheduler                    Handlers
 ```go
 // Run represents a workflow execution
 type Run struct {
-    RunID        string          // Unique identifier
-    WorkflowID   string          // Workflow definition ID
-    Status       RunStatus       // queued|running|waiting|succeeded|failed|canceled
-    Spec         json.RawMessage // Stored workflow spec (for replay)
-    InitialInput json.RawMessage // Original input (for replay)
-    TenantID     string          // Tenant ownership / isolation scope
-    RunBudget    BudgetPolicy    // Resource limits
-    BudgetUsage  BudgetUsage     // Current usage
+    RunID          string
+    WorkflowID     string
+    Status         RunStatus
+    StartedAt      *time.Time
+    EndedAt        *time.Time
+    Spec           json.RawMessage
+    InitialInput   json.RawMessage
+    TenantID       string
+    TerminalReason string
+    TerminalMeta   json.RawMessage
+    RunBudget      BudgetPolicy
+    BudgetUsage    BudgetUsage
 }
 
 // NodeExecution tracks a single step attempt
 type NodeExecution struct {
     RunID      string
+    WorkflowID string
     NodeID     string
-    Attempt    int             // 1, 2, 3... (increments on retry)
+    Attempt    int
     Status     NodeStatus
+    StartedAt  *time.Time
+    EndedAt    *time.Time
     Input      json.RawMessage
     Output     json.RawMessage
     Error      string
@@ -244,19 +284,27 @@ type NodeExecution struct {
 
 // RunEvent is an append-only log entry
 type RunEvent struct {
-    RunID   string
-    Seq     int64           // Monotonic sequence number
-    Type    RunEventType    // node_started, node_finished, etc.
-    Payload json.RawMessage // Event-specific data
+    RunID      string
+    Seq        int64
+    Type       RunEventType
+    At         time.Time
+    WorkflowID string
+    NodeID     string
+    Attempt    int
+    Payload    json.RawMessage
 }
 
 // Timer for durable delays
 type Timer struct {
-    RunID   string
-    NodeID  string
-    Attempt int
-    Status  TimerStatus     // scheduled|fired|canceled
-    FireAt  time.Time
+    RunID      string
+    WorkflowID string
+    NodeID     string
+    Attempt    int
+    Status     TimerStatus
+    FireAt     time.Time
+    CreatedAt  time.Time
+    FiredAt    *time.Time
+    Reason     string
 }
 ```
 
@@ -363,28 +411,17 @@ Artifacts are stored as:
 
 ```
 Client Request
-      │
-      ▼
-┌─────────────────┐
-│  Request Logger │  (trace_id, req_id, method, path, duration)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Mux Router    │
-│  /v1/* → broker │
-│  /debug/* → eng │
-│  /metrics → prom│
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Handler        │
-│  - Parse input  │
-│  - Call service │
-│  - Write JSON   │
-└─────────────────┘
+  -> request logging middleware
+  -> OpenTelemetry HTTP middleware (extract trace context, start server span)
+  -> root mux
+     -> /v1/* broker handlers
+     -> /debug/* engine handlers
+     -> /debug/evals/* eval handlers
+     -> /metrics Prometheus handler
+  -> JSON response
 ```
+
+Telemetry export happens out-of-process from `driftqd` to an OTLP collector. The server does not expose an OTLP ingest endpoint.
 
 ### Endpoint Organization
 
@@ -392,7 +429,10 @@ Client Request
 |--------|------------------|---------|
 | `/v1/*` | `cmd/driftqd/main.go` | Stable broker API |
 | `/debug/*` | `internal/engine/http_debug.go` | Evolving engine API |
+| `/debug/evals/*` | `internal/engine/http_evals.go` | Eval datasets, suites, and runs |
 | `/metrics` | `promhttp.Handler()` | Prometheus metrics |
+| OTLP export setup | `internal/observability` | Outbound OpenTelemetry traces + metrics |
+
 
 
 ## Data Flow
@@ -417,22 +457,24 @@ Client Request
 ```
 1. Client POST /debug/run-spec
 2. Parse workflow spec JSON
-3. Validate DAG (no cycles, valid edges)
-4. Create Run record (status=queued)
-5. Emit run_created event
-6. Topological sort nodes
-7. For each ready node:
-   a. Build input from dependencies
-   b. Check throttle/budget limits
-   c. Create NodeExecution (status=running)
-   d. Emit node_started event
-   e. Execute handler
-   f. Store output (inline or artifact)
-   g. Update NodeExecution (status=succeeded|failed)
-   h. Emit node_finished|node_failed event
-8. When all nodes done:
-   a. Update Run (status=succeeded|failed)
-   b. Emit run_finished event
+3. Pick the tenant-scoped handler registry
+4. Validate and compile the DAG into executable nodes
+5. Run authorization preflight
+6. Run risk evaluation and enforce allow / sandbox / approval / block
+7. Enforce tenant governance and active-run quota checks
+8. Create or resume the Run record and emit run lifecycle events
+9. Schedule ready DAG nodes up to maxParallel
+10. For each node attempt:
+    a. Build input from dependency outputs
+    b. Check budget and concurrency caps
+    c. Handle workflow-native human steps when present
+    d. Emit node_started
+    e. Execute the handler or replay-cache short-circuit
+    f. Store output inline or as an artifact
+    g. Update NodeExecution
+    h. Emit node_finished, node_failed, or retry/throttle/budget events
+11. If the run enters waiting state, resume later via timer or human response
+12. When terminal, update Run status/reason and emit run_finished
 ```
 
 
@@ -478,88 +520,50 @@ On startup:
 
 ### Engine
 
-- `sync.RWMutex` protects workflow graphs cache
-- Each run executes in its own goroutine (via `RunWorkflow`)
-- Node executions are sequential within a run (current implementation)
-- Throttle tracking uses a separate mutex
+- `sync.RWMutex` protects the workflow graph cache and policy state
+- `RunWorkflow` executes ordered workflows sequentially on the caller goroutine
+- `RunDAG` fans out ready nodes onto worker goroutines up to `maxParallel`
+- Budget, throttle, and in-flight cap bookkeeping use separate mutex-protected maps
+- Timer resume and broker redelivery each run in background goroutines started by `driftqd`
 
 ### Graceful Shutdown
 
 ```
 1. Receive SIGINT/SIGTERM
 2. Stop accepting new requests
-3. Cancel in-progress runs (with context)
-4. Drain consumer channels
-5. Flush WAL
-6. Exit
+3. Cancel app-level background loops (timer resume, redelivery context)
+4. Gracefully shut down the HTTP server
+5. Close the broker and flush pending WAL state
+6. Close the engine store if it is file-backed
+7. Shut down OTLP exporters
 ```
+
 
 
 ## Package Structure
 
 ```
 DriftQ-Core/
-├── cmd/
-│   ├── driftqd/               # Server binary
-│   │   ├── main.go            # Entry point, HTTP setup, flag parsing
-│   │   └── broker_collector.go # Prometheus metrics collector
-│   └── driftqctl/             # CLI client
-│       ├── main.go            # Entry point, subcommand dispatch
-│       ├── runs.go            # runs subcommands
-│       ├── runs_artifacts.go  # artifact commands
-│       └── topics_lag.go      # lag inspection
-│
-├── internal/
-│   ├── broker/                # v1 broker core
-│   │   ├── broker.go          # InMemoryBroker implementation
-│   │   ├── types.go           # Message, Envelope, Broker interface
-│   │   ├── redelivery.go      # Lease expiry + retry logic
-│   │   ├── idempotency.go     # Deduplication store
-│   │   ├── dlq.go             # Dead letter queue routing
-│   │   ├── lag.go             # Consumer lag tracking
-│   │   └── *_test.go          # Unit tests
-│   │
-│   ├── engine/                # v2 workflow engine
-│   │   ├── runner.go          # Runner (main executor)
-│   │   ├── types.go           # Run, NodeExecution, RunEvent, Timer
-│   │   ├── dag.go             # WorkflowGraph, topological sort
-│   │   ├── spec.go            # WorkflowSpec, NodeSpec
-│   │   ├── spec_parse.go      # JSON spec parsing
-│   │   ├── replay.go          # Replay implementation
-│   │   ├── replay_cache.go    # Output caching for time-travel
-│   │   ├── cancel.go          # Run cancellation
-│   │   ├── timer.go           # Durable timer primitives
-│   │   ├── timer_resume.go    # Timer resume on restart
-│   │   ├── budget.go          # Budget/throttle policies
-│   │   ├── rate_limiter.go    # Rate limiting
-│   │   ├── artifact_store.go  # Artifact storage interface
-│   │   ├── artifact_store_*.go # Memory/file implementations
-│   │   ├── memstore.go        # In-memory Store implementation
-│   │   ├── store_file.go      # WAL-backed Store implementation
-│   │   ├── http_debug.go      # Debug HTTP handlers
-│   │   ├── index_meta.go      # Index pointer promote/rollback
-│   │   └── *_test.go          # Unit tests
-│   │
-│   ├── storage/               # WAL implementation
-│   │   └── wal.go             # FileWAL with JSON entries
-│   │
-│   ├── httpapi/
-│   │   └── v1/
-│   │       ├── types.go       # Request/response types
-│   │       └── helpers.go     # JSON writing utilities
-│   │
-│   └── debugtypes/            # Shared debug types
-│       └── lag.go             # ConsumerLagRow
-│
-├── docs/
-│   ├── v1/README.md           # Broker API documentation
-│   ├── v2/README.md           # Engine API documentation
-│   └── architecture.md        # This file
-│
-├── Dockerfile                 # Container build
-├── docker-compose.yml         # Local development
-├── go.mod                     # Dependencies
-└── README.md                  # Project overview
+|-- cmd/
+|   |-- driftqd/                 # Server binary, HTTP setup, OTLP wiring
+|   `-- driftqctl/               # CLI for runs, artifacts, topics, replay, diffs
+|
+|-- internal/
+|   |-- broker/                  # v1 broker core, routing, redelivery, metrics hooks
+|   |-- engine/                  # Workflow runtime, replay, guardrails, governance, HITL
+|   |-- observability/           # OTel setup, HTTP middleware, broker/router wrappers
+|   |-- multiagent/              # v3 agent routing config and router
+|   |-- storage/                 # WAL implementation
+|   |-- httpapi/v1/              # Broker HTTP request/response helpers
+|   `-- debugtypes/              # Shared debug response types
+|
+|-- docs/
+|   |-- v1/v1-README.md          # Broker API documentation
+|   |-- v2/v2-README.md          # Engine API documentation
+|   |-- v3/v3-README.md          # v3 runtime foundations
+|   `-- architecture.md          # This file
+|
+`-- README.md                    # Project overview
 ```
 
 
@@ -587,7 +591,7 @@ type RoutingDecision struct {
 Register custom step handlers:
 
 ```go
-type Handler func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
+type NodeFunc func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
 
 registry := engine.NewHandlerRegistry()
 registry.Register("my_step", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -598,14 +602,20 @@ registry.Register("my_step", func(ctx context.Context, input json.RawMessage) (j
 
 ### Metrics Sink
 
-Inject custom metrics collection:
+Inject custom broker metrics collection:
 
 ```go
 type MetricsSink interface {
     IncProduceRejected(reason string)
-    IncDLQTotal(topic, reason string)
+    IncDLQ(topic, reason string)
+    IncTopicCreated(topic string)
+    IncAck(topic, group string)
+    IncNack(topic, group, reason string)
+    IncLeaseTimeout(topic, group string)
+    IncRedelivery(topic, group, cause string)
 }
 ```
+
 
 ### Store Implementations
 
@@ -616,7 +626,7 @@ type Store interface {
     CreateRun(r Run) error
     UpdateRun(r Run) error
     GetRun(runID string) (Run, bool)
-    // ... full interface in internal/engine/memstore.go
+    // ... plus node executions, events, timers, listing, and KV methods
 }
 ```
 

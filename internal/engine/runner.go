@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	otrace "go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -34,6 +38,7 @@ type NodeDef struct {
 type Runner struct {
 	store   Store
 	metrics *EngineMetrics
+	obs     *runtimeTelemetry
 	logger  *slog.Logger
 
 	mu               sync.RWMutex
@@ -86,6 +91,7 @@ func NewRunner(store Store, opts ...RunnerOption) *Runner {
 	r := &Runner{
 		store:               store,
 		metrics:             NewEngineMetrics(),
+		obs:                 newRuntimeTelemetry(nil, nil),
 		logger:              slog.Default(),
 		graphs:              make(map[string]WorkflowGraph),
 		maxParallel:         1,
@@ -108,12 +114,26 @@ func NewRunner(store Store, opts ...RunnerOption) *Runner {
 	return r
 }
 
-func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, initialInput json.RawMessage) error {
+func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, initialInput json.RawMessage) (err error) {
 	traceID := TraceIDFrom(ctx)
 	if traceID == "" {
 		traceID = NewTraceID()
 		ctx = WithTraceID(ctx, traceID)
 	}
+
+	tenantID := effectiveTenantFromContext(ctx)
+	ctx, runSpan := r.startSpan(ctx, "driftq.workflow.run", workflowSpanAttributes(runID, wf.WorkflowID, tenantID)...)
+	defer func() {
+		r.finishSpan(runSpan, err,
+			attribute.String("driftq.run_status", string(func() RunStatus {
+				run, ok := r.store.GetRun(runID)
+				if !ok {
+					return ""
+				}
+				return run.Status
+			}())),
+		)
+	}()
 
 	g := WorkflowGraph{
 		ID:    wf.WorkflowID,
@@ -129,7 +149,6 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		return err
 	}
 
-	tenantID := effectiveTenantFromContext(ctx)
 	if err := r.enforceTenantRunQuota(ctx, tenantID, runID, wf.WorkflowID); err != nil {
 		return err
 	}
@@ -214,7 +233,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			// metrics: canceled run duration
 			if run.StartedAt != nil {
 				dur := end.Sub(*run.StartedAt)
-				r.metrics.ObserveRun(run.Status, dur)
+				r.observeRunMetric(wf.WorkflowID, run.Status, dur)
 			}
 
 			r.logger.Info("run finished",
@@ -238,7 +257,8 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 				WorkflowID: wf.WorkflowID,
 				Payload:    json.RawMessage(`{"status":"canceled"}`),
 			})
-			return ctx.Err()
+			err = ctx.Err()
+			return err
 
 		default:
 		}
@@ -284,13 +304,35 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			Attempt:    attempt,
 		})
 
-		output, err := node.Run(ctx, cloneRaw(input))
+		nodeCtx, nodeSpan := r.startSpan(ctx, "driftq.node.execute", nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)...)
+		execCtx := nodeCtx
+		var toolSpanAttrs []attribute.KeyValue
+		var toolSpanName string
+		var toolSpanStarted bool
+
+		if strings.TrimSpace(node.Topic) != "" {
+			toolSpanName = "driftq.tool.execute"
+			toolSpanAttrs = nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)
+			execCtx, _ = r.startSpan(nodeCtx, toolSpanName, toolSpanAttrs...)
+			toolSpanStarted = true
+		}
+
+		output, nodeErr := node.Run(execCtx, cloneRaw(input))
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
 
-		if err != nil {
+		if toolSpanStarted {
+			r.finishSpan(otrace.SpanFromContext(execCtx), nodeErr)
+			if r.obs != nil {
+				r.obs.observeTool(wf.WorkflowID, node.NodeID, node.Topic, nodeErr == nil, nodeDur)
+			}
+		}
+
+		r.finishSpan(nodeSpan, nodeErr)
+
+		if nodeErr != nil {
 			// metrics: node failed duration
-			r.metrics.ObserveNode(node.NodeID, false, nodeDur)
+			r.observeNodeMetric(wf.WorkflowID, node.NodeID, false, nodeDur)
 
 			r.logger.Error("node failed",
 				"trace_id", traceID,
@@ -299,15 +341,15 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 				"step_id", node.NodeID,
 				"attempt", attempt,
 				"duration_ms", nodeDur.Milliseconds(),
-				"err", err,
+				"err", nodeErr,
 			)
 
 			ne.Status = NodeStatusFailed
 			ne.EndedAt = &nodeEnd
-			ne.Error = err.Error()
+			ne.Error = nodeErr.Error()
 			_ = r.store.UpsertNodeExecution(ne)
 
-			p, _ := json.Marshal(map[string]any{"error": err.Error()})
+			p, _ := json.Marshal(map[string]any{"error": nodeErr.Error()})
 			_, _ = r.store.AppendEvent(RunEvent{
 				RunID:      runID,
 				Type:       EventNodeFailed,
@@ -324,7 +366,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			// metrics: failed run duration
 			if run.StartedAt != nil {
 				dur := nodeEnd.Sub(*run.StartedAt)
-				r.metrics.ObserveRun(run.Status, dur)
+				r.observeRunMetric(wf.WorkflowID, run.Status, dur)
 			}
 
 			r.logger.Info("run finished",
@@ -349,11 +391,12 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 				Payload:    p2,
 			})
 
-			return ErrNodeFailed
+			err = ErrNodeFailed
+			return err
 		}
 
 		// metrics: node succeeded duration
-		r.metrics.ObserveNode(node.NodeID, true, nodeDur)
+		r.observeNodeMetric(wf.WorkflowID, node.NodeID, true, nodeDur)
 
 		r.logger.Info("node finished",
 			"trace_id", traceID,
@@ -400,7 +443,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	// metrics: succeeded run duration
 	if run.StartedAt != nil {
 		dur := end.Sub(*run.StartedAt)
-		r.metrics.ObserveRun(run.Status, dur)
+		r.observeRunMetric(wf.WorkflowID, run.Status, dur)
 	}
 
 	if err := r.store.UpdateRun(run); err != nil {
