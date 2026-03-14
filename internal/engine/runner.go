@@ -222,6 +222,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	// 3) Execute nodes sequentially
 	input := cloneRaw(initialInput)
 	ctx = WithAgentStateContext(ctx, r)
+	ctx = WithAgentMemoryContext(ctx, r)
 
 	for _, node := range wf.Nodes {
 		select {

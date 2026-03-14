@@ -275,6 +275,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	// make tenant available to handlers
 	ctx = WithTenantID(ctx, tenantID)
 	ctx = WithAgentStateContext(ctx, r)
+	ctx = WithAgentMemoryContext(ctx, r)
 
 	// per-run cancelable context so /run-cancel can interrupt in-flight node.Run
 	runCtx, runCancel := context.WithCancel(ctx)
