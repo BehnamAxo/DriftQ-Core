@@ -26,6 +26,7 @@ type NodeDef struct {
 	NodeID             string
 	Topic              string
 	RequiredCapability string
+	Human              *HumanStepSpec
 	Run                NodeFunc
 	TimeoutMS          int
 }

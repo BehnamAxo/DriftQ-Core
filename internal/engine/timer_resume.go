@@ -72,7 +72,7 @@ func (r *Runner) resumeWaitingRun(ctx context.Context, runID string) (bool, erro
 		return false, errors.New("run has no spec stored; cannot resume")
 	}
 
-	reg := r.HandlerRegistry()
+	reg := r.HandlerRegistryForTenant(run.TenantID)
 	if reg == nil {
 		return false, errors.New("no handler registry configured on runner")
 	}
