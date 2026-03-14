@@ -181,6 +181,13 @@ type Runner struct {
 
 The engine also emits matching OTel metrics for run outcomes, node outcomes, authz/risk/governance decisions, human tasks, and replay activity. OTLP export complements the existing Prometheus `/metrics` endpoint and the structured logs that already include `trace_id`.
 
+Phase 2 extends that foundation with:
+
+- nested tool spans inside node execution
+- artifact put/get/delete spans and metrics
+- broker/topic spans around the v1 API operations
+- an OTel broker metrics sink that mirrors broker counters and hot-path timings into OTLP
+
 #### Store Interface
 
 ```go

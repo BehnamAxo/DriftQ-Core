@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	otrace "go.opentelemetry.io/otel/trace"
 )
 
 var ErrGraphInvalid = errors.New("invalid workflow graph")
@@ -675,6 +677,12 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 				}
 
 				execCtx, nodeSpan := r.startSpan(execCtx, "driftq.node.execute", nodeSpanAttributes(runID, wfID, tenantID, n.NodeID, n.Topic, att)...)
+				toolCtx := execCtx
+				toolSpanStarted := false
+				if strings.TrimSpace(n.Topic) != "" {
+					toolCtx, _ = r.startSpan(execCtx, "driftq.tool.execute", nodeSpanAttributes(runID, wfID, tenantID, n.NodeID, n.Topic, att)...)
+					toolSpanStarted = true
+				}
 
 				out, err := func() (out json.RawMessage, err error) {
 					defer func() {
@@ -692,11 +700,18 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						}
 					}()
 
-					return n.Run(execCtx, cloneRaw(inp))
+					return n.Run(toolCtx, cloneRaw(inp))
 				}()
 
 				cancelFn()
+				if toolSpanStarted {
+					r.finishSpan(otrace.SpanFromContext(toolCtx), err)
+				}
+
 				r.finishSpan(nodeSpan, err)
+				if toolSpanStarted && r.obs != nil {
+					r.obs.observeTool(wfID, n.NodeID, n.Topic, err == nil, time.Since(started))
+				}
 
 				if execCtx.Err() == context.DeadlineExceeded {
 					err = context.DeadlineExceeded
@@ -719,6 +734,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			if stopScheduling {
 				break
 			}
+
 			if len(ready) > 0 {
 				select {
 				case <-runCtx.Done():
@@ -755,9 +771,11 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			if ue.delta.Tokens != 0 {
 				run.BudgetUsage.Tokens += ue.delta.Tokens
 			}
+
 			if ue.delta.Dollars != 0 {
 				run.BudgetUsage.Dollars += ue.delta.Dollars
 			}
+
 			if run.StartedAt != nil {
 				run.BudgetUsage.WallClock = time.Now().UTC().Sub(*run.StartedAt).Milliseconds()
 			}

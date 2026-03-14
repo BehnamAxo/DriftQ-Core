@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	otrace "go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -303,9 +305,29 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 		})
 
 		nodeCtx, nodeSpan := r.startSpan(ctx, "driftq.node.execute", nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)...)
-		output, nodeErr := node.Run(nodeCtx, cloneRaw(input))
+		execCtx := nodeCtx
+		var toolSpanAttrs []attribute.KeyValue
+		var toolSpanName string
+		var toolSpanStarted bool
+
+		if strings.TrimSpace(node.Topic) != "" {
+			toolSpanName = "driftq.tool.execute"
+			toolSpanAttrs = nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)
+			execCtx, _ = r.startSpan(nodeCtx, toolSpanName, toolSpanAttrs...)
+			toolSpanStarted = true
+		}
+
+		output, nodeErr := node.Run(execCtx, cloneRaw(input))
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
+
+		if toolSpanStarted {
+			r.finishSpan(otrace.SpanFromContext(execCtx), nodeErr)
+			if r.obs != nil {
+				r.obs.observeTool(wf.WorkflowID, node.NodeID, node.Topic, nodeErr == nil, nodeDur)
+			}
+		}
+
 		r.finishSpan(nodeSpan, nodeErr)
 
 		if nodeErr != nil {

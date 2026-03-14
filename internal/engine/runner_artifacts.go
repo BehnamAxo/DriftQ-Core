@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func (r *Runner) buildNodeFinishedPayload(ctx context.Context, runID, workflowID, nodeID string, attempt int, out json.RawMessage) (json.RawMessage, error) {
@@ -20,6 +23,15 @@ func (r *Runner) buildNodeFinishedPayload(ctx context.Context, runID, workflowID
 
 	// Inline if under limit (limit == 0 means "never inline")
 	if limit > 0 && len(out) <= limit {
+		if r.obs != nil {
+			r.obs.observeArtifact("inline", ArtifactMeta{
+				ContentType: "application/json",
+				RunID:       runID,
+				WorkflowID:  workflowID,
+				NodeID:      nodeID,
+				Attempt:     attempt,
+			}, int64(len(out)), 0)
+		}
 		return json.Marshal(NodeFinishedPayload{Output: cloneRaw(out)})
 	}
 
@@ -73,7 +85,23 @@ func (r *Runner) PutArtifact(ctx context.Context, data []byte, meta ArtifactMeta
 		return ArtifactRef{}, ArtifactMeta{}, err
 	}
 
-	return s.Put(ctx, data, meta)
+	ctx, span := r.startSpan(ctx, "driftq.artifact.put",
+		attribute.String("driftq.workflow_id", strings.TrimSpace(meta.WorkflowID)),
+		attribute.String("driftq.node_id", strings.TrimSpace(meta.NodeID)),
+		attribute.String("driftq.content_type", strings.TrimSpace(meta.ContentType)),
+	)
+	start := time.Now()
+	ref, storedMeta, err := s.Put(ctx, data, meta)
+
+	if r.obs != nil {
+		r.obs.observeArtifact("put", storedMeta, int64(len(data)), time.Since(start))
+	}
+
+	r.finishSpan(span, err,
+		attribute.String("driftq.artifact_id", strings.TrimSpace(storedMeta.ArtifactID)),
+		attribute.Int64("driftq.artifact_size", int64(len(data))),
+	)
+	return ref, storedMeta, err
 }
 
 // Convenience wrapper for debug/demo endpoints stuff (and CLI-friendly artifacts)
@@ -94,14 +122,32 @@ func (r *Runner) GetArtifact(ctx context.Context, artifactID string) ([]byte, Ar
 		return nil, ArtifactMeta{}, err
 	}
 
+	ctx, span := r.startSpan(ctx, "driftq.artifact.get",
+		attribute.String("driftq.artifact_id", strings.TrimSpace(artifactID)),
+	)
+
+	start := time.Now()
 	data, meta, err := s.Get(ctx, strings.TrimSpace(artifactID))
 	if err != nil {
+		r.finishSpan(span, err)
 		return nil, ArtifactMeta{}, err
 	}
 
 	if err := r.ensureArtifactTenantAccess(ctx, meta, "artifact.get"); err != nil {
+		r.finishSpan(span, err)
 		return nil, ArtifactMeta{}, err
 	}
+
+	if r.obs != nil {
+		r.obs.observeArtifact("get", meta, int64(len(data)), time.Since(start))
+	}
+
+	r.finishSpan(span, nil,
+		attribute.String("driftq.workflow_id", strings.TrimSpace(meta.WorkflowID)),
+		attribute.String("driftq.node_id", strings.TrimSpace(meta.NodeID)),
+		attribute.String("driftq.content_type", strings.TrimSpace(meta.ContentType)),
+		attribute.Int64("driftq.artifact_size", int64(len(data))),
+	)
 
 	return data, meta, nil
 }
@@ -113,14 +159,32 @@ func (r *Runner) DeleteArtifact(ctx context.Context, artifactID string) error {
 	}
 
 	artifactID = strings.TrimSpace(artifactID)
+	ctx, span := r.startSpan(ctx, "driftq.artifact.delete",
+		attribute.String("driftq.artifact_id", strings.TrimSpace(artifactID)),
+	)
+
+	start := time.Now()
 	_, meta, err := s.Get(ctx, artifactID)
 	if err != nil {
+		r.finishSpan(span, err)
 		return err
 	}
 
 	if err := r.ensureArtifactTenantAccess(ctx, meta, "artifact.delete"); err != nil {
+		r.finishSpan(span, err)
 		return err
 	}
 
-	return s.Delete(ctx, artifactID)
+	err = s.Delete(ctx, artifactID)
+	if r.obs != nil {
+		r.obs.observeArtifact("delete", meta, meta.Size, time.Since(start))
+	}
+
+	r.finishSpan(span, err,
+		attribute.String("driftq.workflow_id", strings.TrimSpace(meta.WorkflowID)),
+		attribute.String("driftq.node_id", strings.TrimSpace(meta.NodeID)),
+		attribute.String("driftq.content_type", strings.TrimSpace(meta.ContentType)),
+		attribute.Int64("driftq.artifact_size", meta.Size),
+	)
+	return err
 }

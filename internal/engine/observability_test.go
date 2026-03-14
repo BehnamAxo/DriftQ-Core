@@ -21,6 +21,8 @@ func TestRunnerEmitsCoreObservabilitySignals(t *testing.T) {
 	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
 
 	runner := NewRunner(NewMemoryStore(), WithTelemetryProviders(traceProvider, meterProvider))
+	runner.SetArtifactStore(NewMemoryArtifactStore())
+	runner.SetArtifactInlineLimit(1)
 	ctx := WithTenantID(context.Background(), "tenant-a")
 	ctx = WithPrincipal(ctx, Principal{
 		ID:           "user-1",
@@ -36,7 +38,7 @@ func TestRunnerEmitsCoreObservabilitySignals(t *testing.T) {
 				Topic:  "noop",
 				Run: func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 					time.Sleep(5 * time.Millisecond)
-					return json.RawMessage(`{"ok":true}`), nil
+					return json.RawMessage(`{"ok":true,"payload":"artifact-worthy"}`), nil
 				},
 			},
 		},
@@ -46,6 +48,14 @@ func TestRunnerEmitsCoreObservabilitySignals(t *testing.T) {
 		t.Fatalf("RunWorkflow failed: %v", err)
 	}
 
+	if _, _, err := runner.PutArtifact(ctx, []byte(`artifact-payload`), ArtifactMeta{
+		ContentType: "application/json",
+		WorkflowID:  "wf-core-otel",
+		NodeID:      "node-1",
+	}); err != nil {
+		t.Fatalf("PutArtifact failed: %v", err)
+	}
+
 	spans := recorder.Ended()
 	assertSpanNames(t, spans,
 		"driftq.workflow.run",
@@ -53,6 +63,8 @@ func TestRunnerEmitsCoreObservabilitySignals(t *testing.T) {
 		"driftq.risk.evaluate",
 		"driftq.governance.check",
 		"driftq.node.execute",
+		"driftq.tool.execute",
+		"driftq.artifact.put",
 	)
 
 	var metrics metricdata.ResourceMetrics
@@ -65,6 +77,10 @@ func TestRunnerEmitsCoreObservabilitySignals(t *testing.T) {
 		"driftq.engine.run.duration_ms",
 		"driftq.engine.nodes",
 		"driftq.engine.node.duration_ms",
+		"driftq.engine.tools",
+		"driftq.engine.tool.duration_ms",
+		"driftq.engine.artifacts",
+		"driftq.engine.artifact.duration_ms",
 		"driftq.engine.authz.checks",
 		"driftq.engine.risk.checks",
 		"driftq.engine.governance.checks",
@@ -109,6 +125,7 @@ func TestHumanAndReplayObservabilitySignals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListHumanTasks failed: %v", err)
 	}
+
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 human task, got %d", len(tasks))
 	}
@@ -129,9 +146,11 @@ func TestHumanAndReplayObservabilitySignals(t *testing.T) {
 			},
 		},
 	}
+
 	if err := runner.RunDAG(ctx, "run-replay-otel", replayWorkflow, json.RawMessage(`{"start":true}`)); err != nil {
 		t.Fatalf("initial replay run failed: %v", err)
 	}
+
 	if err := runner.Replay(ctx, "run-replay-otel", ReplayLive); err != nil {
 		t.Fatalf("Replay failed: %v", err)
 	}
@@ -152,6 +171,7 @@ func assertSpanNames(t *testing.T, spans []sdktrace.ReadOnlySpan, want ...string
 	for _, span := range spans {
 		got[span.Name()] = true
 	}
+
 	for _, name := range want {
 		if !got[name] {
 			t.Fatalf("missing span %q; got spans=%v", name, spanNames(spans))
@@ -164,17 +184,20 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	for _, span := range spans {
 		out = append(out, span.Name())
 	}
+
 	return out
 }
 
 func assertMetricNames(t *testing.T, metrics metricdata.ResourceMetrics, want ...string) {
 	t.Helper()
 	got := map[string]bool{}
+
 	for _, scopeMetrics := range metrics.ScopeMetrics {
 		for _, metric := range scopeMetrics.Metrics {
 			got[metric.Name] = true
 		}
 	}
+
 	for _, name := range want {
 		if !got[name] {
 			t.Fatalf("missing metric %q", name)

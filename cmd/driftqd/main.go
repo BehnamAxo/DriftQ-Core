@@ -67,6 +67,68 @@ type promSink struct {
 	dispatchStaged  prometheus.Counter
 }
 
+type multiMetricsSink struct {
+	sinks []broker.MetricsSink
+}
+
+func (m *multiMetricsSink) IncProduceRejected(reason string) {
+	for _, sink := range m.sinks {
+		sink.IncProduceRejected(reason)
+	}
+}
+
+func (m *multiMetricsSink) IncDLQ(topic, reason string) {
+	for _, sink := range m.sinks {
+		sink.IncDLQ(topic, reason)
+	}
+}
+
+func (m *multiMetricsSink) IncTopicCreated(topic string) {
+	for _, sink := range m.sinks {
+		sink.IncTopicCreated(topic)
+	}
+}
+
+func (m *multiMetricsSink) IncAck(topic, group string) {
+	for _, sink := range m.sinks {
+		sink.IncAck(topic, group)
+	}
+}
+
+func (m *multiMetricsSink) IncNack(topic, group, reason string) {
+	for _, sink := range m.sinks {
+		sink.IncNack(topic, group, reason)
+	}
+}
+
+func (m *multiMetricsSink) IncLeaseTimeout(topic, group string) {
+	for _, sink := range m.sinks {
+		sink.IncLeaseTimeout(topic, group)
+	}
+}
+
+func (m *multiMetricsSink) IncRedelivery(topic, group, cause string) {
+	for _, sink := range m.sinks {
+		sink.IncRedelivery(topic, group, cause)
+	}
+}
+
+func (m *multiMetricsSink) ObserveWALAppend(kind string, d time.Duration) {
+	for _, sink := range m.sinks {
+		if timing, ok := sink.(broker.TimingMetricsSink); ok {
+			timing.ObserveWALAppend(kind, d)
+		}
+	}
+}
+
+func (m *multiMetricsSink) ObserveDispatch(d time.Duration, staged int) {
+	for _, sink := range m.sinks {
+		if timing, ok := sink.(broker.TimingMetricsSink); ok {
+			timing.ObserveDispatch(d, staged)
+		}
+	}
+}
+
 func (a topicDebugAdapter) ListTopics() ([]string, error) {
 	return a.b.ListTopics(context.Background())
 }
@@ -520,7 +582,7 @@ func main() {
 		NewBrokerCollector(b),
 	)
 
-	b.SetMetricsSink(&promSink{
+	promMetricsSink := &promSink{
 		produceRejected: produceRejected,
 		dlqTotal:        dlqTotal,
 		topicsCreated:   topicsCreated,
@@ -531,6 +593,12 @@ func main() {
 		walAppend:       walAppend,
 		dispatch:        dispatch,
 		dispatchStaged:  dispatchStaged,
+	}
+	b.SetMetricsSink(&multiMetricsSink{
+		sinks: []broker.MetricsSink{
+			promMetricsSink,
+			observability.NewBrokerMetricsSink(nil),
+		},
 	})
 
 	appCtx, appCancel := context.WithCancel(context.Background())
@@ -563,7 +631,7 @@ func main() {
 		}
 
 		mrouter := multiagent.NewRouter(maCfg.RouterConfig(reg))
-		b.SetRouter(mrouter)
+		b.SetRouter(observability.WrapRouter(mrouter, nil))
 
 		slog.Info("multiagent router enabled",
 			"config", cfgPath,
@@ -575,8 +643,10 @@ func main() {
 		)
 	}
 
+	wrappedBroker := observability.WrapBroker(b, nil, nil)
+
 	s := &server{
-		broker: b,
+		broker: wrappedBroker,
 		config: v1.ConfigResponse{
 			Addr:              *addr,
 			WalPath:           *walPath,
@@ -683,7 +753,7 @@ func main() {
 	rootMux := http.NewServeMux()
 	v1Mux := http.NewServeMux()
 	engine.AttachDebugRoutes(rootMux, runner)
-	engine.AttachTopicDebugRoutes(rootMux, topicDebugAdapter{b: b})
+	engine.AttachTopicDebugRoutes(rootMux, topicDebugAdapter{b: wrappedBroker})
 
 	// v1 routes
 	v1Mux.HandleFunc("/healthz", s.requireMethod(http.MethodGet)(s.handleHealthz))

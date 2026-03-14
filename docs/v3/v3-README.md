@@ -211,6 +211,9 @@ Implemented now:
 
 - standard OpenTelemetry traces for workflow lifecycle, node execution, authz, risk, governance, HITL, and replay
 - standard OpenTelemetry metrics for runs, nodes, authz/risk/governance checks, human tasks, and replay activity
+- nested tool execution spans and tool latency/outcome metrics
+- artifact put/get/delete spans plus artifact operation metrics
+- broker/topic operation spans for produce/consume/ack/nack/topic-create and OTel broker metrics sink coverage
 - incoming trace-context extraction on HTTP requests so DriftQ spans correlate with upstream app traces
 - OTLP/HTTP trace and metric export from `driftqd`
 - existing structured logs continue to carry correlated `trace_id` values

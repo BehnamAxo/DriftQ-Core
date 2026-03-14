@@ -8,8 +8,8 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
@@ -36,6 +36,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = "driftqd"
 	}
+
 	if cfg.MetricsInterval <= 0 {
 		cfg.MetricsInterval = 10 * time.Second
 	}
@@ -49,6 +50,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 		resource.WithTelemetrySDK(),
 		resource.WithHost(),
 	)
+
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +61,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 		traceOpts = append(traceOpts, otlptracehttp.WithEndpoint(cfg.Endpoint))
 		metricOpts = append(metricOpts, otlpmetrichttp.WithEndpoint(cfg.Endpoint))
 	}
+
 	if cfg.Insecure {
 		traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
 		metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
