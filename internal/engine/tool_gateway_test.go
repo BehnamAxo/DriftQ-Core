@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestToolGateway_ApprovedToolSchemaRedactionAndAudit(t *testing.T) {
@@ -267,5 +268,162 @@ func TestToolGateway_SandboxContextVisibleToHandler(t *testing.T) {
 
 	if !sawRuntime.Sandboxed || sawRuntime.ServerID != "mcp-db" {
 		t.Fatalf("expected sandboxed MCP runtime, got %+v", sawRuntime)
+	}
+}
+
+type staticRateLimiter struct {
+	denyProvider string
+}
+
+func (s staticRateLimiter) Decide(ctx context.Context, req RateLimitRequest) (RateLimitDecision, error) {
+	if strings.TrimSpace(req.Provider) == strings.TrimSpace(s.denyProvider) {
+		return RateLimitDecision{Allowed: false, RetryAfter: 10 * time.Millisecond, Reason: "provider_denied"}, nil
+	}
+	return RateLimitDecision{Allowed: true}, nil
+}
+
+func TestAdaptiveRouting_CheapFirstAndEscalation(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(NewMemoryStore())
+	reg := NewHandlerRegistry()
+	runner.SetHandlerRegistry(reg)
+
+	var calls []ToolRuntimeContext
+	reg.Register("llm.generate", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		runtime, ok := ToolRuntimeFrom(ctx)
+		if !ok {
+			t.Fatal("expected tool runtime context")
+		}
+		calls = append(calls, runtime)
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+
+	if err := runner.SaveToolGatewayBundle(ToolGatewayBundle{
+		Tools: []ToolPolicy{{
+			ID:       "llm-generate",
+			Tool:     "llm.generate",
+			Approved: true,
+			AdaptiveRouting: &AdaptiveRoutingPolicy{
+				CheapFirst:            true,
+				EscalateOnUncertainty: true,
+				UncertaintyThreshold:  0.7,
+				EscalateOnFailure:     true,
+				FailureAttemptThreshold: 2,
+				EscalateOnRisk:        true,
+				RiskScoreThreshold:    40,
+				Routes: []AdaptiveRoute{
+					{ID: "cheap", Provider: "openai", Model: "gpt-mini", EstimatedDollars: 0.01, EstimatedTokens: 100, Priority: 1},
+					{ID: "strong", Provider: "anthropic", Model: "sonnet", EstimatedDollars: 0.08, EstimatedTokens: 400, Priority: 10},
+				},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveToolGatewayBundle: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), "tenant-a")
+	spec := []byte(`{"id":"wf_adaptive","nodes":[{"id":"gen","topic":"llm.generate"}]}`)
+
+	if err := runner.RunSpecJSON(ctx, "run-adaptive-cheap", spec, reg, json.RawMessage(`{"prompt":"hi"}`)); err != nil {
+		t.Fatalf("RunSpecJSON cheap: %v", err)
+	}
+	if got := calls[len(calls)-1]; got.RouteID != "cheap" || got.Provider != "openai" || got.Model != "gpt-mini" {
+		t.Fatalf("expected cheap route, got %+v", got)
+	}
+
+	if err := runner.RunSpecJSON(ctx, "run-adaptive-uncertain", spec, reg, json.RawMessage(`{"prompt":"hard","routing":{"uncertainty":0.95}}`)); err != nil {
+		t.Fatalf("RunSpecJSON uncertain: %v", err)
+	}
+	if got := calls[len(calls)-1]; got.RouteID != "strong" || got.Provider != "anthropic" {
+		t.Fatalf("expected escalated route on uncertainty, got %+v", got)
+	}
+
+	_ = runner.store.CreateRun(Run{
+		RunID:      "run-adaptive-risk",
+		WorkflowID: "wf_adaptive",
+		Status:     RunStatusQueued,
+		TenantID:   "tenant-a",
+	})
+	reportCtx := WithRiskDecision(ctx, RuntimeRiskDecision{Action: RiskActionSandbox, Score: 55})
+	_, err := runner.invokeTool(reportCtx, toolInvocation{
+		RunID:      "run-adaptive-risk",
+		WorkflowID: "wf_adaptive",
+		NodeID:     "gen",
+		Attempt:    1,
+		Tool:       "llm.generate",
+		Handler:    reg.byTopic["llm.generate"],
+	}, json.RawMessage(`{"prompt":"risky"}`))
+	if err != nil {
+		t.Fatalf("invokeTool risk: %v", err)
+	}
+	if got := calls[len(calls)-1]; got.RouteID != "strong" {
+		t.Fatalf("expected escalated route on risk, got %+v", got)
+	}
+
+	records, err := runner.ListToolCallRecords(ctx, "", "llm.generate", 10)
+	if err != nil {
+		t.Fatalf("ListToolCallRecords: %v", err)
+	}
+	if len(records) < 3 {
+		t.Fatalf("expected adaptive route records, got %+v", records)
+	}
+}
+
+func TestAdaptiveRouting_BudgetAndRateLimitFallback(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(NewMemoryStore())
+	reg := NewHandlerRegistry()
+	runner.SetHandlerRegistry(reg)
+
+	var got ToolRuntimeContext
+	reg.Register("llm.answer", func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		got, _ = ToolRuntimeFrom(ctx)
+		return json.RawMessage(`{"ok":true}`), nil
+	})
+
+	if err := runner.SaveToolGatewayBundle(ToolGatewayBundle{
+		Tools: []ToolPolicy{{
+			ID:       "llm-answer",
+			Tool:     "llm.answer",
+			Approved: true,
+			AdaptiveRouting: &AdaptiveRoutingPolicy{
+				CheapFirst: true,
+				Routes: []AdaptiveRoute{
+					{ID: "cheap", Provider: "openai", Model: "gpt-mini", EstimatedDollars: 0.01, EstimatedTokens: 100},
+					{ID: "mid", Provider: "google", Model: "flash", EstimatedDollars: 0.03, EstimatedTokens: 120},
+					{ID: "expensive", Provider: "anthropic", Model: "opus", EstimatedDollars: 2.0, EstimatedTokens: 1000},
+				},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveToolGatewayBundle: %v", err)
+	}
+
+	ctx := WithTenantID(context.Background(), "tenant-a")
+	ctx = WithRateLimiter(ctx, staticRateLimiter{denyProvider: "openai"})
+	_ = runner.store.CreateRun(Run{
+		RunID:      "run-budget-fallback",
+		WorkflowID: "wf_budget_fallback",
+		Status:     RunStatusQueued,
+		TenantID:   "tenant-a",
+		RunBudget:  BudgetPolicy{MaxDollars: 0.05, MaxTokens: 300},
+	})
+
+	_, err := runner.invokeTool(ctx, toolInvocation{
+		RunID:      "run-budget-fallback",
+		WorkflowID: "wf_budget_fallback",
+		NodeID:     "answer",
+		Attempt:    1,
+		Tool:       "llm.answer",
+		Handler:    reg.byTopic["llm.answer"],
+	}, json.RawMessage(`{"prompt":"hello"}`))
+	if err != nil {
+		t.Fatalf("invokeTool fallback: %v", err)
+	}
+
+	if got.RouteID != "mid" || got.Provider != "google" {
+		t.Fatalf("expected rate-limit fallback to mid route, got %+v", got)
 	}
 }

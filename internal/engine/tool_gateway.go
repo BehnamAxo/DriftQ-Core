@@ -37,16 +37,17 @@ type ToolServerDefinition struct {
 }
 
 type ToolPolicy struct {
-	ID              string          `json:"id"`
-	Tool            string          `json:"tool"`
-	ServerID        string          `json:"server_id,omitempty"`
-	Approved        bool            `json:"approved"`
-	SandboxRequired bool            `json:"sandbox_required,omitempty"`
-	SideEffect      *SideEffectPolicy `json:"side_effect,omitempty"`
-	TenantScopes    []string        `json:"tenant_scopes,omitempty"`
-	RedactFields    []string        `json:"redact_fields,omitempty"`
-	InputSchema     json.RawMessage `json:"input_schema,omitempty"`
-	OutputSchema    json.RawMessage `json:"output_schema,omitempty"`
+	ID              string                 `json:"id"`
+	Tool            string                 `json:"tool"`
+	ServerID        string                 `json:"server_id,omitempty"`
+	Approved        bool                   `json:"approved"`
+	SandboxRequired bool                   `json:"sandbox_required,omitempty"`
+	SideEffect      *SideEffectPolicy      `json:"side_effect,omitempty"`
+	AdaptiveRouting *AdaptiveRoutingPolicy `json:"adaptive_routing,omitempty"`
+	TenantScopes    []string               `json:"tenant_scopes,omitempty"`
+	RedactFields    []string               `json:"redact_fields,omitempty"`
+	InputSchema     json.RawMessage        `json:"input_schema,omitempty"`
+	OutputSchema    json.RawMessage        `json:"output_schema,omitempty"`
 }
 
 type ToolGatewayBundle struct {
@@ -67,6 +68,9 @@ type ToolCallRecord struct {
 	Tool        string          `json:"tool"`
 	ServerID    string          `json:"server_id,omitempty"`
 	ServerKind  string          `json:"server_kind,omitempty"`
+	RouteID     string          `json:"route_id,omitempty"`
+	Provider    string          `json:"provider,omitempty"`
+	Model       string          `json:"model,omitempty"`
 	Allowed     bool            `json:"allowed"`
 	Sandboxed   bool            `json:"sandboxed,omitempty"`
 	DurationMS  int64           `json:"duration_ms,omitempty"`
@@ -80,9 +84,37 @@ type ToolRuntimeContext struct {
 	Tool       string               `json:"tool"`
 	ServerID   string               `json:"server_id,omitempty"`
 	ServerKind string               `json:"server_kind,omitempty"`
+	RouteID    string               `json:"route_id,omitempty"`
+	Provider   string               `json:"provider,omitempty"`
+	Model      string               `json:"model,omitempty"`
 	Sandboxed  bool                 `json:"sandboxed,omitempty"`
 	Policy     ToolPolicy           `json:"policy"`
 	Server     ToolServerDefinition `json:"server"`
+}
+
+type AdaptiveRoute struct {
+	ID               string   `json:"id"`
+	Provider         string   `json:"provider,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	EstimatedTokens  int64    `json:"estimated_tokens,omitempty"`
+	EstimatedDollars float64  `json:"estimated_dollars,omitempty"`
+	Priority         int      `json:"priority,omitempty"`
+	TenantScopes     []string `json:"tenant_scopes,omitempty"`
+}
+
+type AdaptiveRoutingPolicy struct {
+	CheapFirst              bool            `json:"cheap_first,omitempty"`
+	EscalateOnUncertainty   bool            `json:"escalate_on_uncertainty,omitempty"`
+	UncertaintyThreshold    float64         `json:"uncertainty_threshold,omitempty"`
+	EscalateOnFailure       bool            `json:"escalate_on_failure,omitempty"`
+	FailureAttemptThreshold int             `json:"failure_attempt_threshold,omitempty"`
+	EscalateOnRisk          bool            `json:"escalate_on_risk,omitempty"`
+	RiskScoreThreshold      int             `json:"risk_score_threshold,omitempty"`
+	Routes                  []AdaptiveRoute `json:"routes,omitempty"`
+}
+
+type adaptiveRoutingHints struct {
+	Uncertainty float64
 }
 
 type toolRuntimeCtxKey struct{}
@@ -91,6 +123,9 @@ func WithToolRuntime(ctx context.Context, runtime ToolRuntimeContext) context.Co
 	runtime.Tool = strings.TrimSpace(runtime.Tool)
 	runtime.ServerID = strings.TrimSpace(runtime.ServerID)
 	runtime.ServerKind = strings.TrimSpace(runtime.ServerKind)
+	runtime.RouteID = strings.TrimSpace(runtime.RouteID)
+	runtime.Provider = strings.TrimSpace(runtime.Provider)
+	runtime.Model = strings.TrimSpace(runtime.Model)
 	return context.WithValue(ctx, toolRuntimeCtxKey{}, runtime)
 }
 
@@ -105,6 +140,9 @@ func ToolRuntimeFrom(ctx context.Context) (ToolRuntimeContext, bool) {
 	runtime.Tool = strings.TrimSpace(runtime.Tool)
 	runtime.ServerID = strings.TrimSpace(runtime.ServerID)
 	runtime.ServerKind = strings.TrimSpace(runtime.ServerKind)
+	runtime.RouteID = strings.TrimSpace(runtime.RouteID)
+	runtime.Provider = strings.TrimSpace(runtime.Provider)
+	runtime.Model = strings.TrimSpace(runtime.Model)
 
 	return runtime, runtime.Tool != ""
 }
@@ -149,6 +187,7 @@ func cloneToolPolicy(policy ToolPolicy) ToolPolicy {
 	out.Tool = strings.TrimSpace(policy.Tool)
 	out.ServerID = strings.TrimSpace(policy.ServerID)
 	out.SideEffect = cloneSideEffectPolicy(policy.SideEffect)
+	out.AdaptiveRouting = cloneAdaptiveRoutingPolicy(policy.AdaptiveRouting)
 	out.TenantScopes = append([]string(nil), policy.TenantScopes...)
 	out.RedactFields = append([]string(nil), policy.RedactFields...)
 	out.InputSchema = cloneRaw(policy.InputSchema)
@@ -181,12 +220,68 @@ func cloneToolCallRecord(record ToolCallRecord) ToolCallRecord {
 	out.Tool = strings.TrimSpace(record.Tool)
 	out.ServerID = strings.TrimSpace(record.ServerID)
 	out.ServerKind = strings.TrimSpace(record.ServerKind)
+	out.RouteID = strings.TrimSpace(record.RouteID)
+	out.Provider = strings.TrimSpace(record.Provider)
+	out.Model = strings.TrimSpace(record.Model)
 	out.Reason = strings.TrimSpace(record.Reason)
 	out.Input = cloneRaw(record.Input)
 	out.Output = cloneRaw(record.Output)
 	out.Error = strings.TrimSpace(record.Error)
 
 	return out
+}
+
+func cloneAdaptiveRoutingPolicy(policy *AdaptiveRoutingPolicy) *AdaptiveRoutingPolicy {
+	if policy == nil {
+		return nil
+	}
+	out := *policy
+	if len(policy.Routes) > 0 {
+		out.Routes = make([]AdaptiveRoute, 0, len(policy.Routes))
+		for _, route := range policy.Routes {
+			cloned := route
+			cloned.ID = strings.TrimSpace(route.ID)
+			cloned.Provider = strings.TrimSpace(route.Provider)
+			cloned.Model = strings.TrimSpace(route.Model)
+			cloned.TenantScopes = append([]string(nil), route.TenantScopes...)
+			out.Routes = append(out.Routes, cloned)
+		}
+	}
+	return &out
+}
+
+func normalizeAdaptiveRoutingPolicy(policy *AdaptiveRoutingPolicy) (*AdaptiveRoutingPolicy, error) {
+	if policy == nil {
+		return nil, nil
+	}
+	out := cloneAdaptiveRoutingPolicy(policy)
+	if out.UncertaintyThreshold < 0 {
+		out.UncertaintyThreshold = 0
+	}
+	if out.UncertaintyThreshold > 1 {
+		out.UncertaintyThreshold = 1
+	}
+	if out.FailureAttemptThreshold <= 0 {
+		out.FailureAttemptThreshold = 2
+	}
+	if out.RiskScoreThreshold <= 0 {
+		out.RiskScoreThreshold = 50
+	}
+	seen := make(map[string]struct{}, len(out.Routes))
+	for i := range out.Routes {
+		out.Routes[i].ID = strings.TrimSpace(out.Routes[i].ID)
+		out.Routes[i].Provider = strings.TrimSpace(out.Routes[i].Provider)
+		out.Routes[i].Model = strings.TrimSpace(out.Routes[i].Model)
+		out.Routes[i].TenantScopes = dedupeSortedStrings(out.Routes[i].TenantScopes)
+		if out.Routes[i].ID == "" {
+			out.Routes[i].ID = "route-" + strconv.Itoa(i+1)
+		}
+		if _, ok := seen[out.Routes[i].ID]; ok {
+			return nil, fmt.Errorf("duplicate adaptive route id %q", out.Routes[i].ID)
+		}
+		seen[out.Routes[i].ID] = struct{}{}
+	}
+	return out, nil
 }
 
 func (b *ToolGatewayBundle) NormalizeAndValidate() error {
@@ -218,6 +313,11 @@ func (b *ToolGatewayBundle) NormalizeAndValidate() error {
 		policy.TenantScopes = dedupeSortedStrings(policy.TenantScopes)
 		policy.RedactFields = dedupeSortedStrings(policy.RedactFields)
 		policy.SideEffect = normalizeSideEffectPolicy(policy.SideEffect)
+		adaptiveRouting, err := normalizeAdaptiveRoutingPolicy(policy.AdaptiveRouting)
+		if err != nil {
+			return err
+		}
+		policy.AdaptiveRouting = adaptiveRouting
 
 		if err := validateSchemaDocument(policy.InputSchema, "tool "+policy.Tool+" input_schema"); err != nil {
 			return err
@@ -577,30 +677,30 @@ func (r *Runner) invokeTool(ctx context.Context, inv toolInvocation, input json.
 	policy, err := r.resolveToolPolicy(ctx, inv.Tool)
 
 	if err != nil {
-		r.logToolCall(ctx, inv, ToolServerDefinition{}, policy, cloneRaw(input), nil, false, false, time.Since(start), err)
+		r.logToolCall(ctx, inv, ToolServerDefinition{}, policy, cloneRaw(input), nil, false, false, time.Since(start), err, AdaptiveRoute{})
 		return nil, err
 	}
 
 	server, err := r.resolveToolServer(ctx, policy)
 	if err != nil {
-		r.logToolCall(ctx, inv, ToolServerDefinition{}, policy, cloneRaw(input), nil, false, false, time.Since(start), err)
+		r.logToolCall(ctx, inv, ToolServerDefinition{}, policy, cloneRaw(input), nil, false, false, time.Since(start), err, AdaptiveRoute{})
 		return nil, err
 	}
 
 	if err := r.authorizeToolExecution(ctx, inv); err != nil {
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, false, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, false, time.Since(start), err, AdaptiveRoute{})
 		return nil, err
 	}
 
 	if err := validateSchemaValue(inv.InputSchema, input, "node input"); err != nil {
 		err = fmt.Errorf("%w: %s", ErrToolSchemaInvalid, err.Error())
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, false, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, false, time.Since(start), err, AdaptiveRoute{})
 		return nil, err
 	}
 
 	if err := validateSchemaValue(policy.InputSchema, input, "tool input"); err != nil {
 		err = fmt.Errorf("%w: %s", ErrToolSchemaInvalid, err.Error())
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, false, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, false, time.Since(start), err, AdaptiveRoute{})
 		return nil, err
 	}
 
@@ -611,7 +711,13 @@ func (r *Runner) invokeTool(ctx context.Context, inv toolInvocation, input json.
 
 	if sandboxed && !server.SandboxAllowed && server.ID != defaultToolServerID {
 		err = fmt.Errorf("%w: server %q does not allow sandbox execution", ErrToolServerNotApproved, server.ID)
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, sandboxed, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, sandboxed, time.Since(start), err, AdaptiveRoute{})
+		return nil, err
+	}
+
+	selectedRoute, err := r.selectAdaptiveRoute(ctx, inv, policy, input)
+	if err != nil {
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), nil, false, sandboxed, time.Since(start), err, AdaptiveRoute{})
 		return nil, err
 	}
 
@@ -619,6 +725,9 @@ func (r *Runner) invokeTool(ctx context.Context, inv toolInvocation, input json.
 		Tool:       inv.Tool,
 		ServerID:   server.ID,
 		ServerKind: server.Kind,
+		RouteID:    strings.TrimSpace(selectedRoute.ID),
+		Provider:   strings.TrimSpace(selectedRoute.Provider),
+		Model:      strings.TrimSpace(selectedRoute.Model),
 		Sandboxed:  sandboxed,
 		Policy:     cloneToolPolicy(policy),
 		Server:     cloneToolServerDefinition(server),
@@ -626,33 +735,33 @@ func (r *Runner) invokeTool(ctx context.Context, inv toolInvocation, input json.
 
 	if sideEffect := normalizeSideEffectPolicy(policy.SideEffect); sideEffect != nil && sideEffect.Enabled {
 		output, err := r.executeSideEffect(ctx, inv, server, policy, input)
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err, selectedRoute)
 		return output, err
 	}
 
 	output, err := inv.Handler(ctx, cloneRaw(input))
 	if err != nil {
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err, selectedRoute)
 		return output, err
 	}
 
 	if err := validateSchemaValue(policy.OutputSchema, output, "tool output"); err != nil {
 		err = fmt.Errorf("%w: %s", ErrToolSchemaInvalid, err.Error())
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err, selectedRoute)
 		return nil, err
 	}
 
 	if err := validateSchemaValue(inv.OutputSchema, output, "node output"); err != nil {
 		err = fmt.Errorf("%w: %s", ErrToolSchemaInvalid, err.Error())
-		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err, selectedRoute)
 		return nil, err
 	}
 
-	r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), nil)
+	r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), nil, selectedRoute)
 	return output, nil
 }
 
-func (r *Runner) logToolCall(ctx context.Context, inv toolInvocation, server ToolServerDefinition, policy ToolPolicy, input, output json.RawMessage, allowed bool, sandboxed bool, dur time.Duration, callErr error) {
+func (r *Runner) logToolCall(ctx context.Context, inv toolInvocation, server ToolServerDefinition, policy ToolPolicy, input, output json.RawMessage, allowed bool, sandboxed bool, dur time.Duration, callErr error, route AdaptiveRoute) {
 	record := ToolCallRecord{
 		At:         time.Now().UTC(),
 		TenantID:   effectiveTenantFromContext(ctx),
@@ -663,6 +772,9 @@ func (r *Runner) logToolCall(ctx context.Context, inv toolInvocation, server Too
 		Tool:       strings.TrimSpace(inv.Tool),
 		ServerID:   strings.TrimSpace(server.ID),
 		ServerKind: strings.TrimSpace(server.Kind),
+		RouteID:    strings.TrimSpace(route.ID),
+		Provider:   strings.TrimSpace(route.Provider),
+		Model:      strings.TrimSpace(route.Model),
 		Allowed:    allowed && callErr == nil,
 		Sandboxed:  sandboxed,
 		DurationMS: dur.Milliseconds(),
@@ -699,6 +811,160 @@ func (r *Runner) logToolCall(ctx context.Context, inv toolInvocation, server Too
 		}(),
 		Reason: record.Reason,
 	})
+}
+
+func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, policy ToolPolicy, input json.RawMessage) (AdaptiveRoute, error) {
+	adaptive := policy.AdaptiveRouting
+
+	if adaptive == nil || len(adaptive.Routes) == 0 {
+		return AdaptiveRoute{}, nil
+	}
+
+	runBudget := BudgetPolicy{}
+	runUsage := BudgetUsage{}
+	if inv.RunID != "" {
+		if run, ok := r.store.GetRun(inv.RunID); ok {
+			runBudget = run.RunBudget
+			runUsage = run.BudgetUsage
+
+			if runBudget == (BudgetPolicy{}) {
+				def := r.getDefaultRunBudget()
+				tenantBudget, _ := r.getTenantBudget(effectiveTenantFromContext(ctx))
+				runBudget = effectiveBudget(def, tenantBudget, run.RunBudget)
+			}
+		}
+	}
+
+	hints := routingHintsFromInput(input)
+	escalate := false
+
+	if adaptive.EscalateOnUncertainty && hints.Uncertainty >= adaptive.UncertaintyThreshold {
+		escalate = true
+	}
+
+	if adaptive.EscalateOnFailure && inv.Attempt >= adaptive.FailureAttemptThreshold {
+		escalate = true
+	}
+
+	if adaptive.EscalateOnRisk {
+		if decision, ok := RiskDecisionFrom(ctx); ok {
+			if decision.Score >= adaptive.RiskScoreThreshold || decision.Action == RiskActionSandbox || decision.Action == RiskActionRequireApproval {
+				escalate = true
+			}
+		}
+	}
+
+	tenantID := effectiveTenantFromContext(ctx)
+	candidates := make([]AdaptiveRoute, 0, len(adaptive.Routes))
+	for _, route := range adaptive.Routes {
+		if len(route.TenantScopes) > 0 && !containsString(route.TenantScopes, tenantID) {
+			continue
+		}
+
+		if runBudget.MaxTokens > 0 && route.EstimatedTokens > 0 && runUsage.Tokens+route.EstimatedTokens > runBudget.MaxTokens {
+			continue
+		}
+
+		if runBudget.MaxDollars > 0 && route.EstimatedDollars > 0 && runUsage.Dollars+route.EstimatedDollars > runBudget.MaxDollars {
+			continue
+		}
+
+		if limiter := RateLimiterFrom(ctx); limiter != nil {
+			decision, err := limiter.Decide(ctx, RateLimitRequest{
+				TenantID:         tenantID,
+				Provider:         route.Provider,
+				Kind:             RateLimitTool,
+				EstimatedTokens:  route.EstimatedTokens,
+				EstimatedDollars: route.EstimatedDollars,
+			})
+
+			if err != nil {
+				return AdaptiveRoute{}, err
+			}
+
+			if !decision.Allowed {
+				continue
+			}
+		}
+		candidates = append(candidates, route)
+	}
+
+	if len(candidates) == 0 {
+		return AdaptiveRoute{}, ErrBudgetExceeded
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		left := candidates[i]
+		right := candidates[j]
+		if escalate {
+			if left.Priority != right.Priority {
+				return left.Priority > right.Priority
+			}
+
+			if left.EstimatedDollars != right.EstimatedDollars {
+				return left.EstimatedDollars < right.EstimatedDollars
+			}
+
+			if left.EstimatedTokens != right.EstimatedTokens {
+				return left.EstimatedTokens < right.EstimatedTokens
+			}
+
+			return left.ID < right.ID
+		}
+
+		if adaptive.CheapFirst {
+			if left.EstimatedDollars != right.EstimatedDollars {
+				return left.EstimatedDollars < right.EstimatedDollars
+			}
+
+			if left.EstimatedTokens != right.EstimatedTokens {
+				return left.EstimatedTokens < right.EstimatedTokens
+			}
+
+			if left.Priority != right.Priority {
+				return left.Priority < right.Priority
+			}
+
+			return left.ID < right.ID
+		}
+
+		if left.Priority != right.Priority {
+			return left.Priority > right.Priority
+		}
+
+		if left.EstimatedDollars != right.EstimatedDollars {
+			return left.EstimatedDollars < right.EstimatedDollars
+		}
+
+		return left.ID < right.ID
+	})
+
+	return candidates[0], nil
+}
+
+func routingHintsFromInput(input json.RawMessage) adaptiveRoutingHints {
+	if len(input) == 0 {
+		return adaptiveRoutingHints{}
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return adaptiveRoutingHints{}
+	}
+
+	var hints adaptiveRoutingHints
+	if routing, ok := payload["routing"].(map[string]any); ok {
+		if uncertainty, ok := routing["uncertainty"].(float64); ok {
+			hints.Uncertainty = uncertainty
+		}
+		return hints
+	}
+
+	if uncertainty, ok := payload["uncertainty"].(float64); ok {
+		hints.Uncertainty = uncertainty
+	}
+
+	return hints
 }
 
 func combinedRedactFields(policy ToolPolicy) []string {

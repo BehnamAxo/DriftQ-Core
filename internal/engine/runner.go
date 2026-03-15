@@ -316,6 +316,11 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			NodeID:     node.NodeID,
 			Attempt:    attempt,
 		})
+
+		if rl := r.wrapRateLimiter(runID, wf.WorkflowID, node.NodeID, attempt, tenantID, node.Topic); rl != nil {
+			nodeCtx = WithRateLimiter(nodeCtx, rl)
+		}
+
 		nodeCtx, nodeSpan := r.startSpan(nodeCtx, "driftq.node.execute", nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)...)
 		execCtx := nodeCtx
 		var toolSpanAttrs []attribute.KeyValue
