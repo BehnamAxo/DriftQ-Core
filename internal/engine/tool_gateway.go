@@ -813,11 +813,11 @@ func (r *Runner) logToolCall(ctx context.Context, inv toolInvocation, server Too
 	})
 }
 
-func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, policy ToolPolicy, input json.RawMessage) (AdaptiveRoute, error) {
+func (r *Runner) adaptiveRouteCandidates(ctx context.Context, inv toolInvocation, policy ToolPolicy, input json.RawMessage) ([]AdaptiveRoute, []string, error) {
 	adaptive := policy.AdaptiveRouting
 
 	if adaptive == nil || len(adaptive.Routes) == 0 {
-		return AdaptiveRoute{}, nil
+		return nil, nil, nil
 	}
 
 	runBudget := BudgetPolicy{}
@@ -836,20 +836,20 @@ func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, po
 	}
 
 	hints := routingHintsFromInput(input)
-	escalate := false
+	triggers := make([]string, 0, 3)
 
 	if adaptive.EscalateOnUncertainty && hints.Uncertainty >= adaptive.UncertaintyThreshold {
-		escalate = true
+		triggers = append(triggers, "uncertainty")
 	}
 
 	if adaptive.EscalateOnFailure && inv.Attempt >= adaptive.FailureAttemptThreshold {
-		escalate = true
+		triggers = append(triggers, "failure")
 	}
 
 	if adaptive.EscalateOnRisk {
 		if decision, ok := RiskDecisionFrom(ctx); ok {
 			if decision.Score >= adaptive.RiskScoreThreshold || decision.Action == RiskActionSandbox || decision.Action == RiskActionRequireApproval {
-				escalate = true
+				triggers = append(triggers, "risk")
 			}
 		}
 	}
@@ -879,7 +879,7 @@ func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, po
 			})
 
 			if err != nil {
-				return AdaptiveRoute{}, err
+				return nil, nil, err
 			}
 
 			if !decision.Allowed {
@@ -890,8 +890,18 @@ func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, po
 	}
 
 	if len(candidates) == 0 {
-		return AdaptiveRoute{}, ErrBudgetExceeded
+		return nil, triggers, ErrBudgetExceeded
 	}
+
+	return candidates, triggers, nil
+}
+
+func (r *Runner) legacyAdaptiveRouteSelection(policy ToolPolicy, candidates []AdaptiveRoute, input json.RawMessage, triggers []string) (AdaptiveRoute, error) {
+	adaptive := policy.AdaptiveRouting
+	if adaptive == nil || len(candidates) == 0 {
+		return AdaptiveRoute{}, nil
+	}
+	escalate := len(triggers) > 0
 
 	sort.Slice(candidates, func(i, j int) bool {
 		left := candidates[i]
@@ -940,6 +950,22 @@ func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, po
 	})
 
 	return candidates[0], nil
+}
+
+func (r *Runner) selectAdaptiveRoute(ctx context.Context, inv toolInvocation, policy ToolPolicy, input json.RawMessage) (AdaptiveRoute, error) {
+	candidates, triggers, err := r.adaptiveRouteCandidates(ctx, inv, policy, input)
+	if err != nil {
+		return AdaptiveRoute{}, err
+	}
+	if len(candidates) == 0 {
+		return AdaptiveRoute{}, nil
+	}
+	if decision, used, err := r.evaluateBrainDecision(ctx, inv, policy, candidates, input, triggers); err != nil {
+		return AdaptiveRoute{}, err
+	} else if used {
+		return decision.Selected, nil
+	}
+	return r.legacyAdaptiveRouteSelection(policy, candidates, input, triggers)
 }
 
 func routingHintsFromInput(input json.RawMessage) adaptiveRoutingHints {

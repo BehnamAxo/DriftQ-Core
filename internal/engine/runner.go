@@ -51,6 +51,8 @@ type Runner struct {
 	policyBundle     *AuthorizationPolicyBundle
 	riskMu           sync.RWMutex
 	riskPolicy       *RiskPolicy
+	brainMu          sync.RWMutex
+	brainPolicy      *BrainPolicy
 	toolMu           sync.RWMutex
 	toolGateway      *ToolGatewayBundle
 

@@ -47,6 +47,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	attachSelfHealingRoutes(mux, runner)
 	attachForensicRoutes(mux, runner)
 	attachReplayBranchRoutes(mux, runner)
+	attachBrainRoutes(mux, runner)
 
 	mux.HandleFunc("/debug/policy", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
