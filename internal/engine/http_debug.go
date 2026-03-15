@@ -43,6 +43,7 @@ func traceIDFromRequest(req *http.Request) string {
 // This is runner-only
 func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	attachEvalRoutes(mux, runner)
+	attachWorkflowReleaseRoutes(mux, runner)
 
 	mux.HandleFunc("/debug/policy", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
