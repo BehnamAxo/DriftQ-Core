@@ -395,6 +395,14 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			// mark run failed
 			run.Status = RunStatusFailed
 			run.EndedAt = &nodeEnd
+			run.TerminalReason = "node_failed"
+			if meta, metaErr := json.Marshal(map[string]any{
+				"failed_node": node.NodeID,
+				"attempt":     attempt,
+				"error":       nodeErr.Error(),
+			}); metaErr == nil {
+				run.TerminalMeta = meta
+			}
 
 			// metrics: failed run duration
 			if run.StartedAt != nil {
@@ -423,6 +431,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 				WorkflowID: wf.WorkflowID,
 				Payload:    p2,
 			})
+			r.maybeCaptureSelfHealingArtifact(ctx, runID)
 
 			err = ErrNodeFailed
 			return err
@@ -472,6 +481,8 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	end := time.Now().UTC()
 	run.Status = RunStatusSucceeded
 	run.EndedAt = &end
+	run.TerminalReason = ""
+	run.TerminalMeta = nil
 
 	// metrics: succeeded run duration
 	if run.StartedAt != nil {
