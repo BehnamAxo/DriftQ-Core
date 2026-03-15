@@ -42,6 +42,7 @@ type ToolPolicy struct {
 	ServerID        string          `json:"server_id,omitempty"`
 	Approved        bool            `json:"approved"`
 	SandboxRequired bool            `json:"sandbox_required,omitempty"`
+	SideEffect      *SideEffectPolicy `json:"side_effect,omitempty"`
 	TenantScopes    []string        `json:"tenant_scopes,omitempty"`
 	RedactFields    []string        `json:"redact_fields,omitempty"`
 	InputSchema     json.RawMessage `json:"input_schema,omitempty"`
@@ -147,6 +148,7 @@ func cloneToolPolicy(policy ToolPolicy) ToolPolicy {
 	out.ID = strings.TrimSpace(policy.ID)
 	out.Tool = strings.TrimSpace(policy.Tool)
 	out.ServerID = strings.TrimSpace(policy.ServerID)
+	out.SideEffect = cloneSideEffectPolicy(policy.SideEffect)
 	out.TenantScopes = append([]string(nil), policy.TenantScopes...)
 	out.RedactFields = append([]string(nil), policy.RedactFields...)
 	out.InputSchema = cloneRaw(policy.InputSchema)
@@ -215,6 +217,7 @@ func (b *ToolGatewayBundle) NormalizeAndValidate() error {
 		toolSeen[policy.Tool] = struct{}{}
 		policy.TenantScopes = dedupeSortedStrings(policy.TenantScopes)
 		policy.RedactFields = dedupeSortedStrings(policy.RedactFields)
+		policy.SideEffect = normalizeSideEffectPolicy(policy.SideEffect)
 
 		if err := validateSchemaDocument(policy.InputSchema, "tool "+policy.Tool+" input_schema"); err != nil {
 			return err
@@ -620,6 +623,12 @@ func (r *Runner) invokeTool(ctx context.Context, inv toolInvocation, input json.
 		Policy:     cloneToolPolicy(policy),
 		Server:     cloneToolServerDefinition(server),
 	})
+
+	if sideEffect := normalizeSideEffectPolicy(policy.SideEffect); sideEffect != nil && sideEffect.Enabled {
+		output, err := r.executeSideEffect(ctx, inv, server, policy, input)
+		r.logToolCall(ctx, inv, server, policy, cloneRaw(input), cloneRaw(output), true, sandboxed, time.Since(start), err)
+		return output, err
+	}
 
 	output, err := inv.Handler(ctx, cloneRaw(input))
 	if err != nil {

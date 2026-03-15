@@ -48,6 +48,7 @@ const (
 const (
 	HumanTaskSourceNode HumanTaskSource = "node"
 	HumanTaskSourceRisk HumanTaskSource = "risk"
+	HumanTaskSourceSideEffect HumanTaskSource = "side_effect"
 )
 
 const (
@@ -75,6 +76,7 @@ type HumanTask struct {
 	Prompt         string              `json:"prompt,omitempty"`
 	RequestedInput json.RawMessage     `json:"requested_input,omitempty"`
 	EditedInput    json.RawMessage     `json:"edited_input,omitempty"`
+	SideEffectReceiptID string         `json:"side_effect_receipt_id,omitempty"`
 	ReviewComment  string              `json:"review_comment,omitempty"`
 	TimeoutAction  HumanTimeoutAction  `json:"timeout_action,omitempty"`
 	CreatedAt      time.Time           `json:"created_at"`
@@ -163,6 +165,7 @@ func (r *Runner) saveHumanTask(task HumanTask) error {
 	task.Source = HumanTaskSource(strings.TrimSpace(string(task.Source)))
 	task.Status = HumanTaskStatus(strings.TrimSpace(string(task.Status)))
 	task.Prompt = strings.TrimSpace(task.Prompt)
+	task.SideEffectReceiptID = strings.TrimSpace(task.SideEffectReceiptID)
 	task.ReviewComment = strings.TrimSpace(task.ReviewComment)
 	task.TimeoutAction = HumanTimeoutAction(strings.TrimSpace(string(task.TimeoutAction)))
 
