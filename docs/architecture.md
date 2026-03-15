@@ -3,19 +3,18 @@
 > This document explains the architecture of DriftQ-Core in a visual, diagram-first way.
 > It is meant to help readers build a mental model quickly, even on a first read.
 
----
 
 ## 0. TL;DR — One Sentence
 
 > **DriftQ-Core is a single-process durable broker + a replayable workflow runtime, with v3 layers that make AI-style orchestration safer, more inspectable, and more controllable.**
 
----
 
 ## 1. What Is DriftQ-Core?
 
 One Go binary — **`driftqd`** — ships three functional layers and a shared platform.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 mindmap
   root((DriftQ-Core))
     v1 Broker
@@ -50,11 +49,11 @@ mindmap
       Embedded UI
 ```
 
----
 
 ## 2. Top-Level System Map
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph Clients
         CLI["driftqctl CLI"]
@@ -118,11 +117,11 @@ graph TB
     OTEL --> PROM
 ```
 
----
 
 ## 3. Server Startup Sequence
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 flowchart TD
     A([Start driftqd]) --> B[Parse flags]
     B --> C[Configure structured logging]
@@ -153,13 +152,13 @@ flowchart TD
 
 > **Key insight:** durable state is written **incrementally** during normal operation — restart recovery comes from the WAL and FileStore, not a final checkpoint.
 
----
 
 ## 4. The Broker Architecture
 
 ### 4.1 Broker Internal Structure
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph LR
     subgraph API["HTTP /v1/*"]
         PR[POST /v1/produce]
@@ -196,6 +195,7 @@ graph LR
 ### 4.2 Broker Message Produce Flow
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 sequenceDiagram
     participant C as Client
     participant H as HTTP /v1/produce
@@ -225,6 +225,7 @@ sequenceDiagram
 ### 4.3 Broker Consume / Ack Flow
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 sequenceDiagram
     participant C as Consumer
     participant H as HTTP /v1/consume
@@ -260,6 +261,7 @@ sequenceDiagram
 ### 4.4 Broker Durability Mental Model
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph LR
     W["WAL\n(source of truth)"] -->|replay on restart| M["In-Memory State\n(working set)"]
     M -->|append on change| W
@@ -268,13 +270,13 @@ graph LR
     style M fill:#cce5ff,stroke:#004085
 ```
 
----
 
 ## 5. The Workflow Runtime Architecture
 
 ### 5.1 Runner Internals
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph Runner["Runner struct (engine/runner.go)"]
         direction TB
@@ -305,6 +307,7 @@ graph TB
 ### 5.2 Workflow Execution Flow (Happy Path)
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 flowchart TD
     A([POST /debug/run-spec]) --> B[Parse WorkflowSpec]
     B --> C[Resolve tenant & principal]
@@ -346,6 +349,7 @@ flowchart TD
 ### 5.3 DAG Execution (Parallel Nodes)
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph LR
     subgraph DAG["DAG Execution (runner_dag.go)"]
         direction TB
@@ -371,11 +375,11 @@ graph LR
 
 > Nodes A and B run in parallel. Node D becomes ready only when both A and B finish (join barrier). Fan-out up to `maxParallel` goroutines.
 
----
 
 ## 6. Replay Architecture
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph REPLAY_MODES["Replay Modes (engine/replay.go + replay_branches.go)"]
         TT["Time-Travel Replay\n→ reuse recorded outputs\n(no re-execution)"]
@@ -402,6 +406,7 @@ graph TB
 ### 6.1 Branch Replay Timelines
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 gitGraph
     commit id: "Run Start"
     commit id: "Node A"
@@ -416,11 +421,11 @@ gitGraph
     commit id: "Run End"
 ```
 
----
 
 ## 7. v3 Feature Layers
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph V3["v3 Runtime Layers (all inside internal/engine/)"]
         direction LR
@@ -461,11 +466,11 @@ graph TB
     RUNNER["Runner (core)"] --> GUARDRAILS & GOVHITL & MEMORY & TOOLS & DEBUG & ROUTING
 ```
 
----
 
 ## 8. Multi-Agent Layer
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph LR
     subgraph MA["internal/multiagent/"]
         SCHEMA["Agent Message Schema"]
@@ -491,11 +496,11 @@ graph LR
     BROKER --> ENGINE["Engine Runner\n(processes messages as workflow inputs)"]
 ```
 
----
 
 ## 9. Persistence Architecture
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph LAYERS["Three Independent Stores"]
 
@@ -525,11 +530,11 @@ graph TB
     ART_STORE -.->|rationale| W3
 ```
 
----
 
 ## 10. HTTP API Surface
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph LR
     subgraph SERVER["driftqd HTTP Server"]
         direction TB
@@ -565,11 +570,11 @@ graph LR
     end
 ```
 
----
 
 ## 11. Observability Architecture
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph APP["Application Instrumentation"]
         HTTP_MW["HTTP Trace Middleware\n(observability/middleware)"]
@@ -600,11 +605,11 @@ graph TB
     NOTE["Logs include correlated trace IDs\nHTTP requests can continue upstream traces\nDriftQ does NOT host an OTLP ingest endpoint"]
 ```
 
----
 
 ## 12. Concurrency Model
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     subgraph BROKER_CONCURRENCY["Broker Concurrency"]
         BIG_LOCK["Single sync.RWMutex\naround all broker state"]
@@ -627,11 +632,10 @@ graph TB
     NOTE2["DriftQ-Core is intentionally single-node.\nNo distributed scheduler complexity."]
 ```
 
----
-
 ## 13. Package Map (Annotated)
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TD
     subgraph CMD["cmd/"]
         DRIFTQD["driftqd/\n→ server bootstrap\n→ HTTP routes\n→ middleware wiring\n→ main.go"]
@@ -659,11 +663,10 @@ graph TD
     BROKER_PKG --> OBS_PKG
 ```
 
----
-
 ## 14. Extension Points
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph LR
     subgraph SEAMS["Main Extension Seams"]
         direction TB
@@ -682,11 +685,10 @@ graph LR
     ART_EXT -.->|implements| NEW_ART["e.g. S3 / GCS artifacts"]
 ```
 
----
-
 ## 15. Brain v1 Adaptive Routing
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 flowchart TD
     START([Incoming Node Execution]) --> SAFE[Apply safety/policy filters\nauthz.go + risk.go]
     SAFE --> HIST[Load run history\nbrain.go BrainPolicy]
@@ -701,11 +703,11 @@ flowchart TD
 
 > Brain v1 is **heuristic and explainable** — not a machine-learning model.
 
----
 
 ## 16. Design Philosophy — Tradeoffs Visualized
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 quadrantChart
     title DriftQ-Core Design Tradeoffs
     x-axis Simple --> Complex
@@ -728,11 +730,11 @@ quadrantChart
 | Debug routes | ✅ | Abstraction purity | Debuggability over purity |
 | Runtime layering | ✅ | Separate microservices | One engine, less network |
 
----
 
 ## 17. Suggested Reading Order
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 flowchart LR
     README["1. README.md"] --> MAIN["2. cmd/driftqd/main.go"]
     MAIN --> BROKER["3. internal/broker/\nbroker.go, types.go"]
@@ -757,11 +759,11 @@ flowchart LR
 | Replay / forensics | `internal/engine/` → `replay.go`, `replay_branches.go`, `forensics.go` |
 | Smart routing | `internal/engine/brain.go` |
 
----
 
 ## 18. Final Mental Model
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables': {'background':'transparent','primaryColor':'#2563eb','primaryTextColor':'#f8fafc','primaryBorderColor':'#93c5fd','secondaryColor':'#7c3aed','secondaryTextColor':'#f8fafc','secondaryBorderColor':'#c4b5fd','tertiaryColor':'#0f766e','tertiaryTextColor':'#f8fafc','tertiaryBorderColor':'#99f6e4','lineColor':'#94a3b8','clusterBkg':'#0f172a','clusterBorder':'#64748b','defaultLinkColor':'#94a3b8','fontFamily':'Inter, Arial, sans-serif'}}}%%
 graph TB
     BROKER["Broker\n= durable transport\n(messages flow here)"]
     ENGINE["Engine\n= durable execution\n(workflows run here)"]
