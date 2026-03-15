@@ -32,6 +32,7 @@ type AgentMessage struct {
 	Intent     string `json:"intent"`
 	Route      string `json:"route,omitempty"`
 
+	Coordination *CoordinationMetadata `json:"coordination,omitempty"`
 	Payload json.RawMessage `json:"payload"`
 }
 

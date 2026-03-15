@@ -117,6 +117,28 @@ func (r *Router) Route(_ context.Context, topic string, msg broker.Message) (bro
 		decision.Meta["message_id"] = mid
 	}
 
+	if am.Coordination != nil {
+		if pattern := strings.TrimSpace(string(am.Coordination.Pattern)); pattern != "" {
+			decision.Meta["pattern"] = pattern
+		}
+
+		if am.Coordination.RequiresReply {
+			decision.Meta["requires_reply"] = "true"
+		}
+
+		if am.Coordination.ReviewRequired {
+			decision.Meta["review_required"] = "true"
+		}
+
+		if handoffFrom := strings.TrimSpace(am.Coordination.HandoffFrom); handoffFrom != "" {
+			decision.Meta["handoff_from"] = handoffFrom
+		}
+
+		if escalationIndex := am.Coordination.EscalationIndex; escalationIndex > 0 {
+			decision.Meta["escalation_index"] = fmt.Sprintf("%d", escalationIndex)
+		}
+	}
+
 	if sourceAgentID, ok := AgentIDFromOutboxTopic(topic); ok {
 		decision.Meta["source_agent"] = sourceAgentID
 	}
@@ -125,9 +147,11 @@ func (r *Router) Route(_ context.Context, topic string, msg broker.Message) (bro
 	case RouteKindDirect:
 		receiver := strings.TrimSpace(am.Receiver)
 		target, err := AgentInboxTopic(receiver)
+
 		if err != nil {
 			return broker.RoutingDecision{}, err
 		}
+
 		decision.TargetTopic = target
 		decision.Meta["receiver"] = receiver
 		return decision, nil

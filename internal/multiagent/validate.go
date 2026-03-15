@@ -94,5 +94,11 @@ func (m AgentMessage) Validate() error {
 		return ErrPayloadMustBeJSONObject
 	}
 
+	if m.Coordination != nil {
+		if err := m.Coordination.NormalizeAndValidate(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
