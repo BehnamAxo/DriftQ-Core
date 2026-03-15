@@ -1,16 +1,27 @@
-# v3 - Multi-Agent Runtime & Guardrails Foundations
+﻿# v3 - Multi-Agent Runtime & Real-Time AI Foundations
 
 This document covers the current v3 foundations inside DriftQ-Core.
 
-Right now, v3 has five implemented foundation areas:
+The goal of v3 is one coherent runtime track on top of the broker and replayable engine: multi-agent messaging, guardrails, governance, human review, durable agent memory, safer tool execution, smarter routing, release engineering, self-healing, forensics, and what-if replay.
 
-- multi-agent messaging
-- guardrails and evaluation
+The v3 runtime now includes these implemented foundation areas:
+
+- multi-agent messaging and coordination
+- guardrails, evaluation, authorization, and runtime risk
 - governance and tenant isolation
 - human-in-the-loop workflow steps
 - OpenTelemetry-native observability
-
-The goal is one coherent v3 track, not separate product docs per sub-slice.
+- durable agent state
+- semantic agent memory
+- secure tool gateway / MCP-ready control plane
+- safe side-effect framework
+- budgeting-aware adaptive routing
+- realtime topic mode
+- workflow release engineering
+- self-healing from failures
+- full lineage and forensic debugging
+- branching replay timelines and what-if simulation
+- Brain v1 smarter route selection
 
 ## What exists today
 
@@ -57,12 +68,22 @@ Agent message contract:
   - `created_at`
   - `tenant_id`
   - `route`
+  - `coordination`
 
 Current routing behavior:
 
 - direct -> `agent.{receiver}.inbox`
 - capability/role -> in-memory registry lookup -> `agent.{selected}.inbox`
 - broadcast -> `team.{team}.broadcast`
+
+Coordination primitives:
+
+- planner -> worker request flows
+- planner -> reviewer flows
+- request/reply envelopes
+- handoffs between agents
+- escalation chains
+- broadcast fan-out patterns
 
 Current `driftqd` multi-agent flags:
 
@@ -96,14 +117,14 @@ Examples:
 
 Implemented now:
 
-- Native eval suites with built-in evaluators
-- Regression datasets with persisted eval cases
-- Re-execution of old runs against new workflow specs
-- Pass/fail promotion gate over the active index pointer
-- Failure-to-test-case capture flow from existing runs
-- Authorization policy bundles for workflow/tool access
-- Runtime risk scoring and policy decisions
-- Risk simulation and policy inspection through debug routes
+- native eval suites with built-in evaluators
+- regression datasets with persisted eval cases
+- re-execution of old runs against new workflow specs
+- pass/fail promotion gate over the active index pointer
+- failure-to-test-case capture flow from existing runs
+- authorization policy bundles for workflow/tool access
+- runtime risk scoring and policy decisions
+- risk simulation and policy inspection through debug routes
 
 Built-in evaluators:
 
@@ -112,7 +133,7 @@ Built-in evaluators:
 
 Current scope notes:
 
-- exposed through `debug` endpoints
+- exposed through debug endpoints
 - no dedicated UI yet
 - no dedicated CLI yet
 - no external eval provider integrations yet
@@ -155,6 +176,14 @@ Eval report includes:
 - pass rate
 - per-case results
 - final pass/fail
+
+Authorization / risk scope:
+
+- workflow/tool allow-deny policy bundles
+- tenant-aware authorization checks
+- risk scoring over prompt-injection-like input, suspicious tool chains, and unusual data movement
+- allow / sandbox / require-approval / block decisions
+- risk simulation through debug routes
 
 ### Governance and tenant isolation foundation
 
@@ -233,6 +262,186 @@ Current `driftqd` observability flags:
 - `-otel-insecure`
 - `-otel-metrics-interval`
 
+### Agent state storage foundation
+
+Implemented now:
+
+- durable per-agent state snapshots
+- versioned state history
+- lineage metadata tying state updates back to runs and steps
+- tenant-scoped access boundaries
+- replay-safe reads and blocked replay writes
+- handler-context access to agent state
+
+Core objects:
+
+- agent state snapshot
+- agent state write request
+- agent state read options
+
+### Semantic agent memory foundation
+
+Implemented now:
+
+- tenant-scoped semantic memory entries
+- notes, runs, artifacts, and state snapshots as memory sources
+- pluggable embedder interface with local similarity search foundation
+- replay-safe memory reads/searches and blocked replay writes
+- handler-context access to memory lookup
+
+Core objects:
+
+- agent memory entry
+- memory write request
+- memory search request
+- memory search result
+
+### Secure tool gateway / MCP-ready control plane foundation
+
+Implemented now:
+
+- approved tool/server bundle persisted in the engine store
+- tenant-aware tool/server governance
+- runtime tool-call policy enforcement
+- input/output schema validation around tool execution
+- secret redaction for stored tool-call records
+- audit-ready tool-call records
+- sandbox-aware runtime tool context
+- MCP-ready server definitions and connector governance foundation
+
+Core objects:
+
+- tool gateway bundle
+- tool call record
+- tool/server definition
+
+### Safe side-effect framework foundation
+
+Implemented now:
+
+- dry-run side-effect mode
+- staged side-effect receipts
+- explicit commit flow
+- compensating action flow
+- irreversible-action policy flags
+- approval-before-commit through the existing HITL path
+
+Core objects:
+
+- side-effect policy
+- side-effect receipt
+- side-effect runtime context
+
+### Budgeting-aware adaptive routing foundation
+
+Implemented now:
+
+- per-run and per-tenant budget-aware route filtering
+- cost ceilings
+- cheap-first route preference
+- escalation on uncertainty/failure/risk
+- provider/model selection policies
+- route metadata on runtime and audit records
+
+Current scope notes:
+
+- foundation routing is still heuristic and policy-driven
+- it is designed to feed the later smarter routing layer rather than replace it
+
+### Realtime topics foundation
+
+Implemented now:
+
+- topic mode metadata persisted in broker state and WAL
+- realtime / low-latency topic creation through broker APIs
+- simplified low-latency consume path when full lease coordination is not needed
+
+Current scope notes:
+
+- aimed at responsiveness
+- standard topic durability and ack/nack flows still exist for stronger control paths
+
+### Workflow release engineering foundation
+
+Implemented now:
+
+- workflow version storage
+- release channels
+- canary resolution
+- shadow runs using dry-run side-effect mode
+- promotion and rollback
+- prompt/model/tool/policy diffs through release diff views
+- eval-gated canary finalization
+
+Core objects:
+
+- workflow release version
+- workflow release channel
+- workflow release resolution
+- workflow release diff
+
+### Self-healing orchestration foundation
+
+Implemented now:
+
+- automatic capture of failed runs into recovery artifacts
+- replay suggestions
+- safer rerun plans
+- eval/test-case links from failure artifacts
+- self-healing replay entry points
+
+Core objects:
+
+- self-healing artifact
+- replay suggestion
+- rerun plan
+
+### Full lineage and forensic debugging foundation
+
+Implemented now:
+
+- end-to-end execution graph view
+- run diffs
+- workflow diffs
+- root-cause view
+- `what changed?` debugging helpers
+
+Core objects:
+
+- forensic execution graph
+- forensic run diff
+- forensic root-cause view
+- forensic what-changed view
+
+### Branching replay timelines and what-if simulation foundation
+
+Implemented now:
+
+- replay branch creation from existing runs
+- alternate timelines without overwriting source history
+- branch timeline listing
+- branch comparisons against source or sibling runs
+- replay from selected branch points with optional spec/input overrides
+
+Core objects:
+
+- replay branch request
+- replay branch record
+
+### Brain v1 smarter routing foundation
+
+Implemented now:
+
+- history-aware route scoring
+- route ranking over cost, latency, success history, and escalation signals
+- explainable route decision output
+- debug policy management and route simulation
+
+Current scope notes:
+
+- Brain v1 is heuristic and explainable, not ML-driven
+- it reuses the existing adaptive routing safety/policy filters and changes final ranking only when enabled
+
 ## Current debug endpoints
 
 ### Multi-agent
@@ -266,28 +475,77 @@ v3 messaging uses the existing broker API rather than new v3-specific endpoints:
 - `POST /debug/policy`
 - `GET /debug/risk-policy`
 - `POST /debug/risk-policy`
+- `GET /debug/tool-gateway`
+- `POST /debug/tool-gateway`
+- `GET /debug/tool-calls`
+- `GET /debug/side-effects`
+- `POST /debug/side-effects/commit`
+- `POST /debug/side-effects/compensate`
 - `GET /debug/audit`
 - `GET /debug/human/tasks`
 - `POST /debug/human/respond`
 - `POST /debug/run-spec`
 
+### Agent memory / state
+
+- `GET /debug/agent-state`
+- `POST /debug/agent-state`
+- `GET /debug/agent-state/lineage`
+- `GET /debug/agent-memory`
+- `POST /debug/agent-memory`
+- `POST /debug/agent-memory/search`
+
+### Workflow release / self-healing / forensics / replay / brain
+
+- `GET /debug/workflows/releases/versions`
+- `POST /debug/workflows/releases/versions`
+- `GET /debug/workflows/releases/version`
+- `GET /debug/workflows/releases/channel`
+- `POST /debug/workflows/releases/channel`
+- `POST /debug/workflows/releases/promote`
+- `POST /debug/workflows/releases/rollback`
+- `GET /debug/workflows/releases/diff`
+- `GET /debug/workflows/releases/resolve`
+- `POST /debug/workflows/releases/finalize-canary`
+- `GET /debug/self-heal/artifacts`
+- `GET /debug/self-heal/artifact`
+- `POST /debug/self-heal/artifact`
+- `POST /debug/self-heal/replay`
+- `GET /debug/forensics/lineage`
+- `GET /debug/forensics/run-diff`
+- `GET /debug/forensics/workflow-diff`
+- `GET /debug/forensics/root-cause`
+- `GET /debug/forensics/what-changed`
+- `GET /debug/replay/branches`
+- `POST /debug/replay/branches`
+- `GET /debug/replay/branch`
+- `GET /debug/replay/compare`
+- `GET /debug/brain-policy`
+- `POST /debug/brain-policy`
+- `POST /debug/brain/route`
+
 ## Example flow
 
 1. Start `driftqd` with multi-agent config if you need agent routing.
-2. Create or capture regression cases into an eval dataset.
-3. Create an eval suite over that dataset.
-4. Run the suite, optionally with a workflow `spec_override`.
-5. Inspect the eval report.
-6. Promote only if the eval run passed.
+2. Configure policy, risk, tenant, and tool-gateway bundles for the runtime boundary you want.
+3. Create or capture regression cases into an eval dataset.
+4. Create an eval suite over that dataset.
+5. Run the suite, optionally with a workflow `spec_override`.
+6. Register workflow release versions and move traffic through channel/canary/shadow flows.
+7. Inspect telemetry, audit logs, self-healing artifacts, and forensic diffs when runs fail.
+8. Use replay branches and Brain v1 route explanations to investigate safer or smarter alternatives.
 
 ## Design intent
 
 v3 is being built as a single track on top of the existing broker and workflow engine:
 
 - messaging provides the transport and contract for agents
-- evaluation provides regression checks and guarded promotion for workflow changes
-- authorization, risk, and governance provide runtime guardrails and tenant safety
+- evaluation and release engineering provide regression checks and guarded promotion for workflow changes
+- authorization, risk, governance, tool gateway policy, and side-effect controls provide runtime guardrails and tenant safety
 - human-in-the-loop provides first-class review/approval pauses inside workflow execution
+- agent state and semantic memory provide durable per-agent context
+- self-healing, forensics, and replay branching turn failures into debuggable and recoverable artifacts
+- observability, adaptive routing, and Brain v1 turn runtime history into safer and smarter routing decisions
 
 The current implementation intentionally reuses:
 
