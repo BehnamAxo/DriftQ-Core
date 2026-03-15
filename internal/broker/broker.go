@@ -608,13 +608,37 @@ func NewInMemoryBrokerWithWALAndRouter(wal storage.WAL, r Router, opts ...Broker
 	return b
 }
 
-func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions int) error {
+func (b *InMemoryBroker) CreateTopic(ctx context.Context, name string, partitions int) error {
+	return b.CreateTopicWithConfig(ctx, name, partitions, TopicConfig{})
+}
+
+func normalizeTopicConfig(cfg TopicConfig) (TopicConfig, error) {
+	mode := TopicMode(strings.ToLower(strings.TrimSpace(string(cfg.Mode))))
+	if mode == "" {
+		mode = TopicModeStandard
+	}
+
+	switch mode {
+	case TopicModeStandard, TopicModeRealtime:
+		cfg.Mode = mode
+		return cfg, nil
+	default:
+		return TopicConfig{}, fmt.Errorf("invalid topic mode: %s", cfg.Mode)
+	}
+}
+
+func (b *InMemoryBroker) CreateTopicWithConfig(_ context.Context, name string, partitions int, cfg TopicConfig) error {
 	if name == "" {
 		return errors.New("topic name cannot be empty")
 	}
 
 	if partitions <= 0 {
 		return errors.New("partitions must be > 0")
+	}
+
+	cfg, err := normalizeTopicConfig(cfg)
+	if err != nil {
+		return err
 	}
 
 	b.mu.Lock()
@@ -625,7 +649,7 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 	}
 
 	// Create in memory first
-	if err := b.createTopicLocked(name, partitions); err != nil {
+	if err := b.createTopicLockedWithConfig(name, partitions, cfg); err != nil {
 		return err
 	}
 
@@ -636,6 +660,7 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 			Type:      storage.RecordTypeTopic,
 			Topic:     name,
 			Partition: partitions,
+			TopicMode: string(cfg.Mode),
 		}); err != nil {
 			// Best-effort rollback so caller does NOT think the topic is durable when it is NOT
 			delete(b.topics, name)
@@ -648,6 +673,22 @@ func (b *InMemoryBroker) CreateTopic(_ context.Context, name string, partitions 
 	}
 
 	return nil
+}
+
+func (b *InMemoryBroker) DescribeTopic(_ context.Context, name string) (TopicDescription, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	ts, ok := b.topics[name]
+	if !ok {
+		return TopicDescription{}, fmt.Errorf("topic not found: %s", name)
+	}
+
+	return TopicDescription{
+		Name:       name,
+		Partitions: len(ts.partitions),
+		Config:     ts.Config,
+	}, nil
 }
 
 // ListTopics returns the list of topic names (sorted for stability).
@@ -1400,6 +1441,10 @@ func (b *InMemoryBroker) Nack(_ context.Context, topic, group string, partition 
 
 // Creates a topic assuming b.mu is held
 func (b *InMemoryBroker) createTopicLocked(name string, partitions int) error {
+	return b.createTopicLockedWithConfig(name, partitions, TopicConfig{})
+}
+
+func (b *InMemoryBroker) createTopicLockedWithConfig(name string, partitions int, cfg TopicConfig) error {
 	if name == "" {
 		return errors.New("topic name cannot be empty")
 	}
@@ -1412,9 +1457,15 @@ func (b *InMemoryBroker) createTopicLocked(name string, partitions int) error {
 		return nil
 	}
 
+	cfg, err := normalizeTopicConfig(cfg)
+	if err != nil {
+		return err
+	}
+
 	b.topics[name] = &TopicState{
 		partitions:        make([][]Message, partitions),
 		partitionByteSums: make([][]int64, partitions),
+		Config:            cfg,
 	}
 
 	return nil

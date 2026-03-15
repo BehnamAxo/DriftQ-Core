@@ -5,6 +5,23 @@ import (
 	"time"
 )
 
+type TopicMode string
+
+const (
+	TopicModeStandard TopicMode = "standard"
+	TopicModeRealtime TopicMode = "realtime"
+)
+
+type TopicConfig struct {
+	Mode TopicMode `json:"mode,omitempty"`
+}
+
+type TopicDescription struct {
+	Name       string      `json:"name"`
+	Partitions int         `json:"partitions"`
+	Config     TopicConfig `json:"config"`
+}
+
 type inflightEntry struct {
 	Msg           Message
 	SentAt        time.Time
@@ -44,6 +61,7 @@ type Message struct {
 type TopicState struct {
 	partitions        [][]Message
 	partitionByteSums [][]int64
+	Config            TopicConfig
 }
 
 // RoutingDecision is what the brain tells me to do with a message. For v0 I'm keeping it small

@@ -3,10 +3,11 @@ package v1
 import "time"
 
 type ConsumeRequest struct {
-	Topic   string `json:"topic"`
-	Group   string `json:"group"`
-	Owner   string `json:"owner"`
-	LeaseMs int64  `json:"lease_ms,omitempty"` // handler will default if 0/missing
+	Topic      string `json:"topic"`
+	Group      string `json:"group"`
+	Owner      string `json:"owner"`
+	LeaseMs    int64  `json:"lease_ms,omitempty"` // handler will default if 0/missing
+	LowLatency bool   `json:"low_latency,omitempty"`
 }
 
 type VersionResponse struct {
@@ -48,6 +49,7 @@ type TopicsCreateResponse struct {
 	Status     string `json:"status"`
 	Name       string `json:"name"`
 	Partitions int    `json:"partitions"`
+	Mode       string `json:"mode,omitempty"`
 }
 
 type ProduceRequest struct {
@@ -124,6 +126,8 @@ type ResourceExhaustedResponse struct {
 type TopicsCreateRequest struct {
 	Name       string `json:"name"`
 	Partitions int    `json:"partitions,omitempty"` // default = 1 (handler will enforce)
+	Mode       string `json:"mode,omitempty"`
+	LowLatency bool   `json:"low_latency,omitempty"`
 }
 
 type AckRequest struct {
