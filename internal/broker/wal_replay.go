@@ -31,14 +31,19 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryB
 				continue
 			}
 
+			cfg := TopicConfig{Mode: TopicMode(e.TopicMode)}
+
 			if ts, ok := b.topics[e.Topic]; !ok {
 				// Fresh topic from metadata
-				_ = b.createTopicLocked(e.Topic, e.Partition)
+				_ = b.createTopicLockedWithConfig(e.Topic, e.Partition, cfg)
 			} else {
 				// Topic already exists (maybe created implicitly from message replay) so ensure it has at least e.Partition partitions.
 				for len(ts.partitions) < e.Partition {
 					ts.partitions = append(ts.partitions, nil)
 					ts.partitionByteSums = append(ts.partitionByteSums, nil)
+				}
+				if normalized, err := normalizeTopicConfig(cfg); err == nil {
+					ts.Config = normalized
 				}
 			}
 
@@ -48,6 +53,7 @@ func NewInMemoryBrokerFromWAL(wal storage.WAL, opts ...BrokerOption) (*InMemoryB
 				ts = &TopicState{
 					partitions:        make([][]Message, 0),
 					partitionByteSums: make([][]int64, 0),
+					Config:            TopicConfig{Mode: TopicModeStandard},
 				}
 
 				b.topics[e.Topic] = ts

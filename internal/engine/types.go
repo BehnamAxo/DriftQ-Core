@@ -126,18 +126,19 @@ const (
 )
 
 const (
-	EventRunCreated        RunEventType = "run_created"
-	EventRunStarted        RunEventType = "run_started"
-	EventRunFinished       RunEventType = "run_finished"
-	EventNodeStarted       RunEventType = "node_started"
-	EventNodeFinished      RunEventType = "node_finished"
-	EventNodeFailed        RunEventType = "node_failed"
-	EventNodeRetryPlanned  RunEventType = "node_retry_planned"
-	EventThrottled         RunEventType = "throttled"
-	EventBudgetExceeded    RunEventType = "budget_exceeded"
-	EventRiskAssessed      RunEventType = "risk_assessed"
-	EventHumanTaskCreated  RunEventType = "human_task_created"
-	EventHumanTaskResolved RunEventType = "human_task_resolved"
+	EventRunCreated                 RunEventType = "run_created"
+	EventRunStarted                 RunEventType = "run_started"
+	EventRunFinished                RunEventType = "run_finished"
+	EventNodeStarted                RunEventType = "node_started"
+	EventNodeFinished               RunEventType = "node_finished"
+	EventNodeFailed                 RunEventType = "node_failed"
+	EventNodeRetryPlanned           RunEventType = "node_retry_planned"
+	EventThrottled                  RunEventType = "throttled"
+	EventBudgetExceeded             RunEventType = "budget_exceeded"
+	EventRiskAssessed               RunEventType = "risk_assessed"
+	EventHumanTaskCreated           RunEventType = "human_task_created"
+	EventHumanTaskResolved          RunEventType = "human_task_resolved"
+	EventSelfHealingArtifactCreated RunEventType = "self_healing_artifact_created"
 )
 
 func (s RunStatus) Valid() bool {

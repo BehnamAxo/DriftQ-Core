@@ -42,6 +42,14 @@ type server struct {
 	config v1.ConfigResponse
 }
 
+type topicConfigCreator interface {
+	CreateTopicWithConfig(ctx context.Context, name string, partitions int, cfg broker.TopicConfig) error
+}
+
+type topicDescriber interface {
+	DescribeTopic(ctx context.Context, name string) (broker.TopicDescription, error)
+}
+
 type topicDebugAdapter struct {
 	b broker.Broker
 }
@@ -964,6 +972,16 @@ func (s *server) handleTopicsCreate(w http.ResponseWriter, r *http.Request) {
 			}
 			req.Partitions = n
 		}
+
+		req.Mode = strings.TrimSpace(q.Get("mode"))
+		if v := strings.TrimSpace(q.Get("low_latency")); v != "" {
+			lowLatency, err := strconv.ParseBool(v)
+			if err != nil {
+				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid low_latency")
+				return
+			}
+			req.LowLatency = lowLatency
+		}
 	}
 
 	name := strings.TrimSpace(req.Name)
@@ -982,15 +1000,32 @@ func (s *server) handleTopicsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.broker.CreateTopic(ctx, name, partitions); err != nil {
+	mode := strings.TrimSpace(req.Mode)
+	if req.LowLatency && mode == "" {
+		mode = string(broker.TopicModeRealtime)
+	}
+	cfg := broker.TopicConfig{Mode: broker.TopicMode(mode)}
+	if creator, ok := s.broker.(topicConfigCreator); ok {
+		if err := creator.CreateTopicWithConfig(ctx, name, partitions, cfg); err != nil {
+			v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+			return
+		}
+	} else if err := s.broker.CreateTopic(ctx, name, partitions); err != nil {
 		v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
+	}
+
+	if desc, ok := s.broker.(topicDescriber); ok {
+		if topicDesc, err := desc.DescribeTopic(ctx, name); err == nil {
+			mode = string(topicDesc.Config.Mode)
+		}
 	}
 
 	v1.WriteJSON(w, http.StatusCreated, v1.TopicsCreateResponse{
 		Status:     "created",
 		Name:       name,
 		Partitions: partitions,
+		Mode:       mode,
 	})
 }
 
@@ -1303,6 +1338,14 @@ func (s *server) handleConsume(w http.ResponseWriter, r *http.Request) {
 			}
 			req.LeaseMs = ms
 		}
+		if v := strings.TrimSpace(q.Get("low_latency")); v != "" {
+			lowLatency, err := strconv.ParseBool(v)
+			if err != nil {
+				v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid low_latency")
+				return
+			}
+			req.LowLatency = lowLatency
+		}
 	}
 
 	topic := strings.TrimSpace(req.Topic)
@@ -1323,8 +1366,22 @@ func (s *server) handleConsume(w http.ResponseWriter, r *http.Request) {
 		lease = time.Duration(req.LeaseMs) * time.Millisecond
 	}
 
-	// Use the new broker method (no type assertions now)
-	ch, err := s.broker.ConsumeWithLease(ctx, topic, group, owner, lease)
+	lowLatency := req.LowLatency
+	if !lowLatency {
+		if desc, ok := s.broker.(topicDescriber); ok && req.LeaseMs == 0 {
+			if topicDesc, err := desc.DescribeTopic(ctx, topic); err == nil && topicDesc.Config.Mode == broker.TopicModeRealtime {
+				lowLatency = true
+			}
+		}
+	}
+
+	var ch <-chan broker.Message
+	var err error
+	if lowLatency && req.LeaseMs == 0 {
+		ch, err = s.broker.Consume(ctx, topic, group, owner)
+	} else {
+		ch, err = s.broker.ConsumeWithLease(ctx, topic, group, owner, lease)
+	}
 	if err != nil {
 		v1.WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return

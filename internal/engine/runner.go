@@ -31,6 +31,8 @@ type NodeDef struct {
 	Topic              string
 	RequiredCapability string
 	Human              *HumanStepSpec
+	InputSchema        json.RawMessage
+	OutputSchema       json.RawMessage
 	Run                NodeFunc
 	TimeoutMS          int
 }
@@ -49,6 +51,10 @@ type Runner struct {
 	policyBundle     *AuthorizationPolicyBundle
 	riskMu           sync.RWMutex
 	riskPolicy       *RiskPolicy
+	brainMu          sync.RWMutex
+	brainPolicy      *BrainPolicy
+	toolMu           sync.RWMutex
+	toolGateway      *ToolGatewayBundle
 
 	maxParallel int // for join/fan out later
 	cancels     map[string]context.CancelFunc
@@ -312,6 +318,11 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			NodeID:     node.NodeID,
 			Attempt:    attempt,
 		})
+
+		if rl := r.wrapRateLimiter(runID, wf.WorkflowID, node.NodeID, attempt, tenantID, node.Topic); rl != nil {
+			nodeCtx = WithRateLimiter(nodeCtx, rl)
+		}
+
 		nodeCtx, nodeSpan := r.startSpan(nodeCtx, "driftq.node.execute", nodeSpanAttributes(runID, wf.WorkflowID, tenantID, node.NodeID, node.Topic, attempt)...)
 		execCtx := nodeCtx
 		var toolSpanAttrs []attribute.KeyValue
@@ -325,7 +336,23 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			toolSpanStarted = true
 		}
 
-		output, nodeErr := node.Run(execCtx, cloneRaw(input))
+		var output json.RawMessage
+		var nodeErr error
+		if strings.TrimSpace(node.Topic) != "" {
+			output, nodeErr = r.invokeTool(execCtx, toolInvocation{
+				RunID:              runID,
+				WorkflowID:         wf.WorkflowID,
+				NodeID:             node.NodeID,
+				Attempt:            attempt,
+				Tool:               node.Topic,
+				RequiredCapability: node.RequiredCapability,
+				InputSchema:        cloneRaw(node.InputSchema),
+				OutputSchema:       cloneRaw(node.OutputSchema),
+				Handler:            node.Run,
+			}, cloneRaw(input))
+		} else {
+			output, nodeErr = node.Run(execCtx, cloneRaw(input))
+		}
 		nodeEnd := time.Now().UTC()
 		nodeDur := nodeEnd.Sub(nodeStart)
 
@@ -370,6 +397,14 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 			// mark run failed
 			run.Status = RunStatusFailed
 			run.EndedAt = &nodeEnd
+			run.TerminalReason = "node_failed"
+			if meta, metaErr := json.Marshal(map[string]any{
+				"failed_node": node.NodeID,
+				"attempt":     attempt,
+				"error":       nodeErr.Error(),
+			}); metaErr == nil {
+				run.TerminalMeta = meta
+			}
 
 			// metrics: failed run duration
 			if run.StartedAt != nil {
@@ -398,6 +433,7 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 				WorkflowID: wf.WorkflowID,
 				Payload:    p2,
 			})
+			r.maybeCaptureSelfHealingArtifact(ctx, runID)
 
 			err = ErrNodeFailed
 			return err
@@ -447,6 +483,8 @@ func (r *Runner) RunWorkflow(ctx context.Context, runID string, wf Workflow, ini
 	end := time.Now().UTC()
 	run.Status = RunStatusSucceeded
 	run.EndedAt = &end
+	run.TerminalReason = ""
+	run.TerminalMeta = nil
 
 	// metrics: succeeded run duration
 	if run.StartedAt != nil {

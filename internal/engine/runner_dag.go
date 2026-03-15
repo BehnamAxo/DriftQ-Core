@@ -367,6 +367,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 			WorkflowID: wfID,
 			Payload:    fin,
 		})
+		r.maybeCaptureSelfHealingArtifact(ctx, runID)
 
 		stopScheduling = true
 		runCancel()
@@ -708,6 +709,19 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 						}
 					}()
 
+					if strings.TrimSpace(n.Topic) != "" {
+						return r.invokeTool(toolCtx, toolInvocation{
+							RunID:              runID,
+							WorkflowID:         wfID,
+							NodeID:             n.NodeID,
+							Attempt:            att,
+							Tool:               n.Topic,
+							RequiredCapability: n.RequiredCapability,
+							InputSchema:        cloneRaw(n.InputSchema),
+							OutputSchema:       cloneRaw(n.OutputSchema),
+							Handler:            n.Run,
+						}, cloneRaw(inp))
+					}
 					return n.Run(toolCtx, cloneRaw(inp))
 				}()
 
@@ -955,6 +969,14 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 
 				run.Status = RunStatusFailed
 				run.EndedAt = &nodeEnd
+				run.TerminalReason = "node_failed"
+				if meta, metaErr := json.Marshal(map[string]any{
+					"failed_node": node.NodeID,
+					"attempt":     res.attempt,
+					"error":       res.err.Error(),
+				}); metaErr == nil {
+					run.TerminalMeta = meta
+				}
 
 				if run.StartedAt != nil {
 					r.observeRunMetric(wfID, run.Status, nodeEnd.Sub(*run.StartedAt))
@@ -967,6 +989,7 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 					Type:    EventRunFinished,
 					Payload: p2,
 				})
+				r.maybeCaptureSelfHealingArtifact(runCtx, runID)
 
 				failed = true
 				failErr = ErrNodeFailed
@@ -1070,6 +1093,8 @@ func (r *Runner) runDAGWithCache(ctx context.Context, runID string, g WorkflowGr
 	end := time.Now().UTC()
 	run.Status = RunStatusSucceeded
 	run.EndedAt = &end
+	run.TerminalReason = ""
+	run.TerminalMeta = nil
 
 	if run.StartedAt != nil {
 		r.observeRunMetric(wfID, run.Status, end.Sub(*run.StartedAt))

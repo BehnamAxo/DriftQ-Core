@@ -27,6 +27,7 @@ type Entry struct {
 	Topic     string `json:"topic,omitempty"`
 	Partition int    `json:"partition,omitempty"`
 	Offset    int64  `json:"offset,omitempty"`
+	TopicMode string `json:"topic_mode,omitempty"`
 
 	Group string `json:"group,omitempty"`
 

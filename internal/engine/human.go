@@ -46,8 +46,9 @@ const (
 )
 
 const (
-	HumanTaskSourceNode HumanTaskSource = "node"
-	HumanTaskSourceRisk HumanTaskSource = "risk"
+	HumanTaskSourceNode       HumanTaskSource = "node"
+	HumanTaskSourceRisk       HumanTaskSource = "risk"
+	HumanTaskSourceSideEffect HumanTaskSource = "side_effect"
 )
 
 const (
@@ -63,25 +64,26 @@ type HumanStepSpec struct {
 }
 
 type HumanTask struct {
-	ID             string              `json:"id"`
-	RunID          string              `json:"run_id"`
-	WorkflowID     string              `json:"workflow_id,omitempty"`
-	NodeID         string              `json:"node_id,omitempty"`
-	Attempt        int                 `json:"attempt,omitempty"`
-	TenantID       string              `json:"tenant_id,omitempty"`
-	Mode           HumanStepMode       `json:"mode"`
-	Source         HumanTaskSource     `json:"source"`
-	Status         HumanTaskStatus     `json:"status"`
-	Prompt         string              `json:"prompt,omitempty"`
-	RequestedInput json.RawMessage     `json:"requested_input,omitempty"`
-	EditedInput    json.RawMessage     `json:"edited_input,omitempty"`
-	ReviewComment  string              `json:"review_comment,omitempty"`
-	TimeoutAction  HumanTimeoutAction  `json:"timeout_action,omitempty"`
-	CreatedAt      time.Time           `json:"created_at"`
-	UpdatedAt      time.Time           `json:"updated_at"`
-	ResolvedAt     *time.Time          `json:"resolved_at,omitempty"`
-	ExpiresAt      *time.Time          `json:"expires_at,omitempty"`
-	RiskReport     *WorkflowRiskReport `json:"risk_report,omitempty"`
+	ID                  string              `json:"id"`
+	RunID               string              `json:"run_id"`
+	WorkflowID          string              `json:"workflow_id,omitempty"`
+	NodeID              string              `json:"node_id,omitempty"`
+	Attempt             int                 `json:"attempt,omitempty"`
+	TenantID            string              `json:"tenant_id,omitempty"`
+	Mode                HumanStepMode       `json:"mode"`
+	Source              HumanTaskSource     `json:"source"`
+	Status              HumanTaskStatus     `json:"status"`
+	Prompt              string              `json:"prompt,omitempty"`
+	RequestedInput      json.RawMessage     `json:"requested_input,omitempty"`
+	EditedInput         json.RawMessage     `json:"edited_input,omitempty"`
+	SideEffectReceiptID string              `json:"side_effect_receipt_id,omitempty"`
+	ReviewComment       string              `json:"review_comment,omitempty"`
+	TimeoutAction       HumanTimeoutAction  `json:"timeout_action,omitempty"`
+	CreatedAt           time.Time           `json:"created_at"`
+	UpdatedAt           time.Time           `json:"updated_at"`
+	ResolvedAt          *time.Time          `json:"resolved_at,omitempty"`
+	ExpiresAt           *time.Time          `json:"expires_at,omitempty"`
+	RiskReport          *WorkflowRiskReport `json:"risk_report,omitempty"`
 }
 
 type HumanApprovalPendingError struct {
@@ -163,6 +165,7 @@ func (r *Runner) saveHumanTask(task HumanTask) error {
 	task.Source = HumanTaskSource(strings.TrimSpace(string(task.Source)))
 	task.Status = HumanTaskStatus(strings.TrimSpace(string(task.Status)))
 	task.Prompt = strings.TrimSpace(task.Prompt)
+	task.SideEffectReceiptID = strings.TrimSpace(task.SideEffectReceiptID)
 	task.ReviewComment = strings.TrimSpace(task.ReviewComment)
 	task.TimeoutAction = HumanTimeoutAction(strings.TrimSpace(string(task.TimeoutAction)))
 
@@ -413,6 +416,7 @@ func (r *Runner) ResolveHumanTask(ctx context.Context, taskID string, decision H
 			run.EndedAt = &end
 			run.TerminalReason = "human_rejected"
 			_ = r.store.UpdateRun(run)
+			r.maybeCaptureSelfHealingArtifact(ctx, task.RunID)
 		}
 		return task, nil
 	}

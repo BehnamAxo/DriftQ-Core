@@ -43,6 +43,11 @@ func traceIDFromRequest(req *http.Request) string {
 // This is runner-only
 func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 	attachEvalRoutes(mux, runner)
+	attachWorkflowReleaseRoutes(mux, runner)
+	attachSelfHealingRoutes(mux, runner)
+	attachForensicRoutes(mux, runner)
+	attachReplayBranchRoutes(mux, runner)
+	attachBrainRoutes(mux, runner)
 
 	mux.HandleFunc("/debug/policy", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -161,6 +166,225 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		}
 	})
 
+	mux.HandleFunc("/debug/tool-gateway", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost:
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		switch r.Method {
+		case http.MethodGet:
+			bundle, ok, err := runner.GetToolGatewayBundle()
+			if err != nil {
+				http.Error(w, "get tool gateway failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				bundle = ToolGatewayBundle{}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"bundle":    bundle,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+
+		case http.MethodPost:
+			var body ToolGatewayBundle
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			if err := runner.SaveToolGatewayBundle(body); err != nil {
+				http.Error(w, "save tool gateway failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			bundle, _, _ := runner.GetToolGatewayBundle()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"bundle":    bundle,
+				"tenant_id": effectiveTenantFromContext(ctx),
+				"trace_id":  traceID,
+			})
+		}
+	})
+
+	mux.HandleFunc("/debug/tool-calls", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+		tool := strings.TrimSpace(r.URL.Query().Get("tool"))
+		limit := 100
+		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+			n, err := strconv.Atoi(rawLimit)
+			if err != nil || n < 1 {
+				http.Error(w, "limit must be a positive int", http.StatusBadRequest)
+				return
+			}
+			limit = n
+		}
+
+		records, err := runner.ListToolCallRecords(ctx, runID, tool, limit)
+		if err != nil {
+			http.Error(w, "list tool calls failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"count":     len(records),
+			"records":   records,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
+	mux.HandleFunc("/debug/side-effects", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+		status := SideEffectStatus(strings.TrimSpace(r.URL.Query().Get("status")))
+		limit := 100
+
+		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+			n, err := strconv.Atoi(rawLimit)
+			if err != nil || n < 1 {
+				http.Error(w, "limit must be a positive int", http.StatusBadRequest)
+				return
+			}
+			limit = n
+		}
+
+		receipts, err := runner.ListSideEffectReceipts(ctx, runID, status, limit)
+		if err != nil {
+			http.Error(w, "list side effects failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"count":     len(receipts),
+			"receipts":  receipts,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
+	mux.HandleFunc("/debug/side-effects/commit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+		var body struct {
+			ReceiptID string `json:"receipt_id"`
+		}
+
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		receipt, err := runner.CommitSideEffect(ctx, body.ReceiptID)
+		if err != nil {
+			var pendingErr *HumanApprovalPendingError
+			if errors.As(err, &pendingErr) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+
+			if errors.Is(err, ErrSideEffectReceiptNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+
+			http.Error(w, "commit side effect failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"receipt":   receipt,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
+	mux.HandleFunc("/debug/side-effects/compensate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		traceID := traceIDFromRequest(r)
+		ctx := debugContextFromRequest(r, traceID)
+
+		var body struct {
+			ReceiptID string `json:"receipt_id"`
+		}
+
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		receipt, err := runner.CompensateSideEffect(ctx, body.ReceiptID)
+		if err != nil {
+			if errors.Is(err, ErrSideEffectReceiptNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+
+			http.Error(w, "compensate side effect failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"receipt":   receipt,
+			"tenant_id": effectiveTenantFromContext(ctx),
+			"trace_id":  traceID,
+		})
+	})
+
 	mux.HandleFunc("/debug/human/tasks", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -173,14 +397,17 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 		status := HumanTaskStatus(strings.TrimSpace(r.URL.Query().Get("status")))
 		limit := 100
+
 		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				limit = n
 			}
 		}
+
 		if limit < 1 {
 			limit = 1
 		}
+
 		if limit > 500 {
 			limit = 500
 		}
@@ -193,6 +420,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 
 		tenantID := effectiveTenantFromContext(ctx)
 		filtered := make([]HumanTask, 0, len(tasks))
+
 		for _, task := range tasks {
 			if tenantID != "" && task.TenantID != "" && task.TenantID != tenantID {
 				continue
@@ -227,8 +455,10 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			Comment     string          `json:"comment,omitempty"`
 			Resume      *bool           `json:"resume,omitempty"`
 		}
+
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
+
 		if err := dec.Decode(&body); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 			return
@@ -380,10 +610,12 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			var p demoPayload
 			dec := json.NewDecoder(r.Body)
 			dec.DisallowUnknownFields()
+
 			if err := dec.Decode(&p); err != nil && !errors.Is(err, io.EOF) {
 				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 				return
 			}
+
 			// if body present, use it (even if x=0)
 			if !errors.Is(dec.Decode(&struct{}{}), io.EOF) {
 				// if there's extra junk after the first object
@@ -564,6 +796,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		if tenantID == "" && body.Principal != nil {
 			tenantID = body.Principal.TenantID
 		}
+
 		if tenantID != "" {
 			ctx = WithTenantID(ctx, tenantID)
 		}
@@ -580,6 +813,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 				http.Error(w, "authorization simulate failed: "+err.Error(), http.StatusBadRequest)
 				return
 			}
+
 			authzReport.Mode = PolicyModeSimulate
 
 			riskReport, err := runner.EvaluateRunSpecRisk(ctx, runID, body.Spec, reg, body.Input)
@@ -637,6 +871,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			if errors.As(err, &humanErr) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusAccepted)
+
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"ok":             false,
 					"run_id":         runID,
@@ -794,13 +1029,15 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 			http.Error(w, "missing run_id", http.StatusBadRequest)
 			return
 		}
-		traceID := traceIDFromRequest(r)
 
+		traceID := traceIDFromRequest(r)
 		run, ok := runner.store.GetRun(runID)
+
 		if !ok {
 			http.Error(w, "run not found", http.StatusNotFound)
 			return
 		}
+
 		ctx := debugContextFromRequest(r, traceID)
 		if err := runner.ensureRunTenantAccess(ctx, run, "debug.run_state"); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
@@ -842,6 +1079,7 @@ func AttachDebugRoutes(mux *http.ServeMux, runner *Runner) {
 		if limit < 1 {
 			limit = 1
 		}
+
 		if limit > 500 {
 			limit = 500
 		}

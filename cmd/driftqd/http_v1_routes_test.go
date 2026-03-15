@@ -239,6 +239,74 @@ func TestV1_Topics_CreateAndList_JSONAndQuery(t *testing.T) {
 	}
 }
 
+func TestV1_Topics_CreateRealtimeAndConsumeLowLatency(t *testing.T) {
+	ts, _ := newV1TestServer(t)
+
+	reqBody := bytes.NewBufferString(`{"name":"rt","partitions":1,"mode":"realtime"}`)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/topics", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/topics realtime: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status=%d want=%d", resp.StatusCode, http.StatusCreated)
+	}
+
+	created := mustDecodeJSON[v1.TopicsCreateResponse](t, resp.Body)
+	if created.Mode != "realtime" {
+		t.Fatalf("mode=%q want=%q", created.Mode, "realtime")
+	}
+
+	produceReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/produce?topic=rt&value=ping", nil)
+	produceResp, err := http.DefaultClient.Do(produceReq)
+	if err != nil {
+		t.Fatalf("POST /v1/produce: %v", err)
+	}
+	produceResp.Body.Close()
+	if produceResp.StatusCode != http.StatusOK {
+		t.Fatalf("produce status=%d want=%d", produceResp.StatusCode, http.StatusOK)
+	}
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel1()
+	consumeReq1, _ := http.NewRequestWithContext(ctx1, http.MethodGet, ts.URL+"/v1/consume?topic=rt&group=g1&owner=o1", nil)
+	consumeResp1, err := http.DefaultClient.Do(consumeReq1)
+	if err != nil {
+		t.Fatalf("GET /v1/consume first: %v", err)
+	}
+
+	scanner := bufio.NewScanner(consumeResp1.Body)
+	if !scanner.Scan() {
+		t.Fatalf("expected realtime consume item, err=%v", scanner.Err())
+	}
+	consumeResp1.Body.Close()
+
+	time.Sleep(200 * time.Millisecond)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel2()
+	consumeReq2, _ := http.NewRequestWithContext(ctx2, http.MethodGet, ts.URL+"/v1/consume?topic=rt&group=g1&owner=o2", nil)
+	consumeResp2, err := http.DefaultClient.Do(consumeReq2)
+	if err != nil {
+		if ctx2.Err() == context.DeadlineExceeded {
+			return
+		}
+		t.Fatalf("GET /v1/consume second: %v", err)
+	}
+	defer consumeResp2.Body.Close()
+
+	scanner2 := bufio.NewScanner(consumeResp2.Body)
+	if scanner2.Scan() {
+		t.Fatalf("unexpected redelivery from realtime topic: %s", scanner2.Text())
+	}
+	if err := scanner2.Err(); err != nil && err != context.DeadlineExceeded && !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("unexpected scanner err: %v", err)
+	}
+}
+
 func TestV1_Produce_JSONAndQuery(t *testing.T) {
 	ts, b := newV1TestServer(t)
 	if err := b.CreateTopic(context.Background(), "t1", 1); err != nil {
