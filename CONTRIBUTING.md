@@ -8,7 +8,7 @@ This project is actively evolving, but contributions are welcome — especially:
 - Tests (unit + integration)
 - Small, focused fixes (perf, correctness, DX)
 
-If you’re proposing a larger feature or behavior change, please open an Issue first so we can align before you spend time on a PR.
+If you're proposing a larger feature or behavior change, please open an Issue first so we can align before you spend time on a PR.
 
 
 ## Quick links
@@ -46,7 +46,7 @@ go test ./... -count=1
 go test -tags=integration ./... -count=1
 ```
 
-Recommended “shake out flakes” runs:
+Recommended "shake out flakes" runs:
 ```bash
 go test -tags=integration ./... -race -count=1 -shuffle=on
 go test -tags=integration ./... -race -count=5 -shuffle=on
@@ -55,7 +55,7 @@ go test -tags=integration ./... -race -count=5 -shuffle=on
 
 ## Load testing
 
-There’s a helper script at `scripts/loadtest.sh`. It uses `hey` (see README for details).
+There's a helper script at `scripts/loadtest.sh`. It uses `hey` (see README for details).
 
 ```bash
 # Start the server first (see README.md for the exact command)
@@ -72,7 +72,7 @@ There’s a helper script at `scripts/loadtest.sh`. It uses `hey` (see README fo
 
 ## Important compatibility note (WAL)
 
-WAL is **forward-compatible only**. Once you write WAL entries with newer ops, you can’t safely downgrade to an older binary that doesn’t understand them.
+WAL is **forward-compatible only**. Once you write WAL entries with newer ops, you can't safely downgrade to an older binary that doesn't understand them.
 
 So: if your change affects persistence/durability, call that out clearly in the PR description (and in docs if needed).
 
