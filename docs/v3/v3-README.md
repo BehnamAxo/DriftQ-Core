@@ -1,4 +1,4 @@
-﻿# v3 - Multi-Agent Runtime & Real-Time AI Foundations
+# v3 - Multi-Agent Runtime & Real-Time AI Foundations
 
 This document covers the current v3 foundations inside DriftQ-Core.
 

@@ -1,4 +1,4 @@
-﻿# DriftQ-Core ðŸš€
+# DriftQ-Core
 
 **DriftQ-Core** is a durable message broker (v1) plus the completed **DriftQ v2** replayable workflow runtime foundations and the completed **DriftQ v3** multi-agent, guardrails, governance, release, replay, and smarter-routing runtime foundations.
 
@@ -6,7 +6,7 @@
 - **v2 runtime:** replayable workflow runtime exposed via `/debug/*` and `driftqctl runs ...` (replay, timelines, diffs, rollback primitives).
 - **v3 runtime:** multi-agent messaging, policy/risk/governance, HITL, observability, agent memory/state, secure tool gateway, release engineering, self-healing, forensics, replay branching, and Brain v1 routing.
 
-If you only want the broker, you can ignore the workflow/runtime layers. If you want Temporal-like durability, replay, guardrails, and AI-oriented orchestration in one binary, that is what the v2/v3 layers provide. ðŸ™‚
+If you only want the broker, you can ignore the workflow/runtime layers. If you want Temporal-like durability, replay, guardrails, and AI-oriented orchestration in one binary, that is what the v2/v3 layers provide.
 
 <p align="center">
   <img src="docs/assets/ui-dashboard.png" alt="DriftQ Dashboard" width="1200" />
@@ -18,7 +18,7 @@ If you only want the broker, you can ignore the workflow/runtime layers. If you 
 
 ## Table of contents
 
-- [Why DriftQ-Core'](#why-driftq-core)
+- [Why DriftQ-Core](#why-driftq-core)
 - [Highlights](#highlights-)
 - [Quickstart (Docker)](#quickstart-docker)
   - [Do this next: broker "Hello World"](#broker-hello-world)
@@ -38,7 +38,7 @@ If you only want the broker, you can ignore the workflow/runtime layers. If you 
 
 <a id="why-driftq-core"></a>
 
-## Why DriftQ-Core'
+## Why DriftQ-Core
 
 - **One binary, no external deps** (no Kafka/Temporal/DB cluster required)
 - **Right-sized reliability**: leases, retries, DLQ, idempotency
@@ -51,26 +51,26 @@ If you only want the broker, you can ignore the workflow/runtime layers. If you 
 
 Building reliable backend systems today means choosing between two painful options:
 
-**Option A: Managed infrastructure overkill.** You need a message queue, so you spin up Kafka (plus ZooKeeper or KRaft), or RabbitMQ (plus Erlang cluster management), or pay for SQS/Pub-Sub. You need durable workflows, so you add Temporal (plus a Cassandra or PostgreSQL cluster). Suddenly your "simple pipeline" requires 4+ services, a Kubernetes cluster, and a platform team to keep it all running. Most of the time, your actual workload is a few hundred messages per second â€” nowhere near justifying this complexity.
+**Option A: Managed infrastructure overkill.** You need a message queue, so you spin up Kafka (plus ZooKeeper or KRaft), or RabbitMQ (plus Erlang cluster management), or pay for SQS/Pub-Sub. You need durable workflows, so you add Temporal (plus a Cassandra or PostgreSQL cluster). Suddenly your "simple pipeline" requires 4+ services, a Kubernetes cluster, and a platform team to keep it all running. Most of the time, your actual workload is a few hundred messages per second - nowhere near justifying this complexity.
 
 **Option B: Roll your own.** You wire up Redis lists, cron jobs, and Postgres-as-a-queue hacks. It works until it doesn't: messages get lost during deploys, retry logic is scattered across 15 files, debugging a failed pipeline means grepping through logs from three different services, and "replay that failed job from step 3" is a fantasy.
 
-Neither option is great when you're a small team shipping fast, or when you're building AI agent pipelines where the real complexity is in the logic â€” not the plumbing.
+Neither option is great when you're a small team shipping fast, or when you're building AI agent pipelines where the real complexity is in the logic - not the plumbing.
 
 ### What DriftQ-Core does differently
 
 **Single binary. Zero external dependencies.** DriftQ-Core is one Go binary that gives you both a Kafka-style message broker and a Temporal-style workflow runtime. No ZooKeeper. No etcd. No Redis. No separate database. You run one process, it writes to one WAL file, and you're done. `docker run` and you have durable messaging + workflow orchestration in seconds.
 
-**Built for the workloads most teams actually have.** Not every project needs to process a million messages per second. Most teams need reliable delivery for a few hundred to a few thousand messages per second, with proper retries, dead-letter queues, and the ability to see what went wrong when something breaks. DriftQ-Core is built for exactly that sweet spot â€” where you need real durability guarantees without the operational tax of distributed infrastructure.
+**Built for the workloads most teams actually have.** Not every project needs to process a million messages per second. Most teams need reliable delivery for a few hundred to a few thousand messages per second, with proper retries, dead-letter queues, and the ability to see what went wrong when something breaks. DriftQ-Core is built for exactly that sweet spot - where you need real durability guarantees without the operational tax of distributed infrastructure.
 
-**Designed for AI and agent workflows from day one.** The v2 runtime isn't a generic workflow engine that happens to work for AI â€” it was built with AI pipelines in mind. Budget controls track tokens and dollars across a run so a runaway agent can't burn through your OpenAI bill. Concurrency throttles prevent "500 parallel embedding calls" accidents. Replay lets you re-run a pipeline from step 3 without re-calling the expensive LLM steps that already succeeded. Artifacts store large intermediate outputs (embeddings, generated documents) without bloating your event log.
+**Designed for AI and agent workflows from day one.** The v2 runtime isn't a generic workflow engine that happens to work for AI - it was built with AI pipelines in mind. Budget controls track tokens and dollars across a run so a runaway agent can't burn through your OpenAI bill. Concurrency throttles prevent "500 parallel embedding calls" accidents. Replay lets you re-run a pipeline from step 3 without re-calling the expensive LLM steps that already succeeded. Artifacts store large intermediate outputs (embeddings, generated documents) without bloating your event log.
 
-**Debuggable by default.** Every run produces an append-only event log. Every step records its input, output, timing, and attempt number. You can inspect a failed run, diff two attempts of the same step, time-travel replay to reproduce issues, and see exactly where your budget was spent â€” all through the CLI or HTTP API. No more "what happened to that job'" mysteries.
+**Debuggable by default.** Every run produces an append-only event log. Every step records its input, output, timing, and attempt number. You can inspect a failed run, diff two attempts of the same step, time-travel replay to reproduce issues, and see exactly where your budget was spent - all through the CLI or HTTP API. No more "what happened to that job?" mysteries.
 
-### Who is this for'
+### Who is this for
 
 - **Small teams building AI/LLM pipelines** who need durable execution without managing Temporal + Kafka + PostgreSQL
-- **Backend developers** who want a lightweight message broker with proper retry semantics, DLQ routing, and consumer groups â€” without running a Kafka cluster
+- **Backend developers** who want a lightweight message broker with proper retry semantics, DLQ routing, and consumer groups - without running a Kafka cluster
 - **Solo developers and startups** who need production-grade messaging and workflow orchestration that runs on a single $5/month VPS
 - **Anyone tired of gluing together 5 services** to get reliable message processing with retry and observability
 
@@ -86,7 +86,7 @@ Neither option is great when you're a small team shipping fast, or when you're b
 
 ## Highlights
 
-### v1 â€” Broker (stable)
+### v1 - Broker (stable)
 - Topics / partitions (Kafka-style offsets)
 - `produce`, streaming `consume` (NDJSON), `ack` / `nack`
 - Consumer groups with round-robin dispatch
@@ -99,7 +99,7 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - WAL-backed durability
 - Prometheus metrics
 
-### v2 foundations â€” Replayable workflow runtime (evolving)
+### v2 foundations - Replayable workflow runtime (evolving)
 - **Run contract** + **append-only run/event log** (inspectable execution history)
 - **Deterministic DAG engine** (step dependencies, fan-out/fan-in, retries)
   - Validates against duplicate/empty node IDs at spec parse time
@@ -113,7 +113,7 @@ Neither option is great when you're a small team shipping fast, or when you're b
 - **Minimal rollback primitive** via an "active index" pointer (promote/rollback)
 - **Handler panic recovery** (panicking handlers do not crash the server)
 
-### v3 foundation â€” Multi-Agent Runtime, Guardrails, and Orchestration
+### v3 foundation - Multi-Agent Runtime, Guardrails, and Orchestration
 - Agent topic conventions:
   - `agent.{id}.inbox`
   - `agent.{id}.outbox`
@@ -189,7 +189,7 @@ http://127.0.0.1:8080/ui/
 docker-compose up -d
 ```
 
-> **Important:** this repoâ€™s `docker-compose.yml` references the image `driftq-core:local`. Build it once first:
+> **Important:** this repo's `docker-compose.yml` references the image `driftq-core:local`. Build it once first:
 > ```bash
 > docker build -t driftq-core:local .
 > ```
@@ -212,22 +212,22 @@ docker run --rm -p 8080:8080 -v driftq_data:/data ghcr.io/driftq-org/driftq-core
 
 <a id="broker-hello-world"></a>
 
-## Do this next: end-to-end broker "Hello World" (topics â†’ produce â†’ consume â†’ ack)
+## Do this next: end-to-end broker "Hello World" (topics -> produce -> consume -> ack)
 
-This is the missing "what now'" after you see `{"status":"ok"}` from `/v1/healthz`.
+This is the missing "what now?" after you see `{"status":"ok"}` from `/v1/healthz`.
 
-> TL;DR: create a topic â†’ produce â†’ stream-consume â†’ ack using the same `{topic, group, owner}`.
+> TL;DR: create a topic -> produce -> stream-consume -> ack using the same `{topic, group, owner}`.
 
 ### 1) Create a topic
 
 macOS/Linux:
 ```bash
-curl -i -X POST "http://127.0.0.1:8080/v1/topics'name=demo&partitions=1"
+curl -i -X POST "http://127.0.0.1:8080/v1/topics?name=demo&partitions=1"
 ```
 
-Windows PowerShell (**use `curl.exe`** â€” PowerShell aliases `curl` to `Invoke-WebRequest`):
+Windows PowerShell (**use `curl.exe`** - PowerShell aliases `curl` to `Invoke-WebRequest`):
 ```powershell
-curl.exe -i -X POST "http://127.0.0.1:8080/v1/topics'name=demo&partitions=1"
+curl.exe -i -X POST "http://127.0.0.1:8080/v1/topics?name=demo&partitions=1"
 ```
 
 List topics:
@@ -239,12 +239,12 @@ curl http://127.0.0.1:8080/v1/topics
 
 Basic:
 ```bash
-curl -i -X POST "http://127.0.0.1:8080/v1/produce'topic=demo&value=hello"
+curl -i -X POST "http://127.0.0.1:8080/v1/produce?topic=demo&value=hello"
 ```
 
 Produce with retry policy (so you can observe retries/DLQ behavior later):
 ```bash
-curl -i -X POST "http://127.0.0.1:8080/v1/produce'topic=demo&value=hello-retry&retry_max_attempts=3&retry_backoff_ms=500"
+curl -i -X POST "http://127.0.0.1:8080/v1/produce?topic=demo&value=hello-retry&retry_max_attempts=3&retry_backoff_ms=500"
 ```
 
 ### 3) Consume as a streaming client (NDJSON)
@@ -253,15 +253,15 @@ Open a **second terminal**.
 
 macOS/Linux (**important: `-N` disables output buffering**):
 ```bash
-curl -N "http://127.0.0.1:8080/v1/consume'topic=demo&group=g1&owner=c1&lease_ms=5000"
+curl -N "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=5000"
 ```
 
 Windows PowerShell (**important: `--no-buffer`**):
 ```powershell
-curl.exe --no-buffer "http://127.0.0.1:8080/v1/consume'topic=demo&group=g1&owner=c1&lease_ms=5000"
+curl.exe --no-buffer "http://127.0.0.1:8080/v1/consume?topic=demo&group=g1&owner=c1&lease_ms=5000"
 ```
 
-Youâ€™ll see one JSON object per line, like:
+You'll see one JSON object per line, like:
 ```json
 {"partition":0,"offset":0,"attempts":1,"key":"","value":"hello","last_error":""}
 ```
@@ -271,15 +271,15 @@ Youâ€™ll see one JSON object per line, like:
 Use the `partition` + `offset` from the consume line (example below uses 0/0):
 
 ```bash
-curl -i -X POST "http://127.0.0.1:8080/v1/ack'topic=demo&group=g1&owner=c1&partition=0&offset=0"
+curl -i -X POST "http://127.0.0.1:8080/v1/ack?topic=demo&group=g1&owner=c1&partition=0&offset=0"
 ```
 
-**Important:** ack/nack must come from the same `owner` that consumed the message. If you use the wrong `owner`, youâ€™ll get `409 Conflict`.
+**Important:** ack/nack must come from the same `owner` that consumed the message. If you use the wrong `owner`, you'll get `409 Conflict`.
 
 ### 5) (Optional) Prove redelivery + retries + DLQ
 
 - Consume a message **but do not ack it**.
-- Wait for the lease to expire (e.g. `lease_ms=5000` â†’ wait ~5 seconds).
+- Wait for the lease to expire (e.g. `lease_ms=5000` -> wait ~5 seconds).
 - You should see it re-delivered with `attempts` incrementing.
 
 If the message has a retry policy and exceeds `retry_max_attempts`, it routes to:
@@ -287,8 +287,8 @@ If the message has a retry policy and exceeds `retry_max_attempts`, it routes to
 
 Create the DLQ topic and consume it:
 ```bash
-curl -i -X POST "http://127.0.0.1:8080/v1/topics'name=dlq.demo&partitions=1"
-curl -N "http://127.0.0.1:8080/v1/consume'topic=dlq.demo&group=dlq&owner=dlq1&lease_ms=5000"
+curl -i -X POST "http://127.0.0.1:8080/v1/topics?name=dlq.demo&partitions=1"
+curl -N "http://127.0.0.1:8080/v1/consume?topic=dlq.demo&group=dlq&owner=dlq1&lease_ms=5000"
 ```
 
 ### 6) Metrics (Prometheus)
@@ -308,7 +308,7 @@ Look for metrics like:
 
 ## Optional: v2 demo in 60 seconds (replayable workflow foundations)
 
-If youâ€™re curious about the "v2 foundations", this is the fastest way to see them.
+If you're curious about the "v2 foundations", this is the fastest way to see them.
 
 1) Build the CLI:
 ```bash
@@ -339,10 +339,10 @@ go build -o driftqctl.exe ./cmd/driftqctl
 
 ## Common gotchas (first-time users)
 
-- **PowerShell `curl` isnâ€™t curl.** Use `curl.exe ...` (or use `Invoke-WebRequest` explicitly).
+- **PowerShell `curl` isn't curl.** Use `curl.exe ...` (or use `Invoke-WebRequest` explicitly).
 - **`/v1/consume` is a stream.** It stays open and prints one JSON line per message.
 - **`topic`, `group`, and `owner` are required for `/v1/consume`.** (Owner matters because ack/nack are ownership-scoped.)
-- **docker-compose requires a local image first.** This repoâ€™s `docker-compose.yml` references `driftq-core:local`, so do:
+- **docker-compose requires a local image first.** This repo's `docker-compose.yml` references `driftq-core:local`, so do:
   ```bash
   docker build -t driftq-core:local .
   docker compose up -d
@@ -418,16 +418,16 @@ All stable broker endpoints are under `/v1/*`:
 | GET | `/v1/healthz` | Health check |
 | GET | `/v1/version` | Version info |
 | GET | `/v1/topics` | List topics |
-| POST | `/v1/topics'name=T&partitions=N` | Create topic |
+| POST | `/v1/topics?name=T&partitions=N` | Create topic |
 | POST | `/v1/produce` | Produce message (JSON body or query params) |
-| GET | `/v1/consume'topic=T&group=G` | Streaming consume (NDJSON) |
+| GET | `/v1/consume?topic=T&group=G` | Streaming consume (NDJSON) |
 | POST | `/v1/ack` | Acknowledge message |
 | POST | `/v1/nack` | Negative acknowledge (trigger retry) |
 | GET | `/metrics` | Prometheus metrics |
 
 Full reference: `docs/v1/v1-README.md`
 
-> **Note:** `/v1/consume` requires **topic + group + owner** (example: `/v1/consume'topic=T&group=G&owner=O`). Ack/nack are scoped to that `owner`.
+> **Note:** `/v1/consume` requires **topic + group + owner** (example: `/v1/consume?topic=T&group=G&owner=O`). Ack/nack are scoped to that `owner`.
 
 
 ### v2 foundations (debug / evolving)
@@ -438,13 +438,13 @@ These endpoints are under `/debug/*` and are meant for development, demos, and i
 |--------|----------|-------------|
 | POST | `/debug/run-spec` | Start a run from JSON spec |
 | GET | `/debug/runs` | List all runs |
-| GET | `/debug/run'run_id=ID` | Get run details |
-| GET | `/debug/run-state'run_id=ID` | Get run state |
+| GET | `/debug/run?run_id=ID` | Get run details |
+| GET | `/debug/run-state?run_id=ID` | Get run state |
 | POST | `/debug/run-replay` | Time-travel or live replay |
 | POST | `/debug/run-cancel` | Cancel a run |
-| GET | `/debug/run-artifacts'run_id=ID` | List run artifacts |
-| GET | `/debug/artifact-meta'artifact_id=A` | Artifact metadata |
-| GET | `/debug/artifact-get'artifact_id=A` | Download artifact |
+| GET | `/debug/run-artifacts?run_id=ID` | List run artifacts |
+| GET | `/debug/artifact-meta?artifact_id=A` | Artifact metadata |
+| GET | `/debug/artifact-get?artifact_id=A` | Download artifact |
 | POST | `/debug/run-demo` | Start demo workflow |
 | GET | `/debug/index/active` | Get active index pointer |
 | POST | `/debug/index/promote` | Promote index pointer |
